@@ -1,0 +1,6 @@
+.runtime/
+.claude/
+.beads/
+.logs/
+target/
+**/*.rs.bk

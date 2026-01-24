@@ -1,0 +1,10 @@
+[package]
+name = "claudewrapper"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+portable-pty = "0.8"
+termwiz = "0.22"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-util"] }
+crossterm = "0.27"
