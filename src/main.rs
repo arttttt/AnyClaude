@@ -56,12 +56,8 @@ fn parse_command() -> (String, Vec<String>) {
     parse_command_from(args)
 }
 
-fn parse_command_from(mut args: Vec<String>) -> (String, Vec<String>) {
-    if args.is_empty() {
-        return ("claude".to_string(), Vec::new());
-    }
-
-    let command = args.remove(0);
+fn parse_command_from(args: Vec<String>) -> (String, Vec<String>) {
+    let command = "claude".to_string();
     (command, args)
 }
 
@@ -78,9 +74,12 @@ mod tests {
 
     #[test]
     fn parse_command_with_args() {
-        let args = vec!["echo".to_string(), "hi".to_string()];
+        let args = vec!["--debug".to_string(), "--model".to_string()];
         let (command, remaining) = parse_command_from(args);
-        assert_eq!(command, "echo");
-        assert_eq!(remaining, vec!["hi".to_string()]);
+        assert_eq!(command, "claude");
+        assert_eq!(
+            remaining,
+            vec!["--debug".to_string(), "--model".to_string()]
+        );
     }
 }
