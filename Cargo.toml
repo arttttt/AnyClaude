@@ -4,8 +4,19 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-ratatui = "0.26"
+# PTY & Terminal
+portable-pty = "0.8"
 termwiz = "0.22"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+crossterm = "0.27"
+
+# TUI
+ratatui = "0.26"
+
+# Async runtime
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-util"] }
+
+# HTTP Proxy
 hyper = "1.2"
+
+# Config
 toml = "0.8"
