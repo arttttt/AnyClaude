@@ -7,6 +7,7 @@ pub mod theme;
 
 use crate::ui::app::App;
 use crate::ui::events::{AppEvent, EventHandler};
+use crate::ui::header::Header;
 use crossterm::cursor::{Hide, Show};
 use crossterm::event::{KeyCode, KeyEvent};
 use crossterm::terminal::{
@@ -57,7 +58,7 @@ fn handle_key(app: &mut App, key: KeyEvent) {
 
 fn draw(frame: &mut Frame<'_>, app: &App) {
     let area = frame.size();
-    let header_height = 3.min(area.height);
+    let header_height = area.height.min(1);
     let footer_height = 3.min(area.height.saturating_sub(header_height));
     let header = Rect {
         x: area.x,
@@ -78,10 +79,8 @@ fn draw(frame: &mut Frame<'_>, app: &App) {
         height: area.height.saturating_sub(header_height + footer_height),
     };
 
-    frame.render_widget(
-        Block::default().title("Header").borders(Borders::ALL),
-        header,
-    );
+    let header_widget = Header::new();
+    frame.render_widget(header_widget.widget(), header);
     frame.render_widget(Clear, body);
     frame.render_widget(Block::default().title("Body").borders(Borders::ALL), body);
     frame.render_widget(
