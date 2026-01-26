@@ -1,7 +1,7 @@
-use crate::ui::theme::{HEADER_SEPARATOR, HEADER_TEXT, STATUS_OK};
+use crate::ui::theme::{GLOBAL_BORDER, HEADER_SEPARATOR, HEADER_TEXT, STATUS_OK};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Block, Borders, Paragraph};
 
 pub struct Header;
 
@@ -23,6 +23,10 @@ impl Header {
             Span::styled("tokens", text_style),
         ]);
 
-        Paragraph::new(line)
+        Paragraph::new(line).block(
+            Block::default()
+                .borders(Borders::TOP | Borders::BOTTOM)
+                .border_style(Style::default().fg(GLOBAL_BORDER)),
+        )
     }
 }

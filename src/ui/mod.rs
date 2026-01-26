@@ -118,7 +118,7 @@ fn draw(frame: &mut Frame<'_>, app: &App) {
 }
 
 fn layout_regions(area: Rect) -> (Rect, Rect, Rect) {
-    let header_height = area.height.min(1);
+    let header_height = area.height.min(3);
     let footer_height = 3.min(area.height.saturating_sub(header_height));
     let header = Rect {
         x: area.x,
