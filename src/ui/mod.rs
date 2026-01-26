@@ -3,6 +3,7 @@ pub mod events;
 pub mod footer;
 pub mod header;
 pub mod popup;
+pub mod theme;
 
 use crate::ui::app::App;
 use crate::ui::events::{AppEvent, EventHandler};
