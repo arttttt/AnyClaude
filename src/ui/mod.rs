@@ -3,14 +3,17 @@ pub mod events;
 pub mod footer;
 pub mod header;
 pub mod popup;
+pub mod terminal;
 pub mod theme;
 
+use crate::pty::{parse_command, PtySession};
 use crate::ui::app::App;
 use crate::ui::events::{AppEvent, EventHandler};
 use crate::ui::footer::Footer;
 use crate::ui::header::Header;
+use crate::ui::terminal::TerminalBody;
 use crossterm::cursor::{Hide, Show};
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
@@ -23,12 +26,17 @@ use std::io;
 use std::io::Stdout;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use termwiz::surface::CursorVisibility;
 
 pub fn run() -> io::Result<()> {
     let (mut terminal, guard) = setup_terminal()?;
     let tick_rate = Duration::from_millis(250);
     let mut app = App::new(tick_rate);
     let events = EventHandler::new(tick_rate);
+    let (command, args) = parse_command();
+    let mut pty_session = PtySession::spawn(command, args, events.sender())
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
+    app.attach_pty(pty_session.handle());
 
     loop {
         terminal.draw(|frame| draw(frame, &app))?;
@@ -40,17 +48,21 @@ pub fn run() -> io::Result<()> {
             Ok(AppEvent::Input(key)) => handle_key(&mut app, key),
             Ok(AppEvent::Tick) => app.on_tick(),
             Ok(AppEvent::Resize(cols, rows)) => app.on_resize(cols, rows),
+            Ok(AppEvent::PtyOutput) => {}
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
 
+    let _ = pty_session.shutdown();
     drop(guard);
     Ok(())
 }
 
 fn handle_key(app: &mut App, key: KeyEvent) {
-    if matches!(key.code, KeyCode::Char('q') | KeyCode::Esc) {
+    if matches!(key.code, KeyCode::Esc)
+        || (matches!(key.code, KeyCode::Char('q')) && key.modifiers.contains(KeyModifiers::CONTROL))
+    {
         app.request_quit();
     } else {
         app.on_key(key);
@@ -83,7 +95,21 @@ fn draw(frame: &mut Frame<'_>, app: &App) {
     let header_widget = Header::new();
     frame.render_widget(header_widget.widget(), header);
     frame.render_widget(Clear, body);
-    frame.render_widget(Block::default().title("Body").borders(Borders::ALL), body);
+    if let Some(screen) = app.screen() {
+        frame.render_widget(TerminalBody::new(Arc::clone(&screen)), body);
+        if body.width > 0 && body.height > 0 {
+            if let Ok(screen) = screen.lock() {
+                if screen.cursor_visibility() == CursorVisibility::Visible {
+                    let (x, y) = screen.cursor_position();
+                    let x = body.x + x.min(body.width.saturating_sub(1) as usize) as u16;
+                    let y = body.y + y.min(body.height.saturating_sub(1) as usize) as u16;
+                    frame.set_cursor(x, y);
+                }
+            }
+        }
+    } else {
+        frame.render_widget(Block::default().title("Body").borders(Borders::ALL), body);
+    }
     let footer_widget = Footer::new();
     frame.render_widget(footer_widget.widget(), footer);
 

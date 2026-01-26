@@ -7,11 +7,12 @@ pub enum AppEvent {
     Input(KeyEvent),
     Tick,
     Resize(u16, u16),
+    PtyOutput,
 }
 
 pub struct EventHandler {
     rx: Receiver<AppEvent>,
-    _tx: mpsc::Sender<AppEvent>,
+    tx: mpsc::Sender<AppEvent>,
 }
 
 impl EventHandler {
@@ -43,10 +44,14 @@ impl EventHandler {
             }
         });
 
-        Self { rx, _tx: tx }
+        Self { rx, tx }
     }
 
     pub fn next(&self, timeout: Duration) -> Result<AppEvent, mpsc::RecvTimeoutError> {
         self.rx.recv_timeout(timeout)
+    }
+
+    pub fn sender(&self) -> mpsc::Sender<AppEvent> {
+        self.tx.clone()
     }
 }
