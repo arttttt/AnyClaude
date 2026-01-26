@@ -37,6 +37,15 @@ pub fn run() -> io::Result<()> {
     let mut pty_session = PtySession::spawn(command, args, events.sender())
         .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
     app.attach_pty(pty_session.handle());
+    if let Ok((cols, rows)) = crossterm::terminal::size() {
+        let body = body_rect(Rect {
+            x: 0,
+            y: 0,
+            width: cols,
+            height: rows,
+        });
+        app.on_resize(body.width.max(1), body.height.max(1));
+    }
 
     loop {
         terminal.draw(|frame| draw(frame, &app))?;
@@ -47,7 +56,15 @@ pub fn run() -> io::Result<()> {
         match events.next(tick_rate) {
             Ok(AppEvent::Input(key)) => handle_key(&mut app, key),
             Ok(AppEvent::Tick) => app.on_tick(),
-            Ok(AppEvent::Resize(cols, rows)) => app.on_resize(cols, rows),
+            Ok(AppEvent::Resize(cols, rows)) => {
+                let body = body_rect(Rect {
+                    x: 0,
+                    y: 0,
+                    width: cols,
+                    height: rows,
+                });
+                app.on_resize(body.width.max(1), body.height.max(1));
+            }
             Ok(AppEvent::PtyOutput) => {}
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
@@ -71,26 +88,7 @@ fn handle_key(app: &mut App, key: KeyEvent) {
 
 fn draw(frame: &mut Frame<'_>, app: &App) {
     let area = frame.size();
-    let header_height = area.height.min(1);
-    let footer_height = 3.min(area.height.saturating_sub(header_height));
-    let header = Rect {
-        x: area.x,
-        y: area.y,
-        width: area.width,
-        height: header_height,
-    };
-    let footer = Rect {
-        x: area.x,
-        y: area.y + area.height.saturating_sub(footer_height),
-        width: area.width,
-        height: footer_height,
-    };
-    let body = Rect {
-        x: area.x,
-        y: area.y + header_height,
-        width: area.width,
-        height: area.height.saturating_sub(header_height + footer_height),
-    };
+    let (header, body, footer) = layout_regions(area);
 
     let header_widget = Header::new();
     frame.render_widget(header_widget.widget(), header);
@@ -117,6 +115,34 @@ fn draw(frame: &mut Frame<'_>, app: &App) {
         let popup = Block::default().title("Popup").borders(Borders::ALL);
         frame.render_widget(popup, centered_rect(60, 30, frame.size()));
     }
+}
+
+fn layout_regions(area: Rect) -> (Rect, Rect, Rect) {
+    let header_height = area.height.min(1);
+    let footer_height = 3.min(area.height.saturating_sub(header_height));
+    let header = Rect {
+        x: area.x,
+        y: area.y,
+        width: area.width,
+        height: header_height,
+    };
+    let footer = Rect {
+        x: area.x,
+        y: area.y + area.height.saturating_sub(footer_height),
+        width: area.width,
+        height: footer_height,
+    };
+    let body = Rect {
+        x: area.x,
+        y: area.y + header_height,
+        width: area.width,
+        height: area.height.saturating_sub(header_height + footer_height),
+    };
+    (header, body, footer)
+}
+
+fn body_rect(area: Rect) -> Rect {
+    layout_regions(area).1
 }
 
 fn centered_rect(
