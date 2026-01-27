@@ -14,7 +14,7 @@ signal-hook = "0.3"
 ratatui = "0.26"
 
 # Async runtime
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-util"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-util", "signal"] }
 
 # HTTP Proxy
 hyper = "1.2"
@@ -28,6 +28,9 @@ toml = "0.8"
 dirs = "5.0"
 thiserror = "1.0"
 notify = "6.1"
+
+# Utilities
+scopeguard = "1.2"
 
 [dev-dependencies]
 tempfile = "3.24"
