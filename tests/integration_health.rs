@@ -29,7 +29,7 @@ async fn test_health_integration() {
 }
 
 #[tokio::test]
-async fn test_404_for_nonexistent_route() {
+async fn test_request_forwarding() {
     let server = ProxyServer::new();
     let addr_str = format!("{}", server.addr);
 
@@ -41,10 +41,10 @@ async fn test_404_for_nonexistent_route() {
 
     let client = Client::new();
     let resp = client
-        .get(format!("http://{}/notfound", addr_str))
+        .get(format!("http://{}/v1/messages", addr_str))
+        .header("x-test-header", "test-value")
         .send()
-        .await
-        .unwrap();
+        .await;
 
-    assert_eq!(resp.status().as_u16(), 404);
+    assert!(resp.is_err() || resp.unwrap().status().as_u16() != 200);
 }

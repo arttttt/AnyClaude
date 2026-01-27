@@ -11,7 +11,6 @@ use hyper::service::service_fn;
 use hyper::Request;
 use hyper::body::Incoming;
 use hyper_util::rt::TokioIo;
-use http_body_util::Full;
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 
@@ -78,11 +77,6 @@ impl ProxyServer {
                             let router = router.clone();
                             async move {
                                 router.route(req).await
-                                    .map(|resp| {
-                                        resp.map(|body| {
-                                            Full::new(body)
-                                        })
-                                    })
                             }
                         });
 

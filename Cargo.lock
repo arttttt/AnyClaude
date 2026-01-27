@@ -151,6 +151,7 @@ checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 name = "claudewrapper"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "crossterm",
  "dirs 5.0.1",
  "http-body-util",

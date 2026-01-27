@@ -35,6 +35,7 @@ scopeguard = "1.2"
 # Logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "time"] }
+anyhow = "1.0.100"
 
 [dev-dependencies]
 tempfile = "3.24"
