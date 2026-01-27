@@ -1,7 +1,7 @@
 use hyper::{Request, Response, Method};
 use hyper::body::Incoming;
-use http_body_util::Full;
 use hyper::body::Bytes;
+use http_body_util::combinators::BoxBody;
 use std::sync::Arc;
 use anyhow::Result;
 
@@ -22,7 +22,7 @@ impl RouterEngine {
         }
     }
 
-    pub async fn route(&self, req: Request<Incoming>) -> Result<Response<Full<Bytes>>> {
+    pub async fn route(&self, req: Request<Incoming>) -> Result<Response<BoxBody<Bytes, hyper::Error>>> {
         tracing::debug!(method = %req.method(), path = %req.uri().path(), "Incoming request");
         let path = req.uri().path();
 

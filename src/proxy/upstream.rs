@@ -1,7 +1,7 @@
-use hyper::Request;
+use hyper::{Request, Response};
 use hyper::body::{Bytes, Incoming};
-use hyper::header::HOST;
-use http_body_util::{BodyExt, Full};
+use hyper::header::{HOST, CONTENT_TYPE};
+use http_body_util::{BodyExt, Full, combinators::BoxBody};
 use hyper_util::client::legacy::Client;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
@@ -23,7 +23,7 @@ impl UpstreamClient {
         }
     }
 
-    pub async fn forward(&self, req: Request<Incoming>) -> Result<hyper::Response<Full<Bytes>>> {
+    pub async fn forward(&self, req: Request<Incoming>) -> Result<Response<BoxBody<Bytes, hyper::Error>>> {
         let method = req.method().clone();
         let uri = req.uri();
         let path_and_query = uri.path_and_query()
@@ -47,6 +47,12 @@ impl UpstreamClient {
         let upstream_req = builder.body(Full::new(body_bytes))?;
         let upstream_resp = self.client.request(upstream_req).await?;
 
+        let content_type = upstream_resp.headers()
+            .get(CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok());
+
+        let is_streaming = content_type.map_or(false, |ct| ct.contains("text/event-stream"));
+
         let status = upstream_resp.status();
         let mut builder = hyper::Response::builder().status(status);
 
@@ -54,8 +60,12 @@ impl UpstreamClient {
             builder = builder.header(name, value);
         }
 
-        let body_bytes = upstream_resp.into_body().collect().await?.to_bytes();
-        Ok(builder.body(Full::new(body_bytes))?)
+        if is_streaming {
+            Ok(builder.body(upstream_resp.into_body().boxed())?)
+        } else {
+            let body_bytes = upstream_resp.into_body().collect().await?.to_bytes();
+            Ok(builder.body(Full::new(body_bytes).map_err(|e| match e {}).boxed())?)
+        }
     }
 }
 

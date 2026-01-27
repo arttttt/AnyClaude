@@ -1,7 +1,7 @@
 use hyper::{Response};
 use hyper::header::CONTENT_TYPE;
 use hyper::body::Bytes;
-use http_body_util::Full;
+use http_body_util::{Full, BodyExt, combinators::BoxBody};
 use serde::Serialize;
 use anyhow::Result;
 
@@ -18,7 +18,7 @@ impl HealthHandler {
         Self
     }
 
-    pub async fn handle(&self) -> Result<Response<Full<Bytes>>> {
+    pub async fn handle(&self) -> Result<Response<BoxBody<Bytes, hyper::Error>>> {
         let health = HealthStatus {
             status: "healthy".to_string(),
             service: "claudewrapper".to_string(),
@@ -29,7 +29,7 @@ impl HealthHandler {
         Ok(Response::builder()
             .status(200)
             .header(CONTENT_TYPE, "application/json")
-            .body(Full::new(Bytes::from(json)))
+            .body(Full::new(Bytes::from(json)).map_err(|e| match e {}).boxed())
             .unwrap())
     }
 }
