@@ -2,6 +2,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::signal;
+use tracing;
 
 pub struct ShutdownManager {
     shutdown: Arc<AtomicBool>,
@@ -32,7 +33,7 @@ impl ShutdownManager {
         }
 
         self.shutdown.store(true, Ordering::SeqCst);
-        println!("Shutting down gracefully...");
+        tracing::info!("Shutting down gracefully...");
         Ok(())
     }
 
@@ -50,21 +51,21 @@ impl ShutdownManager {
 
     pub async fn wait_for_connections(&self, timeout: Duration) {
         let active = self.active_connections.load(Ordering::SeqCst);
-        println!("Waiting for {} active connections...", active);
+        tracing::info!("Waiting for {} active connections...", active);
 
         let start = tokio::time::Instant::now();
 
         while start.elapsed() < timeout {
             let active = self.active_connections.load(Ordering::SeqCst);
             if active == 0 {
-                println!("Server stopped");
+                tracing::info!("Server stopped");
                 return;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
 
         let active = self.active_connections.load(Ordering::SeqCst);
-        println!("Forced shutdown after timeout ({} connections remain)", active);
+        tracing::warn!("Forced shutdown after timeout ({} connections remain)", active);
     }
 }
 

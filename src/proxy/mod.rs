@@ -13,9 +13,22 @@ use hyper::body::Incoming;
 use hyper_util::rt::TokioIo;
 use http_body_util::Full;
 use tokio::net::TcpListener;
+use tracing_subscriber::EnvFilter;
 
 use crate::proxy::router::RouterEngine;
 use crate::proxy::shutdown::ShutdownManager;
+
+pub fn init_tracing() {
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info"));
+
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_target(true)
+        .with_level(true)
+        .with_timer(tracing_subscriber::fmt::time::UtcTime::rfc_3339())
+        .init();
+}
 
 pub struct ProxyServer {
     pub addr: SocketAddr,
@@ -34,8 +47,9 @@ impl ProxyServer {
     }
 
     pub async fn run(&self) -> Result<(), Box<dyn std::error::Error>> {
+        tracing::info!("Starting proxy server on {}", self.addr);
         let listener = TcpListener::bind(self.addr).await?;
-        println!("Proxy server listening on {}", self.addr);
+        tracing::info!("Proxy server listening on {}", self.addr);
 
         let shutdown = self.shutdown.clone();
         tokio::spawn(async move {
@@ -79,7 +93,7 @@ impl ProxyServer {
                 }
                 Err(_) if self.shutdown.is_shutting_down() => break,
                 Err(err) => {
-                    eprintln!("Error accepting connection: {:?}", err);
+                    tracing::error!("Error accepting connection: {:?}", err);
                     break;
                 }
             }
@@ -87,6 +101,7 @@ impl ProxyServer {
 
         drop(listener);
         self.shutdown.wait_for_connections(Duration::from_secs(10)).await;
+        tracing::info!("Shutting down gracefully");
 
         Ok(())
     }

@@ -18,6 +18,7 @@ impl RouterEngine {
     }
 
     pub async fn route(&self, req: Request<Incoming>) -> Result<Response<Bytes>, hyper::Error> {
+        tracing::debug!(method = %req.method(), path = %req.uri().path(), "Incoming request");
         let path = req.uri().path();
 
         match (req.method(), path) {
