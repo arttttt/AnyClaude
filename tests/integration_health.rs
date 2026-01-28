@@ -1,9 +1,13 @@
+use claudewrapper::config::{Config, ConfigStore};
 use claudewrapper::proxy::ProxyServer;
 use reqwest::Client;
+use std::path::PathBuf;
 
 #[tokio::test]
 async fn test_health_integration() {
-    let server = ProxyServer::new();
+    let config = Config::default();
+    let config_store = ConfigStore::new(config, PathBuf::from("/tmp/test-config.toml"));
+    let server = ProxyServer::new(config_store);
     let addr_str = format!("{}", server.addr);
 
     tokio::spawn(async move {
@@ -30,7 +34,9 @@ async fn test_health_integration() {
 
 #[tokio::test]
 async fn test_request_forwarding() {
-    let server = ProxyServer::new();
+    let config = Config::default();
+    let config_store = ConfigStore::new(config, PathBuf::from("/tmp/test-config.toml"));
+    let server = ProxyServer::new(config_store);
     let addr_str = format!("{}", server.addr);
 
     tokio::spawn(async move {

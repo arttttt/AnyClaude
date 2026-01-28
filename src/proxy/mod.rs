@@ -1,6 +1,8 @@
+pub mod error;
 pub mod health;
 pub mod router;
 pub mod shutdown;
+pub mod timeout;
 pub mod upstream;
 
 use std::net::SocketAddr;
@@ -17,6 +19,7 @@ use tracing_subscriber::EnvFilter;
 use crate::config::ConfigStore;
 use crate::proxy::router::RouterEngine;
 use crate::proxy::shutdown::ShutdownManager;
+use crate::proxy::timeout::TimeoutConfig;
 
 pub fn init_tracing() {
     let filter = EnvFilter::try_from_default_env()
@@ -39,7 +42,8 @@ pub struct ProxyServer {
 impl ProxyServer {
     pub fn new(config: ConfigStore) -> Self {
         let addr = "127.0.0.1:8080".parse().expect("Invalid bind address");
-        let router = RouterEngine::new(config);
+        let timeout_config = TimeoutConfig::from(&config.get().defaults);
+        let router = RouterEngine::new(config, timeout_config);
         Self {
             addr,
             router,

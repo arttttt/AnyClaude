@@ -67,6 +67,8 @@ fn test_validation_fails_missing_active_backend() {
         defaults: Defaults {
             active: "nonexistent".to_string(),
             timeout_seconds: 30,
+            connect_timeout_seconds: 5,
+            idle_timeout_seconds: 60,
         },
         backends: vec![Backend::default()],
     };
@@ -248,6 +250,8 @@ fn test_validation_fails_unconfigured_active_backend() {
         defaults: Defaults {
             active: "unconfigured".to_string(),
             timeout_seconds: 30,
+            connect_timeout_seconds: 5,
+            idle_timeout_seconds: 60,
         },
         backends: vec![Backend {
             name: "unconfigured".to_string(),
@@ -281,6 +285,8 @@ fn test_configured_backends_filters_correctly() {
         defaults: Defaults {
             active: "configured".to_string(),
             timeout_seconds: 30,
+            connect_timeout_seconds: 5,
+            idle_timeout_seconds: 60,
         },
         backends: vec![
             Backend {

@@ -14,7 +14,8 @@ signal-hook = "0.3"
 ratatui = "0.26"
 
 # Async runtime
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-util", "signal"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-util", "signal", "time"] }
+uuid = { version = "1.12", features = ["v4"] }
 
 # HTTP Proxy
 hyper = "1.2"

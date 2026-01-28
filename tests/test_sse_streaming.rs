@@ -1,8 +1,12 @@
+use claudewrapper::config::{Config, ConfigStore};
 use reqwest::Client;
+use std::path::PathBuf;
 
 #[tokio::test]
 async fn test_non_streaming_response() {
-    let server = claudewrapper::proxy::ProxyServer::new();
+    let config = Config::default();
+    let config_store = ConfigStore::new(config, PathBuf::from("/tmp/test-config.toml"));
+    let server = claudewrapper::proxy::ProxyServer::new(config_store);
     let addr = server.addr;
     
     tokio::spawn(async move {

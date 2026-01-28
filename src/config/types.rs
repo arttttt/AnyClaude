@@ -14,6 +14,20 @@ pub struct Defaults {
     pub active: String,
     /// Request timeout in seconds.
     pub timeout_seconds: u32,
+    /// Connection timeout in seconds (default: 5).
+    #[serde(default = "default_connect_timeout")]
+    pub connect_timeout_seconds: u32,
+    /// Idle timeout for streaming responses in seconds (default: 60).
+    #[serde(default = "default_idle_timeout")]
+    pub idle_timeout_seconds: u32,
+}
+
+fn default_connect_timeout() -> u32 {
+    5
+}
+
+fn default_idle_timeout() -> u32 {
+    60
 }
 
 /// Backend configuration for an API provider.
@@ -52,6 +66,8 @@ impl Default for Defaults {
         Self {
             active: "claude".to_string(),
             timeout_seconds: 30,
+            connect_timeout_seconds: 5,
+            idle_timeout_seconds: 60,
         }
     }
 }
