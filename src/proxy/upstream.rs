@@ -3,8 +3,6 @@ use axum::http::header::{CONTENT_TYPE, HOST};
 use axum::http::{Request, Response};
 use http_body_util::BodyExt;
 use reqwest::Client;
-use tokio::time::timeout;
-
 use crate::backend::BackendState;
 use crate::config::build_auth_header;
 use crate::proxy::error::ProxyError;
@@ -12,6 +10,7 @@ use crate::proxy::timeout::TimeoutConfig;
 
 pub struct UpstreamClient {
     client: Client,
+    timeout_config: TimeoutConfig,
 }
 
 impl UpstreamClient {
@@ -23,6 +22,7 @@ impl UpstreamClient {
 
         Self {
             client,
+            timeout_config,
         }
     }
 
@@ -40,19 +40,7 @@ impl UpstreamClient {
                 backend: e.to_string(),
             })?;
 
-        // Get timeout config from the backend state's config
-        let defaults = &backend_state.get_config().defaults;
-        let timeout_config = TimeoutConfig::from(defaults);
-
-        // Execute the request with timeout
-        let result = timeout(timeout_config.request, self.do_forward(req, backend)).await;
-
-        match result {
-            Ok(response) => response,
-            Err(_) => Err(ProxyError::RequestTimeout {
-                duration: timeout_config.request.as_secs(),
-            }),
-        }
+        self.do_forward(req, backend).await
     }
 
     async fn do_forward(
@@ -96,12 +84,21 @@ impl UpstreamClient {
             .to_bytes();
 
         let upstream_resp = builder
+            .timeout(self.timeout_config.request)
             .body(body_bytes)
             .send()
             .await
-            .map_err(|e| ProxyError::ConnectionError {
-                backend: backend.name.clone(),
-                source: e,
+            .map_err(|e| {
+                if e.is_timeout() {
+                    ProxyError::RequestTimeout {
+                        duration: self.timeout_config.request.as_secs(),
+                    }
+                } else {
+                    ProxyError::ConnectionError {
+                        backend: backend.name.clone(),
+                        source: e,
+                    }
+                }
             })?;
 
         let content_type = upstream_resp
