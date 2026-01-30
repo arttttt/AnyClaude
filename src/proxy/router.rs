@@ -11,6 +11,7 @@ use crate::backend::BackendState;
 use crate::config::ConfigStore;
 use crate::proxy::error::ErrorResponse;
 use crate::proxy::health::HealthHandler;
+use crate::proxy::pool::PoolConfig;
 use crate::proxy::timeout::TimeoutConfig;
 use crate::proxy::upstream::UpstreamClient;
 
@@ -27,11 +28,12 @@ impl RouterEngine {
     pub fn new(
         config: ConfigStore,
         timeout_config: TimeoutConfig,
+        pool_config: PoolConfig,
         backend_state: BackendState,
     ) -> Self {
         Self {
             health: Arc::new(HealthHandler::new()),
-            upstream: Arc::new(UpstreamClient::new(timeout_config)),
+            upstream: Arc::new(UpstreamClient::new(timeout_config, pool_config)),
             config,
             backend_state,
         }

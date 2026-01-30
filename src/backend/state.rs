@@ -269,6 +269,10 @@ mod tests {
                 timeout_seconds: 30,
                 connect_timeout_seconds: 5,
                 idle_timeout_seconds: 60,
+                pool_idle_timeout_seconds: 90,
+                pool_max_idle_per_host: 8,
+                max_retries: 3,
+                retry_backoff_base_ms: 100,
             },
             backends: vec![
                 Backend {

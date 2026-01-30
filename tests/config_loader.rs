@@ -10,6 +10,10 @@ fn test_config_default_values() {
     // Defaults
     assert_eq!(config.defaults.active, "claude");
     assert_eq!(config.defaults.timeout_seconds, 30);
+    assert_eq!(config.defaults.pool_idle_timeout_seconds, 90);
+    assert_eq!(config.defaults.pool_max_idle_per_host, 8);
+    assert_eq!(config.defaults.max_retries, 3);
+    assert_eq!(config.defaults.retry_backoff_base_ms, 100);
 
     // Should have exactly one backend
     assert_eq!(config.backends.len(), 1);
@@ -69,6 +73,10 @@ fn test_validation_fails_missing_active_backend() {
             timeout_seconds: 30,
             connect_timeout_seconds: 5,
             idle_timeout_seconds: 60,
+            pool_idle_timeout_seconds: 90,
+            pool_max_idle_per_host: 8,
+            max_retries: 3,
+            retry_backoff_base_ms: 100,
         },
         backends: vec![Backend::default()],
     };
@@ -252,6 +260,10 @@ fn test_validation_fails_unconfigured_active_backend() {
             timeout_seconds: 30,
             connect_timeout_seconds: 5,
             idle_timeout_seconds: 60,
+            pool_idle_timeout_seconds: 90,
+            pool_max_idle_per_host: 8,
+            max_retries: 3,
+            retry_backoff_base_ms: 100,
         },
         backends: vec![Backend {
             name: "unconfigured".to_string(),
@@ -287,6 +299,10 @@ fn test_configured_backends_filters_correctly() {
             timeout_seconds: 30,
             connect_timeout_seconds: 5,
             idle_timeout_seconds: 60,
+            pool_idle_timeout_seconds: 90,
+            pool_max_idle_per_host: 8,
+            max_retries: 3,
+            retry_backoff_base_ms: 100,
         },
         backends: vec![
             Backend {
