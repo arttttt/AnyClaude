@@ -245,7 +245,7 @@ fn filter_metrics(snapshot: MetricsSnapshot, backend_id: Option<&str>) -> Metric
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Backend, Config, Defaults};
+    use crate::config::{Backend, Config, Defaults, ProxyConfig};
     use crate::metrics::ObservabilityHub;
     use std::sync::Arc;
 
@@ -261,6 +261,7 @@ mod tests {
                 max_retries: 3,
                 retry_backoff_base_ms: 100,
             },
+            proxy: ProxyConfig::default(),
             backends: vec![
                 Backend {
                     name: "alpha".to_string(),

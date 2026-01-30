@@ -20,6 +20,7 @@ impl PtySession {
     pub fn spawn(
         command: String,
         args: Vec<String>,
+        env: Vec<(String, String)>,
         notifier: Sender<AppEvent>,
     ) -> Result<Self, Box<dyn Error>> {
         let pty_system = native_pty_system();
@@ -39,6 +40,9 @@ impl PtySession {
         cmd.args(args);
         cmd.cwd(std::env::current_dir()?);
         cmd.env("TERM", "xterm-256color");
+        for (key, value) in env {
+            cmd.env(key, value);
+        }
 
         let child = pair.slave.spawn_command(cmd)?;
         drop(pair.slave);

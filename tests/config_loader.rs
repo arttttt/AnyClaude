@@ -1,5 +1,6 @@
 use claudewrapper::config::{
     build_auth_header, AuthType, Backend, Config, ConfigError, CredentialStatus, Defaults,
+    ProxyConfig,
 };
 
 /// Test that Config::default() produces the expected values per spec.
@@ -50,6 +51,7 @@ fn test_validation_passes_for_default() {
 fn test_validation_fails_empty_backends() {
     let config = Config {
         defaults: Defaults::default(),
+        proxy: ProxyConfig::default(),
         backends: vec![],
     };
 
@@ -78,6 +80,7 @@ fn test_validation_fails_missing_active_backend() {
             max_retries: 3,
             retry_backoff_base_ms: 100,
         },
+        proxy: ProxyConfig::default(),
         backends: vec![Backend::default()],
     };
 
@@ -265,6 +268,7 @@ fn test_validation_fails_unconfigured_active_backend() {
             max_retries: 3,
             retry_backoff_base_ms: 100,
         },
+        proxy: ProxyConfig::default(),
         backends: vec![Backend {
             name: "unconfigured".to_string(),
             display_name: "Unconfigured".to_string(),
@@ -304,6 +308,7 @@ fn test_configured_backends_filters_correctly() {
             max_retries: 3,
             retry_backoff_base_ms: 100,
         },
+        proxy: ProxyConfig::default(),
         backends: vec![
             Backend {
                 name: "configured".to_string(),

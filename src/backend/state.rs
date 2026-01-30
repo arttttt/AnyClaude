@@ -288,6 +288,7 @@ mod tests {
                 max_retries: 3,
                 retry_backoff_base_ms: 100,
             },
+            proxy: crate::config::ProxyConfig::default(),
             backends: vec![
                 Backend {
                     name: "backend1".to_string(),

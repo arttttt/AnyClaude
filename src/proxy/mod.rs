@@ -43,8 +43,16 @@ pub struct ProxyServer {
 }
 
 impl ProxyServer {
-    pub fn new(config: ConfigStore) -> Result<Self, crate::backend::BackendError> {
-        let addr = "127.0.0.1:8080".parse().expect("Invalid bind address");
+    pub fn new(
+        config: ConfigStore,
+        session_token: String,
+    ) -> Result<Self, crate::backend::BackendError> {
+        let addr = config
+            .get()
+            .proxy
+            .bind_addr
+            .parse()
+            .expect("Invalid bind address");
         let timeout_config = TimeoutConfig::from(&config.get().defaults);
         let pool_config = PoolConfig::from(&config.get().defaults);
         let backend_state = BackendState::from_config(config.get())?;
@@ -55,6 +63,7 @@ impl ProxyServer {
             pool_config,
             backend_state,
             observability,
+            session_token,
         );
         Ok(Self {
             addr,
