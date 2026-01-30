@@ -6,6 +6,7 @@ use reqwest::Client;
 use tokio::time::sleep;
 use crate::backend::BackendState;
 use crate::config::build_auth_header;
+use crate::metrics::{ObservedStream, ObservabilityHub, RequestSpan};
 use crate::proxy::error::ProxyError;
 use crate::proxy::pool::PoolConfig;
 use crate::proxy::timeout::TimeoutConfig;
@@ -36,24 +37,45 @@ impl UpstreamClient {
         &self,
         req: Request<Body>,
         backend_state: &BackendState,
+        backend_override: Option<String>,
+        span: RequestSpan,
+        observability: ObservabilityHub,
     ) -> Result<Response<Body>, ProxyError> {
         // Get the current active backend configuration at request time
         // This ensures the entire request uses the same backend, even if
         // a switch happens mid-request
-        let backend = backend_state
-            .get_active_backend_config()
-            .map_err(|e| ProxyError::BackendNotFound {
-                backend: e.to_string(),
-            })?;
+        let backend = match backend_override.as_deref() {
+            Some(backend_id) => backend_state
+                .get_backend_config(backend_id)
+                .map_err(|e| ProxyError::BackendNotFound {
+                    backend: e.to_string(),
+                }),
+            None => backend_state
+                .get_active_backend_config()
+                .map_err(|e| ProxyError::BackendNotFound {
+                    backend: e.to_string(),
+                }),
+        };
 
-        self.do_forward(req, backend).await
+        let backend = match backend {
+            Ok(backend) => backend,
+            Err(err) => {
+                observability.finish_error(span, Some(err.status_code().as_u16()));
+                return Err(err);
+            }
+        };
+
+        self.do_forward(req, backend, span, observability).await
     }
 
     async fn do_forward(
         &self,
         req: Request<Body>,
         backend: crate::config::Backend,
+        mut span: RequestSpan,
+        observability: ObservabilityHub,
     ) -> Result<Response<Body>, ProxyError> {
+        span.set_backend(backend.name.clone());
         let (parts, body) = req.into_parts();
         let method = parts.method;
         let uri = parts.uri;
@@ -65,18 +87,24 @@ impl UpstreamClient {
 
         // Validate backend is configured
         if !backend.is_configured() {
-            return Err(ProxyError::BackendNotConfigured {
+            let err = ProxyError::BackendNotConfigured {
                 backend: backend.name.clone(),
                 reason: format!("Environment variable {} not set", backend.auth_env_var),
-            });
+            };
+            observability.finish_error(span, Some(err.status_code().as_u16()));
+            return Err(err);
         }
 
         let upstream_uri = format!("{}{}", backend.base_url, path_and_query);
-        let body_bytes = body
-            .collect()
-            .await
-            .map_err(|e| ProxyError::InvalidRequest(format!("Failed to read request body: {}", e)))?
-            .to_bytes();
+        let body_bytes = match body.collect().await {
+            Ok(bytes) => bytes.to_bytes(),
+            Err(e) => {
+                let err = ProxyError::InvalidRequest(format!("Failed to read request body: {}", e));
+                observability.finish_error(span, Some(err.status_code().as_u16()));
+                return Err(err);
+            }
+        };
+        span.set_request_bytes(body_bytes.len());
         let auth_header = build_auth_header(&backend);
         let mut attempt = 0u32;
 
@@ -122,15 +150,19 @@ impl UpstreamClient {
                     }
 
                     if err.is_timeout() {
-                        return Err(ProxyError::RequestTimeout {
+                        let timeout_err = ProxyError::RequestTimeout {
                             duration: self.timeout_config.request.as_secs(),
-                        });
+                        };
+                        observability.finish_error(span, Some(timeout_err.status_code().as_u16()));
+                        return Err(timeout_err);
                     }
 
-                    return Err(ProxyError::ConnectionError {
+                    let conn_err = ProxyError::ConnectionError {
                         backend: backend.name.clone(),
                         source: err,
-                    });
+                    };
+                    observability.finish_error(span, Some(conn_err.status_code().as_u16()));
+                    return Err(conn_err);
                 }
             }
         };
@@ -143,6 +175,7 @@ impl UpstreamClient {
         let is_streaming = content_type.map_or(false, |ct| ct.contains("text/event-stream"));
 
         let status = upstream_resp.status();
+        span.set_status(status.as_u16());
         let mut response_builder = Response::builder().status(status);
 
         for (name, value) in upstream_resp.headers() {
@@ -151,12 +184,20 @@ impl UpstreamClient {
 
         if is_streaming {
             let stream = upstream_resp.bytes_stream();
-            Ok(response_builder.body(Body::from_stream(stream))?)
+            let observed = ObservedStream::new(stream, span, observability);
+            Ok(response_builder.body(Body::from_stream(observed))?)
         } else {
-            let body_bytes = upstream_resp
-                .bytes()
-                .await
-                .map_err(|e| ProxyError::Internal(format!("Failed to read response body: {}", e)))?;
+            span.mark_first_byte();
+            let body_bytes = match upstream_resp.bytes().await {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    let err = ProxyError::Internal(format!("Failed to read response body: {}", e));
+                    observability.finish_error(span, Some(err.status_code().as_u16()));
+                    return Err(err);
+                }
+            };
+            span.add_response_bytes(body_bytes.len());
+            observability.finish_request(span);
             Ok(response_builder.body(Body::from(body_bytes))?)
         }
     }

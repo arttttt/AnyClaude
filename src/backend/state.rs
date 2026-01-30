@@ -131,6 +131,20 @@ impl BackendState {
             })
     }
 
+    /// Get the configuration for a specific backend by name.
+    pub fn get_backend_config(&self, backend_id: &str) -> Result<Backend, BackendError> {
+        let state = self.inner.read().expect("backend state lock poisoned");
+        state
+            .config
+            .backends
+            .iter()
+            .find(|b| b.name == backend_id)
+            .cloned()
+            .ok_or_else(|| BackendError::BackendNotFound {
+                backend: backend_id.to_string(),
+            })
+    }
+
     /// Get the full current configuration.
     pub fn get_config(&self) -> Config {
         self.inner

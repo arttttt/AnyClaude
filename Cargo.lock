@@ -221,6 +221,7 @@ dependencies = [
  "axum",
  "crossterm",
  "dirs 5.0.1",
+ "futures-core",
  "http-body-util",
  "notify",
  "portable-pty",

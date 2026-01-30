@@ -10,6 +10,7 @@ use uuid::Uuid;
 use crate::backend::BackendState;
 use crate::config::ConfigStore;
 use crate::proxy::error::ErrorResponse;
+use crate::metrics::{BackendOverride, ObservabilityHub, RoutingDecision};
 use crate::proxy::health::HealthHandler;
 use crate::proxy::pool::PoolConfig;
 use crate::proxy::timeout::TimeoutConfig;
@@ -22,6 +23,7 @@ pub struct RouterEngine {
     #[allow(dead_code)]
     config: ConfigStore,
     backend_state: BackendState,
+    observability: ObservabilityHub,
 }
 
 impl RouterEngine {
@@ -30,12 +32,14 @@ impl RouterEngine {
         timeout_config: TimeoutConfig,
         pool_config: PoolConfig,
         backend_state: BackendState,
+        observability: ObservabilityHub,
     ) -> Self {
         Self {
             health: Arc::new(HealthHandler::new()),
             upstream: Arc::new(UpstreamClient::new(timeout_config, pool_config)),
             config,
             backend_state,
+            observability,
         }
     }
 }
@@ -69,7 +73,35 @@ async fn proxy_handler(
         "Incoming request"
     );
 
-    match state.upstream.forward(req, &state.backend_state).await {
+    let active_backend = state.backend_state.get_active_backend();
+    let mut start = state
+        .observability
+        .start_request(request_id.clone(), &req, &active_backend);
+
+    let backend_override = start
+        .backend_override
+        .as_ref()
+        .map(|override_backend| override_backend.backend.clone());
+
+    if let Some(BackendOverride { backend, reason }) = start.backend_override.take() {
+        start.span.set_backend(backend.clone());
+        start.span.record_mut().routing_decision = Some(RoutingDecision {
+            backend,
+            reason,
+        });
+    }
+
+    match state
+        .upstream
+        .forward(
+            req,
+            &state.backend_state,
+            backend_override,
+            start.span,
+            state.observability.clone(),
+        )
+        .await
+    {
         Ok(resp) => resp,
         Err(e) => {
             tracing::error!(

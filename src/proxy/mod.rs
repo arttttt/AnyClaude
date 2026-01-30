@@ -18,9 +18,10 @@ use tracing_subscriber::EnvFilter;
 
 use crate::backend::BackendState;
 use crate::config::ConfigStore;
+use crate::metrics::ObservabilityHub;
+use crate::proxy::pool::PoolConfig;
 use crate::proxy::router::{build_router, RouterEngine};
 use crate::proxy::shutdown::ShutdownManager;
-use crate::proxy::pool::PoolConfig;
 use crate::proxy::timeout::TimeoutConfig;
 
 pub fn init_tracing() {
@@ -47,7 +48,14 @@ impl ProxyServer {
         let timeout_config = TimeoutConfig::from(&config.get().defaults);
         let pool_config = PoolConfig::from(&config.get().defaults);
         let backend_state = BackendState::from_config(config.get())?;
-        let router = RouterEngine::new(config, timeout_config, pool_config, backend_state);
+        let observability = ObservabilityHub::new(1000);
+        let router = RouterEngine::new(
+            config,
+            timeout_config,
+            pool_config,
+            backend_state,
+            observability,
+        );
         Ok(Self {
             addr,
             router,
