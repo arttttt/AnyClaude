@@ -20,6 +20,18 @@ pub struct Defaults {
     /// Idle timeout for streaming responses in seconds (default: 60).
     #[serde(default = "default_idle_timeout")]
     pub idle_timeout_seconds: u32,
+    /// Pool idle timeout in seconds (default: 90).
+    #[serde(default = "default_pool_idle_timeout")]
+    pub pool_idle_timeout_seconds: u32,
+    /// Max idle connections per host (default: 8).
+    #[serde(default = "default_pool_max_idle_per_host")]
+    pub pool_max_idle_per_host: u32,
+    /// Max retry attempts for connection errors (default: 3).
+    #[serde(default = "default_max_retries")]
+    pub max_retries: u32,
+    /// Base backoff in milliseconds for retry (default: 100).
+    #[serde(default = "default_retry_backoff_base_ms")]
+    pub retry_backoff_base_ms: u64,
 }
 
 fn default_connect_timeout() -> u32 {
@@ -28,6 +40,22 @@ fn default_connect_timeout() -> u32 {
 
 fn default_idle_timeout() -> u32 {
     60
+}
+
+fn default_pool_idle_timeout() -> u32 {
+    90
+}
+
+fn default_pool_max_idle_per_host() -> u32 {
+    8
+}
+
+fn default_max_retries() -> u32 {
+    3
+}
+
+fn default_retry_backoff_base_ms() -> u64 {
+    100
 }
 
 /// Backend configuration for an API provider.
@@ -68,6 +96,10 @@ impl Default for Defaults {
             timeout_seconds: 30,
             connect_timeout_seconds: 5,
             idle_timeout_seconds: 60,
+            pool_idle_timeout_seconds: 90,
+            pool_max_idle_per_host: 8,
+            max_retries: 3,
+            retry_backoff_base_ms: 100,
         }
     }
 }

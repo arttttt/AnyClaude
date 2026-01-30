@@ -3,26 +3,32 @@ use axum::http::header::{CONTENT_TYPE, HOST};
 use axum::http::{Request, Response};
 use http_body_util::BodyExt;
 use reqwest::Client;
+use tokio::time::sleep;
 use crate::backend::BackendState;
 use crate::config::build_auth_header;
 use crate::proxy::error::ProxyError;
+use crate::proxy::pool::PoolConfig;
 use crate::proxy::timeout::TimeoutConfig;
 
 pub struct UpstreamClient {
     client: Client,
     timeout_config: TimeoutConfig,
+    pool_config: PoolConfig,
 }
 
 impl UpstreamClient {
-    pub fn new(timeout_config: TimeoutConfig) -> Self {
+    pub fn new(timeout_config: TimeoutConfig, pool_config: PoolConfig) -> Self {
         let client = Client::builder()
             .connect_timeout(timeout_config.connect)
+            .pool_idle_timeout(Some(pool_config.pool_idle_timeout))
+            .pool_max_idle_per_host(pool_config.pool_max_idle_per_host)
             .build()
             .expect("Failed to build upstream client");
 
         Self {
             client,
             timeout_config,
+            pool_config,
         }
     }
 
@@ -48,8 +54,10 @@ impl UpstreamClient {
         req: Request<Body>,
         backend: crate::config::Backend,
     ) -> Result<Response<Body>, ProxyError> {
-        let method = req.method().clone();
-        let uri = req.uri();
+        let (parts, body) = req.into_parts();
+        let method = parts.method;
+        let uri = parts.uri;
+        let headers = parts.headers;
         let path_and_query = uri
             .path_and_query()
             .map(|pq| pq.as_str())
@@ -64,42 +72,68 @@ impl UpstreamClient {
         }
 
         let upstream_uri = format!("{}{}", backend.base_url, path_and_query);
-        let mut builder = self.client.request(method, upstream_uri);
-
-        for (name, value) in req.headers() {
-            if name != HOST {
-                builder = builder.header(name, value);
-            }
-        }
-
-        if let Some((name, value)) = build_auth_header(&backend) {
-            builder = builder.header(&name, value);
-        }
-
-        let body_bytes = req
-            .into_body()
+        let body_bytes = body
             .collect()
             .await
             .map_err(|e| ProxyError::InvalidRequest(format!("Failed to read request body: {}", e)))?
             .to_bytes();
+        let auth_header = build_auth_header(&backend);
+        let mut attempt = 0u32;
 
-        let upstream_resp = builder
-            .timeout(self.timeout_config.request)
-            .body(body_bytes)
-            .send()
-            .await
-            .map_err(|e| {
-                if e.is_timeout() {
-                    ProxyError::RequestTimeout {
-                        duration: self.timeout_config.request.as_secs(),
-                    }
-                } else {
-                    ProxyError::ConnectionError {
-                        backend: backend.name.clone(),
-                        source: e,
-                    }
+        let upstream_resp = loop {
+            let mut builder = self.client.request(method.clone(), &upstream_uri);
+
+            for (name, value) in headers.iter() {
+                if name != HOST {
+                    builder = builder.header(name, value);
                 }
-            })?;
+            }
+
+            if let Some((name, value)) = auth_header.as_ref() {
+                builder = builder.header(name, value);
+            }
+
+            let send_result = builder
+                .timeout(self.timeout_config.request)
+                .body(body_bytes.clone())
+                .send()
+                .await;
+
+            match send_result {
+                Ok(response) => break response,
+                Err(err) => {
+                    let should_retry = err.is_connect() || err.is_timeout();
+                    if should_retry && attempt < self.pool_config.max_retries {
+                        let backoff = self
+                            .pool_config
+                            .retry_backoff_base
+                            .saturating_mul(1u32 << attempt);
+                        tracing::warn!(
+                            backend = %backend.name,
+                            attempt = attempt + 1,
+                            max_retries = self.pool_config.max_retries,
+                            backoff_ms = backoff.as_millis(),
+                            error = %err,
+                            "Upstream request failed, retrying"
+                        );
+                        sleep(backoff).await;
+                        attempt += 1;
+                        continue;
+                    }
+
+                    if err.is_timeout() {
+                        return Err(ProxyError::RequestTimeout {
+                            duration: self.timeout_config.request.as_secs(),
+                        });
+                    }
+
+                    return Err(ProxyError::ConnectionError {
+                        backend: backend.name.clone(),
+                        source: err,
+                    });
+                }
+            }
+        };
 
         let content_type = upstream_resp
             .headers()
@@ -130,6 +164,6 @@ impl UpstreamClient {
 
 impl Default for UpstreamClient {
     fn default() -> Self {
-        Self::new(TimeoutConfig::default())
+        Self::new(TimeoutConfig::default(), PoolConfig::default())
     }
 }

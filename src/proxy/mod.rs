@@ -1,5 +1,6 @@
 pub mod error;
 pub mod health;
+pub mod pool;
 pub mod router;
 pub mod shutdown;
 pub mod timeout;
@@ -19,6 +20,7 @@ use crate::backend::BackendState;
 use crate::config::ConfigStore;
 use crate::proxy::router::{build_router, RouterEngine};
 use crate::proxy::shutdown::ShutdownManager;
+use crate::proxy::pool::PoolConfig;
 use crate::proxy::timeout::TimeoutConfig;
 
 pub fn init_tracing() {
@@ -43,8 +45,9 @@ impl ProxyServer {
     pub fn new(config: ConfigStore) -> Result<Self, crate::backend::BackendError> {
         let addr = "127.0.0.1:8080".parse().expect("Invalid bind address");
         let timeout_config = TimeoutConfig::from(&config.get().defaults);
+        let pool_config = PoolConfig::from(&config.get().defaults);
         let backend_state = BackendState::from_config(config.get())?;
-        let router = RouterEngine::new(config, timeout_config, backend_state);
+        let router = RouterEngine::new(config, timeout_config, pool_config, backend_state);
         Ok(Self {
             addr,
             router,

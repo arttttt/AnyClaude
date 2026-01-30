@@ -75,6 +75,10 @@ mod tests {
             timeout_seconds: 45,
             connect_timeout_seconds: 10,
             idle_timeout_seconds: 90,
+            pool_idle_timeout_seconds: 120,
+            pool_max_idle_per_host: 4,
+            max_retries: 2,
+            retry_backoff_base_ms: 150,
         };
 
         let config = TimeoutConfig::from(&defaults);
