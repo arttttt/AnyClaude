@@ -1,7 +1,8 @@
 use axum::body::Body;
 use axum::extract::{RawQuery, State};
-use axum::http::Request;
-use axum::response::Response;
+use axum::http::{header, Request, StatusCode};
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
 use std::sync::Arc;
@@ -24,6 +25,7 @@ pub struct RouterEngine {
     config: ConfigStore,
     backend_state: BackendState,
     observability: ObservabilityHub,
+    session_token: String,
 }
 
 impl RouterEngine {
@@ -33,6 +35,7 @@ impl RouterEngine {
         pool_config: PoolConfig,
         backend_state: BackendState,
         observability: ObservabilityHub,
+        session_token: String,
     ) -> Self {
         Self {
             health: Arc::new(HealthHandler::new()),
@@ -40,15 +43,31 @@ impl RouterEngine {
             config,
             backend_state,
             observability,
+            session_token,
         }
+    }
+
+    fn is_authorized(&self, req: &Request<Body>) -> bool {
+        let Some(value) = req.headers().get(header::AUTHORIZATION) else {
+            return false;
+        };
+        let Ok(value) = value.to_str() else {
+            return false;
+        };
+        let Some(token) = value.strip_prefix("Bearer ") else {
+            return false;
+        };
+        token == self.session_token
     }
 }
 
 pub fn build_router(engine: RouterEngine) -> Router {
+    let auth_engine = engine.clone();
     Router::new()
         .route("/health", get(health_handler))
         .fallback(proxy_handler)
         .with_state(engine)
+        .layer(middleware::from_fn_with_state(auth_engine, auth_middleware))
 }
 
 async fn health_handler(
@@ -114,4 +133,16 @@ async fn proxy_handler(
             ErrorResponse::from_error(&e, &request_id)
         }
     }
+}
+
+async fn auth_middleware(
+    State(state): State<RouterEngine>,
+    req: Request<Body>,
+    next: Next,
+) -> Response {
+    if !state.is_authorized(&req) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+
+    next.run(req).await
 }

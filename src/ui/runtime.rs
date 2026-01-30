@@ -9,6 +9,7 @@ use crate::ui::terminal_guard::setup_terminal;
 use ratatui::layout::Rect;
 use std::io;
 use std::time::Duration;
+use uuid::Uuid;
 
 /// Default debounce delay for config file watching (milliseconds).
 const CONFIG_DEBOUNCE_MS: u64 = 200;
@@ -21,6 +22,8 @@ pub fn run() -> io::Result<()> {
     let config = Config::load().unwrap_or_default();
     let config_path = Config::config_path();
     let config_store = ConfigStore::new(config, config_path);
+    let proxy_base_url = config_store.get().proxy.base_url.clone();
+    let session_token = Uuid::new_v4().to_string();
 
     let events = EventHandler::new(tick_rate);
 
@@ -32,7 +35,11 @@ pub fn run() -> io::Result<()> {
 
     let mut app = App::new(tick_rate, config_store);
     let (command, args) = parse_command();
-    let mut pty_session = PtySession::spawn(command, args, events.sender())
+    let env = vec![
+        ("ANTHROPIC_BASE_URL".to_string(), proxy_base_url),
+        ("ANTHROPIC_AUTH_TOKEN".to_string(), session_token.clone()),
+    ];
+    let mut pty_session = PtySession::spawn(command, args, env, events.sender())
         .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
     app.attach_pty(pty_session.handle());
     if let Ok((cols, rows)) = crossterm::terminal::size() {

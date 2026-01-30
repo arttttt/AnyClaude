@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub defaults: Defaults,
+    #[serde(default)]
+    pub proxy: ProxyConfig,
     pub backends: Vec<Backend>,
 }
 
@@ -34,6 +36,17 @@ pub struct Defaults {
     pub retry_backoff_base_ms: u64,
 }
 
+/// Proxy configuration for local routing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProxyConfig {
+    /// Bind address for the local proxy server (host:port).
+    #[serde(default = "default_proxy_bind_addr")]
+    pub bind_addr: String,
+    /// Base URL exposed to Claude Code (scheme + host + port).
+    #[serde(default = "default_proxy_base_url")]
+    pub base_url: String,
+}
+
 fn default_connect_timeout() -> u32 {
     5
 }
@@ -56,6 +69,14 @@ fn default_max_retries() -> u32 {
 
 fn default_retry_backoff_base_ms() -> u64 {
     100
+}
+
+fn default_proxy_bind_addr() -> String {
+    "127.0.0.1:8080".to_string()
+}
+
+fn default_proxy_base_url() -> String {
+    "http://127.0.0.1:8080".to_string()
 }
 
 /// Backend configuration for an API provider.
@@ -108,7 +129,17 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             defaults: Defaults::default(),
+            proxy: ProxyConfig::default(),
             backends: vec![Backend::default()],
+        }
+    }
+}
+
+impl Default for ProxyConfig {
+    fn default() -> Self {
+        Self {
+            bind_addr: default_proxy_bind_addr(),
+            base_url: default_proxy_base_url(),
         }
     }
 }
