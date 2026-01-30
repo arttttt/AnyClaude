@@ -1,9 +1,12 @@
 use crate::config::ConfigStore;
+use crate::ipc::{BackendInfo, ProxyStatus};
+use crate::metrics::MetricsSnapshot;
 use crate::pty::PtyHandle;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use termwiz::surface::Surface;
+use tokio::sync::mpsc;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PopupKind {
@@ -17,6 +20,17 @@ pub enum Focus {
     Popup(PopupKind),
 }
 
+#[derive(Debug)]
+pub enum UiCommand {
+    SwitchBackend { backend_id: String },
+    RefreshStatus,
+    RefreshMetrics { backend_id: Option<String> },
+    RefreshBackends,
+    ReloadConfig,
+}
+
+pub type UiCommandSender = mpsc::Sender<UiCommand>;
+
 pub struct App {
     should_quit: bool,
     tick_rate: Duration,
@@ -26,10 +40,19 @@ pub struct App {
     size: Option<(u16, u16)>,
     pty: Option<PtyHandle>,
     config: ConfigStore,
+    ipc_sender: Option<UiCommandSender>,
+    proxy_status: Option<ProxyStatus>,
+    metrics: Option<MetricsSnapshot>,
+    backends: Vec<BackendInfo>,
+    last_ipc_error: Option<String>,
+    last_status_refresh: Instant,
+    last_metrics_refresh: Instant,
+    last_backends_refresh: Instant,
 }
 
 impl App {
     pub fn new(tick_rate: Duration, config: ConfigStore) -> Self {
+        let now = Instant::now();
         Self {
             should_quit: false,
             tick_rate,
@@ -39,6 +62,14 @@ impl App {
             size: None,
             pty: None,
             config,
+            ipc_sender: None,
+            proxy_status: None,
+            metrics: None,
+            backends: Vec::new(),
+            last_ipc_error: None,
+            last_status_refresh: now,
+            last_metrics_refresh: now,
+            last_backends_refresh: now,
         }
     }
 
@@ -65,11 +96,12 @@ impl App {
         self.focus == Focus::Terminal
     }
 
-    pub fn toggle_popup(&mut self, kind: PopupKind) {
+    pub fn toggle_popup(&mut self, kind: PopupKind) -> bool {
         self.focus = match self.focus {
             Focus::Popup(active) if active == kind => Focus::Terminal,
             _ => Focus::Popup(kind),
         };
+        matches!(self.focus, Focus::Popup(_))
     }
 
     pub fn close_popup(&mut self) {
@@ -120,6 +152,95 @@ impl App {
         self.status_message.as_deref()
     }
 
+    pub fn set_ipc_sender(&mut self, sender: UiCommandSender) {
+        self.ipc_sender = Some(sender);
+    }
+
+    pub fn proxy_status(&self) -> Option<&ProxyStatus> {
+        self.proxy_status.as_ref()
+    }
+
+    pub fn metrics(&self) -> Option<&MetricsSnapshot> {
+        self.metrics.as_ref()
+    }
+
+    pub fn backends(&self) -> &[BackendInfo] {
+        &self.backends
+    }
+
+    pub fn last_ipc_error(&self) -> Option<&str> {
+        self.last_ipc_error.as_deref()
+    }
+
+    pub fn update_status(&mut self, status: ProxyStatus) {
+        self.proxy_status = Some(status);
+    }
+
+    pub fn update_metrics(&mut self, metrics: MetricsSnapshot) {
+        self.metrics = Some(metrics);
+    }
+
+    pub fn update_backends(&mut self, backends: Vec<BackendInfo>) {
+        self.backends = backends;
+    }
+
+    pub fn set_ipc_error(&mut self, message: String) {
+        self.last_ipc_error = Some(message);
+    }
+
+    pub fn clear_ipc_error(&mut self) {
+        self.last_ipc_error = None;
+    }
+
+    pub fn request_status_refresh(&mut self) {
+        self.send_command(UiCommand::RefreshStatus);
+    }
+
+    pub fn request_metrics_refresh(&mut self, backend_id: Option<String>) {
+        self.send_command(UiCommand::RefreshMetrics { backend_id });
+    }
+
+    pub fn request_backends_refresh(&mut self) {
+        self.send_command(UiCommand::RefreshBackends);
+    }
+
+    pub fn request_config_reload(&mut self) {
+        self.send_command(UiCommand::ReloadConfig);
+    }
+
+    pub fn request_switch_backend_by_index(&mut self, index: usize) -> bool {
+        let Some(backend) = self.backends.get(index.saturating_sub(1)) else {
+            return false;
+        };
+        self.send_command(UiCommand::SwitchBackend {
+            backend_id: backend.id.clone(),
+        })
+    }
+
+    pub fn should_refresh_status(&mut self, interval: Duration) -> bool {
+        if self.last_status_refresh.elapsed() >= interval {
+            self.last_status_refresh = Instant::now();
+            return true;
+        }
+        false
+    }
+
+    pub fn should_refresh_metrics(&mut self, interval: Duration) -> bool {
+        if self.last_metrics_refresh.elapsed() >= interval {
+            self.last_metrics_refresh = Instant::now();
+            return true;
+        }
+        false
+    }
+
+    pub fn should_refresh_backends(&mut self, interval: Duration) -> bool {
+        if self.last_backends_refresh.elapsed() >= interval {
+            self.last_backends_refresh = Instant::now();
+            return true;
+        }
+        false
+    }
+
     /// Called when config file has been reloaded.
     ///
     /// The new config is already available via `self.config.get()`.
@@ -134,6 +255,24 @@ impl App {
     #[allow(dead_code)]
     pub fn config(&self) -> &ConfigStore {
         &self.config
+    }
+
+    fn send_command(&mut self, command: UiCommand) -> bool {
+        let Some(sender) = &self.ipc_sender else {
+            self.status_message = Some("IPC not initialized".to_string());
+            return false;
+        };
+
+        match sender.try_send(command) {
+            Ok(()) => {
+                self.clear_ipc_error();
+                true
+            }
+            Err(err) => {
+                self.set_ipc_error(format!("IPC send failed: {}", err));
+                false
+            }
+        }
     }
 }
 

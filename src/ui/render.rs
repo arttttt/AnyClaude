@@ -3,6 +3,9 @@ use crate::ui::footer::Footer;
 use crate::ui::header::Header;
 use crate::ui::layout::{centered_rect, layout_regions};
 use crate::ui::terminal::TerminalBody;
+use crate::ui::theme::{HEADER_TEXT, STATUS_ERROR};
+use ratatui::style::Style;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 use std::sync::Arc;
@@ -13,7 +16,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
     let (header, body, footer) = layout_regions(area);
 
     let header_widget = Header::new();
-    frame.render_widget(header_widget.widget(), header);
+    frame.render_widget(header_widget.widget(app.proxy_status()), header);
     frame.render_widget(Clear, body);
     if let Some(screen) = app.screen() {
         frame.render_widget(TerminalBody::new(Arc::clone(&screen)), body);
@@ -41,14 +44,92 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
         let popup = Block::default().title(title).borders(Borders::ALL);
         match kind {
             PopupKind::Status => {
-                let message = app
-                    .status_message()
-                    .unwrap_or("Status view not implemented.");
-                let widget = Paragraph::new(message).block(popup);
+                let mut lines = Vec::new();
+                if let Some(status) = app.proxy_status() {
+                    lines.push(Line::from(format!(
+                        "Active backend: {}",
+                        status.active_backend
+                    )));
+                    lines.push(Line::from(format!("Uptime: {}s", status.uptime_seconds)));
+                    lines.push(Line::from(format!(
+                        "Total requests: {}",
+                        status.total_requests
+                    )));
+                    lines.push(Line::from(format!("Healthy: {}", status.healthy)));
+                } else {
+                    lines.push(Line::from("Status pending..."));
+                }
+
+                if let Some(metrics) = app.metrics() {
+                    if let Some(active) = app.proxy_status().map(|s| s.active_backend.as_str()) {
+                        if let Some(backend) = metrics.per_backend.get(active) {
+                            lines.push(Line::from(""));
+                            lines.push(Line::from(format!(
+                                "Latency p50/p95/p99: {:?}/{:?}/{:?} ms",
+                                backend.p50_latency_ms,
+                                backend.p95_latency_ms,
+                                backend.p99_latency_ms
+                            )));
+                            lines.push(Line::from(format!(
+                                "Avg latency: {:.1} ms",
+                                backend.avg_latency_ms
+                            )));
+                            lines.push(Line::from(format!(
+                                "Avg TTFB: {:.1} ms",
+                                backend.avg_ttfb_ms
+                            )));
+                            lines.push(Line::from(format!("Timeouts: {}", backend.timeouts)));
+                        }
+                    }
+                }
+
+                if let Some(error) = app.last_ipc_error() {
+                    lines.push(Line::from(""));
+                    lines.push(Line::from(format!("IPC error: {error}")));
+                }
+
+                let widget = Paragraph::new(lines).block(popup);
                 frame.render_widget(widget, area);
             }
             PopupKind::BackendSwitch => {
-                frame.render_widget(popup, area);
+                let mut lines = Vec::new();
+                if app.backends().is_empty() {
+                    lines.push(Line::from("No backends available."));
+                } else {
+                    for (idx, backend) in app.backends().iter().enumerate() {
+                        let marker = if backend.is_active { "●" } else { "○" };
+                        let mut spans = Vec::new();
+                        spans.push(Span::styled(
+                            format!("{:>2}. ", idx + 1),
+                            Style::default().fg(HEADER_TEXT),
+                        ));
+                        spans.push(Span::styled(marker, Style::default().fg(HEADER_TEXT)));
+                        spans.push(Span::raw(" "));
+                        spans.push(Span::styled(
+                            &backend.display_name,
+                            Style::default().fg(HEADER_TEXT),
+                        ));
+                        if !backend.is_configured {
+                            spans.push(Span::raw(" "));
+                            spans.push(Span::styled(
+                                "(missing credentials)",
+                                Style::default().fg(STATUS_ERROR),
+                            ));
+                        }
+                        let line = Line::from(spans);
+                        lines.push(line);
+                    }
+                    lines.push(Line::from(""));
+                    lines.push(Line::from("Press a number to switch."));
+                }
+
+                if let Some(error) = app.last_ipc_error() {
+                    lines.push(Line::from(""));
+                    lines.push(Line::from(format!("IPC error: {error}")));
+                }
+
+                let widget = Paragraph::new(lines).block(popup);
+                frame.render_widget(widget, area);
             }
         }
     }

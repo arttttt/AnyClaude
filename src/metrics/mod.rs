@@ -1,3 +1,5 @@
+pub mod request_parser;
+
 use axum::body::Body;
 use axum::http::Request;
 use futures_core::Stream;
@@ -8,6 +10,8 @@ use std::task::{Context, Poll};
 use std::time::{Duration, Instant, SystemTime};
 
 use axum::body::Bytes;
+
+pub use request_parser::{RequestAnalysis, RequestParser};
 
 #[derive(Debug, Clone)]
 pub struct RequestRecord {
@@ -25,11 +29,6 @@ pub struct RequestRecord {
     pub request_analysis: Option<RequestAnalysis>,
     pub response_analysis: Option<ResponseAnalysis>,
     pub routing_decision: Option<RoutingDecision>,
-}
-
-#[derive(Debug, Clone)]
-pub struct RequestAnalysis {
-    pub summary: String,
 }
 
 #[derive(Debug, Clone)]

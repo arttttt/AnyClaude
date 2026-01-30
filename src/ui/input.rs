@@ -17,22 +17,47 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
             return;
         }
         if is_ctrl_char(key, 'b') {
-            app.toggle_popup(PopupKind::BackendSwitch);
+            let opened = app.toggle_popup(PopupKind::BackendSwitch);
+            if opened {
+                app.request_backends_refresh();
+            }
             return;
         }
         if is_ctrl_char(key, 's') {
-            app.toggle_popup(PopupKind::Status);
+            let opened = app.toggle_popup(PopupKind::Status);
+            if opened {
+                app.request_status_refresh();
+                app.request_metrics_refresh(None);
+            }
             return;
+        }
+        if matches!(app.popup_kind(), Some(PopupKind::BackendSwitch)) {
+            if let KeyCode::Char(ch) = key.code {
+                if ch.is_ascii_digit() {
+                    let index = ch.to_digit(10).unwrap_or(0) as usize;
+                    if index > 0 && app.request_switch_backend_by_index(index) {
+                        app.close_popup();
+                    }
+                    return;
+                }
+            }
         }
         return;
     }
 
     if is_ctrl_char(key, 'b') {
-        app.toggle_popup(PopupKind::BackendSwitch);
+        let opened = app.toggle_popup(PopupKind::BackendSwitch);
+        if opened {
+            app.request_backends_refresh();
+        }
         return;
     }
     if is_ctrl_char(key, 's') {
-        app.toggle_popup(PopupKind::Status);
+        let opened = app.toggle_popup(PopupKind::Status);
+        if opened {
+            app.request_status_refresh();
+            app.request_metrics_refresh(None);
+        }
         return;
     }
 

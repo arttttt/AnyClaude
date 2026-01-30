@@ -2,11 +2,13 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::signal;
+use tokio::sync::Notify;
 use tracing;
 
 pub struct ShutdownManager {
     shutdown: Arc<AtomicBool>,
     active_connections: Arc<AtomicUsize>,
+    notify: Arc<Notify>,
 }
 
 impl ShutdownManager {
@@ -14,27 +16,41 @@ impl ShutdownManager {
         Self {
             shutdown: Arc::new(AtomicBool::new(false)),
             active_connections: Arc::new(AtomicUsize::new(0)),
+            notify: Arc::new(Notify::new()),
         }
     }
 
-    pub async fn wait_for_signal(&self) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn wait_for_shutdown(&self) -> Result<(), Box<dyn std::error::Error>> {
+        if self.is_shutting_down() {
+            return Ok(());
+        }
+
         #[cfg(unix)]
         {
             let mut sigterm = signal::unix::signal(signal::unix::SignalKind::terminate())?;
             tokio::select! {
                 _ = signal::ctrl_c() => {},
                 _ = sigterm.recv() => {},
+                _ = self.notify.notified() => {},
             }
         }
 
         #[cfg(not(unix))]
         {
-            signal::ctrl_c().await?;
+            tokio::select! {
+                _ = signal::ctrl_c() => {},
+                _ = self.notify.notified() => {},
+            }
         }
 
         self.shutdown.store(true, Ordering::SeqCst);
         tracing::info!("Shutting down gracefully...");
         Ok(())
+    }
+
+    pub fn signal_shutdown(&self) {
+        self.shutdown.store(true, Ordering::SeqCst);
+        self.notify.notify_waiters();
     }
 
     pub fn is_shutting_down(&self) -> bool {

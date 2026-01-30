@@ -40,6 +40,8 @@ pub struct ProxyServer {
     pub addr: SocketAddr,
     router: RouterEngine,
     shutdown: Arc<ShutdownManager>,
+    backend_state: BackendState,
+    observability: ObservabilityHub,
 }
 
 impl ProxyServer {
@@ -61,15 +63,35 @@ impl ProxyServer {
             config,
             timeout_config,
             pool_config,
-            backend_state,
-            observability,
+            backend_state.clone(),
+            observability.clone(),
             session_token,
         );
         Ok(Self {
             addr,
             router,
             shutdown: Arc::new(ShutdownManager::new()),
+            backend_state,
+            observability,
         })
+    }
+
+    pub fn backend_state(&self) -> BackendState {
+        self.backend_state.clone()
+    }
+
+    pub fn observability(&self) -> ObservabilityHub {
+        self.observability.clone()
+    }
+
+    pub fn shutdown_handle(&self) -> Arc<ShutdownManager> {
+        self.shutdown.clone()
+    }
+
+    pub fn handle(&self) -> ProxyHandle {
+        ProxyHandle {
+            shutdown: self.shutdown.clone(),
+        }
     }
 
     pub async fn run(&self) -> Result<(), Box<dyn std::error::Error>> {
@@ -84,7 +106,7 @@ impl ProxyServer {
         let shutdown = self.shutdown.clone();
         axum::serve(listener, make_service)
             .with_graceful_shutdown(async move {
-                let _ = shutdown.wait_for_signal().await;
+                let _ = shutdown.wait_for_shutdown().await;
             })
             .into_future()
             .await?;
@@ -93,6 +115,17 @@ impl ProxyServer {
         tracing::info!("Shutting down gracefully");
 
         Ok(())
+    }
+}
+
+#[derive(Clone)]
+pub struct ProxyHandle {
+    shutdown: Arc<ShutdownManager>,
+}
+
+impl ProxyHandle {
+    pub fn shutdown(&self) {
+        self.shutdown.signal_shutdown();
     }
 }
 

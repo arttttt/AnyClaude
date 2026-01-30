@@ -3,6 +3,9 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::ipc::{BackendInfo, ProxyStatus};
+use crate::metrics::MetricsSnapshot;
+
 pub enum AppEvent {
     Input(KeyEvent),
     Tick,
@@ -10,6 +13,10 @@ pub enum AppEvent {
     PtyOutput,
     /// Config file was successfully reloaded
     ConfigReload,
+    IpcStatus(ProxyStatus),
+    IpcMetrics(MetricsSnapshot),
+    IpcBackends(Vec<BackendInfo>),
+    IpcError(String),
 }
 
 pub struct EventHandler {
