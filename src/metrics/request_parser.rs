@@ -19,6 +19,7 @@ pub struct RequestAnalysis {
 }
 
 pub struct RequestParser {
+    #[allow(dead_code)]
     enabled: bool,
 }
 

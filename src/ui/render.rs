@@ -40,50 +40,115 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
         let (title, lines) = match kind {
             PopupKind::Status => {
                 let mut lines = Vec::new();
-                if let Some(status) = app.proxy_status() {
-                    lines.push(Line::from(format!(
-                        "Active backend: {}",
-                        status.active_backend
-                    )));
-                    lines.push(Line::from(format!("Uptime: {}s", status.uptime_seconds)));
-                    lines.push(Line::from(format!(
-                        "Total requests: {}",
-                        status.total_requests
-                    )));
-                    lines.push(Line::from(format!("Healthy: {}", status.healthy)));
+
+                // Find active backend info
+                let active_backend = app
+                    .backends()
+                    .iter()
+                    .find(|b| b.is_active);
+
+                if let Some(backend) = active_backend {
+                    // Provider
+                    lines.push(Line::from(vec![
+                        Span::styled("  Provider:  ", Style::default().fg(HEADER_TEXT)),
+                        Span::styled(&backend.display_name, Style::default().fg(HEADER_TEXT)),
+                    ]));
+
+                    // Model
+                    let model = backend.model_hint.as_deref().unwrap_or("unknown");
+                    lines.push(Line::from(vec![
+                        Span::styled("  Model:     ", Style::default().fg(HEADER_TEXT)),
+                        Span::styled(model, Style::default().fg(HEADER_TEXT)),
+                    ]));
+
+                    // URL (truncate if too long)
+                    let url = if backend.base_url.len() > 40 {
+                        format!("{}...", &backend.base_url[..37])
+                    } else {
+                        backend.base_url.clone()
+                    };
+                    lines.push(Line::from(vec![
+                        Span::styled("  URL:       ", Style::default().fg(HEADER_TEXT)),
+                        Span::styled(url, Style::default().fg(HEADER_TEXT)),
+                    ]));
+
+                    // Status
+                    let (status_text, status_color) = if app.proxy_status().is_some_and(|s| s.healthy) {
+                        ("Connected", STATUS_OK)
+                    } else {
+                        ("Error", STATUS_ERROR)
+                    };
+                    lines.push(Line::from(vec![
+                        Span::styled("  Status:    ", Style::default().fg(HEADER_TEXT)),
+                        Span::styled(status_text, Style::default().fg(status_color)),
+                        Span::styled("   ●", Style::default().fg(status_color)),
+                    ]));
+
+                    // Latency - get from most recent request for this backend
+                    let latency_str = if let Some(metrics) = app.metrics() {
+                        metrics
+                            .recent
+                            .iter()
+                            .rev()
+                            .find(|r| r.backend == backend.id)
+                            .and_then(|r| r.latency_ms)
+                            .map(|ms| format!("{} ms", ms))
+                            .unwrap_or_else(|| "—".to_string())
+                    } else {
+                        "—".to_string()
+                    };
+                    lines.push(Line::from(vec![
+                        Span::styled("  Latency:   ", Style::default().fg(HEADER_TEXT)),
+                        Span::styled(latency_str, Style::default().fg(HEADER_TEXT)),
+                    ]));
+
+                    // Tokens - estimated from most recent request
+                    let tokens_str = if let Some(metrics) = app.metrics() {
+                        metrics
+                            .recent
+                            .iter()
+                            .rev()
+                            .find(|r| r.backend == backend.id)
+                            .map(|r| {
+                                let input = r
+                                    .request_analysis
+                                    .as_ref()
+                                    .and_then(|a| a.estimated_input_tokens)
+                                    .map(|t| format!("{}", t))
+                                    .unwrap_or_else(|| "—".to_string());
+                                // Estimate output tokens from response bytes (rough: ~4 chars per token)
+                                let output = if r.response_bytes > 0 {
+                                    format!("{}", r.response_bytes / 4)
+                                } else {
+                                    "—".to_string()
+                                };
+                                format!("{} in / {} out", input, output)
+                            })
+                            .unwrap_or_else(|| "— in / — out".to_string())
+                    } else {
+                        "— in / — out".to_string()
+                    };
+                    lines.push(Line::from(vec![
+                        Span::styled("  Tokens:    ", Style::default().fg(HEADER_TEXT)),
+                        Span::styled(tokens_str, Style::default().fg(HEADER_TEXT)),
+                    ]));
                 } else {
-                    lines.push(Line::from("Status pending..."));
+                    lines.push(Line::from("  No backend configured"));
                 }
 
-                if let Some(metrics) = app.metrics() {
-                    if let Some(active) = app.proxy_status().map(|s| s.active_backend.as_str()) {
-                        if let Some(backend) = metrics.per_backend.get(active) {
-                            lines.push(Line::from(""));
-                            lines.push(Line::from(format!(
-                                "Latency p50/p95/p99: {:?}/{:?}/{:?} ms",
-                                backend.p50_latency_ms,
-                                backend.p95_latency_ms,
-                                backend.p99_latency_ms
-                            )));
-                            lines.push(Line::from(format!(
-                                "Avg latency: {:.1} ms",
-                                backend.avg_latency_ms
-                            )));
-                            lines.push(Line::from(format!(
-                                "Avg TTFB: {:.1} ms",
-                                backend.avg_ttfb_ms
-                            )));
-                            lines.push(Line::from(format!("Timeouts: {}", backend.timeouts)));
-                        }
-                    }
-                }
+                lines.push(Line::from(""));
+                lines.push(Line::from(vec![
+                    Span::styled("  Esc/Ctrl+S: Close", Style::default().fg(HEADER_TEXT)),
+                ]));
 
                 if let Some(error) = app.last_ipc_error() {
                     lines.push(Line::from(""));
-                    lines.push(Line::from(format!("IPC error: {error}")));
+                    lines.push(Line::from(vec![
+                        Span::styled(format!("  IPC error: {error}"), Style::default().fg(STATUS_ERROR)),
+                    ]));
                 }
 
-                ("Status", lines)
+                ("Network Diagnostics", lines)
             }
             PopupKind::BackendSwitch => {
                 let mut lines = Vec::new();

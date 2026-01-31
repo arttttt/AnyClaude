@@ -41,6 +41,7 @@ pub struct BackendInfo {
     pub is_active: bool,
     pub is_configured: bool,
     pub model_hint: Option<String>,
+    pub base_url: String,
 }
 
 pub enum IpcCommand {
@@ -200,6 +201,7 @@ impl IpcServer {
                             is_active: backend.name == active_backend,
                             is_configured: backend.is_configured(),
                             model_hint,
+                            base_url: backend.base_url.clone(),
                         });
                     }
                     if respond_to.send(backends).is_err() {
