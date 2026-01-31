@@ -6,19 +6,29 @@ use reqwest::Client;
 use tokio::time::sleep;
 use crate::backend::BackendState;
 use crate::config::build_auth_header;
+use crate::config::ConfigStore;
 use crate::metrics::{ObservedStream, ObservabilityHub, RequestSpan};
 use crate::proxy::error::ProxyError;
 use crate::proxy::pool::PoolConfig;
+use crate::proxy::thinking::ThinkingTracker;
 use crate::proxy::timeout::TimeoutConfig;
+use std::sync::{Arc, RwLock};
 
 pub struct UpstreamClient {
     client: Client,
     timeout_config: TimeoutConfig,
     pool_config: PoolConfig,
+    config: ConfigStore,
+    thinking_tracker: Arc<RwLock<ThinkingTracker>>,
 }
 
 impl UpstreamClient {
-    pub fn new(timeout_config: TimeoutConfig, pool_config: PoolConfig) -> Self {
+    pub fn new(
+        timeout_config: TimeoutConfig,
+        pool_config: PoolConfig,
+        config: ConfigStore,
+        thinking_tracker: Arc<RwLock<ThinkingTracker>>,
+    ) -> Self {
         let client = Client::builder()
             .connect_timeout(timeout_config.connect)
             .pool_idle_timeout(Some(pool_config.pool_idle_timeout))
@@ -30,6 +40,8 @@ impl UpstreamClient {
             client,
             timeout_config,
             pool_config,
+            config,
+            thinking_tracker,
         }
     }
 
@@ -104,6 +116,33 @@ impl UpstreamClient {
                 return Err(err);
             }
         };
+        let mut body_bytes = body_bytes.to_vec();
+        let request_content_type = headers
+            .get(CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+
+        if request_content_type.contains("application/json") {
+            let mut tracker = self
+                .thinking_tracker
+                .write()
+                .expect("thinking tracker lock poisoned");
+            tracker.set_mode(self.config.get().thinking.mode);
+            let output = tracker.transform_request(&backend.name, &body_bytes);
+            if output.result.changed {
+                if let Some(updated) = output.body {
+                    body_bytes = updated;
+                }
+                tracing::info!(
+                    backend = %backend.name,
+                    drop_count = output.result.drop_count,
+                    convert_count = output.result.convert_count,
+                    tag_count = output.result.tag_count,
+                    "Applied thinking compatibility transforms"
+                );
+            }
+        }
+
         span.set_request_bytes(body_bytes.len());
         let auth_header = build_auth_header(&backend);
         let mut attempt = 0u32;
@@ -206,6 +245,13 @@ impl UpstreamClient {
 
 impl Default for UpstreamClient {
     fn default() -> Self {
-        Self::new(TimeoutConfig::default(), PoolConfig::default())
+        let config = ConfigStore::new(
+            crate::config::Config::default(),
+            crate::config::Config::config_path(),
+        );
+        let tracker = Arc::new(RwLock::new(ThinkingTracker::new(
+            crate::config::ThinkingMode::DropSignature,
+        )));
+        Self::new(TimeoutConfig::default(), PoolConfig::default(), config, tracker)
     }
 }

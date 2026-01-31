@@ -289,6 +289,7 @@ mod tests {
                 retry_backoff_base_ms: 100,
             },
             proxy: crate::config::ProxyConfig::default(),
+            thinking: crate::config::ThinkingConfig::default(),
             backends: vec![
                 Backend {
                     name: "backend1".to_string(),

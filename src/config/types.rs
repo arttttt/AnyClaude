@@ -6,6 +6,8 @@ pub struct Config {
     pub defaults: Defaults,
     #[serde(default)]
     pub proxy: ProxyConfig,
+    #[serde(default)]
+    pub thinking: ThinkingConfig,
     pub backends: Vec<Backend>,
 }
 
@@ -45,6 +47,22 @@ pub struct ProxyConfig {
     /// Base URL exposed to Claude Code (scheme + host + port).
     #[serde(default = "default_proxy_base_url")]
     pub base_url: String,
+}
+
+/// Thinking block compatibility settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThinkingConfig {
+    #[serde(default)]
+    pub mode: ThinkingMode,
+}
+
+/// Handling mode for thinking blocks when switching backends.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ThinkingMode {
+    DropSignature,
+    ConvertToText,
+    ConvertToTags,
 }
 
 fn default_connect_timeout() -> u32 {
@@ -131,6 +149,7 @@ impl Default for Config {
         Self {
             defaults: Defaults::default(),
             proxy: ProxyConfig::default(),
+            thinking: ThinkingConfig::default(),
             backends: vec![Backend::default()],
         }
     }
@@ -142,5 +161,19 @@ impl Default for ProxyConfig {
             bind_addr: default_proxy_bind_addr(),
             base_url: default_proxy_base_url(),
         }
+    }
+}
+
+impl Default for ThinkingConfig {
+    fn default() -> Self {
+        Self {
+            mode: ThinkingMode::DropSignature,
+        }
+    }
+}
+
+impl Default for ThinkingMode {
+    fn default() -> Self {
+        ThinkingMode::DropSignature
     }
 }
