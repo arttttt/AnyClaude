@@ -29,11 +29,11 @@ impl Header {
             Span::styled("  ", text_style),
             Span::styled(icon, status_style),
             Span::styled("  ", text_style),
-            Span::styled(format!("Backend {backend}"), text_style),
-            Span::styled("  │  ", separator_style),
-            Span::styled(format!("Reqs {total_requests}"), text_style),
-            Span::styled("  │  ", separator_style),
-            Span::styled(format!("Uptime {uptime}s"), text_style),
+            Span::styled(format!("Backend: {backend}"), text_style),
+            Span::styled(" │ ", separator_style),
+            Span::styled(format!("Reqs: {total_requests}"), text_style),
+            Span::styled(" │ ", separator_style),
+            Span::styled(format!("Uptime: {uptime}s"), text_style),
         ]);
 
         Paragraph::new(line).block(
