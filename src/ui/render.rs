@@ -117,10 +117,12 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
                         };
 
                         let mut spans = Vec::new();
-                        spans.push(Span::styled(
-                            format!("    {}. ", idx + 1),
-                            base_style.fg(HEADER_TEXT),
-                        ));
+                        let prefix = if is_selected {
+                            format!("  → {}. ", idx + 1)
+                        } else {
+                            format!("    {}. ", idx + 1)
+                        };
+                        spans.push(Span::styled(prefix, base_style.fg(HEADER_TEXT)));
                         spans.push(Span::styled(
                             format!("{:<width$}", backend.display_name, width = max_name_width),
                             base_style.fg(HEADER_TEXT),
