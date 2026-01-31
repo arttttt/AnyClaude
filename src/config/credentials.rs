@@ -90,14 +90,21 @@ impl Backend {
     pub fn resolve_credential(&self) -> CredentialStatus {
         match self.auth_type() {
             AuthType::None => CredentialStatus::NoAuth,
-            AuthType::ApiKey | AuthType::Bearer => match env::var(&self.auth_env_var) {
-                Ok(value) if !value.is_empty() => {
-                    CredentialStatus::Configured(SecureString::new(value))
+            AuthType::ApiKey | AuthType::Bearer => {
+                if let Some(ref key) = self.api_key {
+                    if !key.is_empty() {
+                        return CredentialStatus::Configured(SecureString::new(key.clone()));
+                    }
                 }
-                _ => CredentialStatus::Unconfigured {
-                    env_var: self.auth_env_var.clone(),
-                },
-            },
+                match env::var(&self.auth_env_var) {
+                    Ok(value) if !value.is_empty() => {
+                        CredentialStatus::Configured(SecureString::new(value))
+                    }
+                    _ => CredentialStatus::Unconfigured {
+                        env_var: self.auth_env_var.clone(),
+                    },
+                }
+            }
         }
     }
 
@@ -151,6 +158,7 @@ mod tests {
             base_url: "https://example.com".to_string(),
             auth_type_str: "none".to_string(),
             auth_env_var: "".to_string(),
+            api_key: None,
             models: vec![],
         };
 

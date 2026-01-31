@@ -162,6 +162,7 @@ fn test_backend_is_configured_with_env_var() {
         base_url: "https://example.com".to_string(),
         auth_type_str: "api_key".to_string(),
         auth_env_var: env_var.to_string(),
+            api_key: None,
         models: vec![],
     };
 
@@ -179,6 +180,7 @@ fn test_backend_not_configured_without_env_var() {
         base_url: "https://example.com".to_string(),
         auth_type_str: "api_key".to_string(),
         auth_env_var: "NONEXISTENT_ENV_VAR_XYZ".to_string(),
+            api_key: None,
         models: vec![],
     };
 
@@ -194,6 +196,7 @@ fn test_backend_no_auth_always_configured() {
         base_url: "https://example.com".to_string(),
         auth_type_str: "none".to_string(),
         auth_env_var: "".to_string(),
+            api_key: None,
         models: vec![],
     };
 
@@ -216,6 +219,7 @@ fn test_build_auth_header_api_key() {
         base_url: "https://example.com".to_string(),
         auth_type_str: "api_key".to_string(),
         auth_env_var: env_var.to_string(),
+            api_key: None,
         models: vec![],
     };
 
@@ -241,6 +245,7 @@ fn test_build_auth_header_bearer() {
         base_url: "https://example.com".to_string(),
         auth_type_str: "bearer".to_string(),
         auth_env_var: env_var.to_string(),
+            api_key: None,
         models: vec![],
     };
 
@@ -275,6 +280,7 @@ fn test_validation_fails_unconfigured_active_backend() {
             base_url: "https://example.com".to_string(),
             auth_type_str: "api_key".to_string(),
             auth_env_var: "NONEXISTENT_VAR_ABC123".to_string(),
+            api_key: None,
             models: vec![],
         }],
     };
@@ -316,6 +322,7 @@ fn test_configured_backends_filters_correctly() {
                 base_url: "https://example.com".to_string(),
                 auth_type_str: "api_key".to_string(),
                 auth_env_var: env_var.to_string(),
+            api_key: None,
                 models: vec![],
             },
             Backend {
@@ -324,6 +331,7 @@ fn test_configured_backends_filters_correctly() {
                 base_url: "https://example.com".to_string(),
                 auth_type_str: "api_key".to_string(),
                 auth_env_var: "NONEXISTENT_VAR_XYZ789".to_string(),
+            api_key: None,
                 models: vec![],
             },
             Backend {
@@ -332,6 +340,7 @@ fn test_configured_backends_filters_correctly() {
                 base_url: "https://example.com".to_string(),
                 auth_type_str: "none".to_string(),
                 auth_env_var: "".to_string(),
+            api_key: None,
                 models: vec![],
             },
         ],
