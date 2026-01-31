@@ -13,7 +13,6 @@ use std::io;
 use std::time::Duration;
 use tokio::runtime::Builder;
 use tokio::sync::mpsc;
-use uuid::Uuid;
 
 /// Default debounce delay for config file watching (milliseconds).
 const CONFIG_DEBOUNCE_MS: u64 = 200;
@@ -31,7 +30,6 @@ pub fn run() -> io::Result<()> {
     let config_path = Config::config_path();
     let config_store = ConfigStore::new(config, config_path);
     let proxy_base_url = config_store.get().proxy.base_url.clone();
-    let session_token = Uuid::new_v4().to_string();
 
     let events = EventHandler::new(tick_rate);
     let async_runtime = Builder::new_multi_thread()
@@ -48,7 +46,7 @@ pub fn run() -> io::Result<()> {
     let (ui_command_tx, ui_command_rx) = mpsc::channel(UI_COMMAND_BUFFER);
     let mut app = App::new(tick_rate, config_store.clone());
     app.set_ipc_sender(ui_command_tx.clone());
-    let proxy_server = ProxyServer::new(config_store.clone(), session_token.clone())
+    let proxy_server = ProxyServer::new(config_store.clone())
         .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
     let proxy_handle = proxy_server.handle();
     let backend_state = proxy_server.backend_state();
@@ -84,9 +82,10 @@ pub fn run() -> io::Result<()> {
     app.request_backends_refresh();
 
     let (command, args) = parse_command();
+    // Only set BASE_URL to redirect traffic through proxy
+    // Claude Code uses its own OAuth for Authorization header
     let env = vec![
         ("ANTHROPIC_BASE_URL".to_string(), proxy_base_url),
-        ("ANTHROPIC_AUTH_TOKEN".to_string(), session_token.clone()),
     ];
     let mut pty_session = PtySession::spawn(command, args, env, events.sender())
         .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;

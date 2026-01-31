@@ -26,6 +26,7 @@ pub fn build_auth_header(backend: &Backend) -> Option<AuthHeader> {
             format!("Bearer {}", key.expose()),
         )),
         (AuthType::None, _) => None,
+        (AuthType::Passthrough, _) => None, // Auth comes from client
         (_, CredentialStatus::Unconfigured { .. }) => None,
         (_, CredentialStatus::NoAuth) => None,
     }

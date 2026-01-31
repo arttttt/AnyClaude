@@ -106,14 +106,18 @@ impl UpstreamClient {
         };
         span.set_request_bytes(body_bytes.len());
         let auth_header = build_auth_header(&backend);
+        let is_passthrough = backend.auth_type() == crate::config::AuthType::Passthrough;
         let mut attempt = 0u32;
 
         let upstream_resp = loop {
             let mut builder = self.client.request(method.clone(), &upstream_uri);
 
             for (name, value) in headers.iter() {
-                // Skip headers that we'll replace with backend-specific auth
-                if name == HOST || name == header::AUTHORIZATION || name.as_str() == "x-api-key" {
+                // Skip HOST always, skip auth headers unless passthrough mode
+                if name == HOST {
+                    continue;
+                }
+                if !is_passthrough && (name == header::AUTHORIZATION || name.as_str() == "x-api-key") {
                     continue;
                 }
                 builder = builder.header(name, value);

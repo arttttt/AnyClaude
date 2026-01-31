@@ -88,7 +88,7 @@ pub struct Backend {
     pub display_name: String,
     /// Base URL for API (e.g., "https://api.anthropic.com").
     pub base_url: String,
-    /// Authentication type: "api_key", "bearer", "none".
+    /// Authentication type: "api_key", "bearer", "none", "passthrough".
     #[serde(rename = "auth_type")]
     pub auth_type_str: String,
     /// Environment variable name containing the key (e.g., "ANTHROPIC_API_KEY").

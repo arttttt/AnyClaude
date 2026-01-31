@@ -47,7 +47,6 @@ pub struct ProxyServer {
 impl ProxyServer {
     pub fn new(
         config: ConfigStore,
-        session_token: String,
     ) -> Result<Self, crate::backend::BackendError> {
         let addr = config
             .get()
@@ -65,7 +64,6 @@ impl ProxyServer {
             pool_config,
             backend_state.clone(),
             observability.clone(),
-            session_token,
         );
         Ok(Self {
             addr,

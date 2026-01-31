@@ -16,6 +16,8 @@ pub enum AuthType {
     Bearer,
     /// No authentication required.
     None,
+    /// Pass through original auth headers from client.
+    Passthrough,
 }
 
 impl AuthType {
@@ -25,6 +27,7 @@ impl AuthType {
         match s.to_lowercase().as_str() {
             "bearer" => AuthType::Bearer,
             "none" => AuthType::None,
+            "passthrough" => AuthType::Passthrough,
             _ => AuthType::ApiKey,
         }
     }
@@ -89,7 +92,7 @@ impl Backend {
     /// of credentials when environment variables change.
     pub fn resolve_credential(&self) -> CredentialStatus {
         match self.auth_type() {
-            AuthType::None => CredentialStatus::NoAuth,
+            AuthType::None | AuthType::Passthrough => CredentialStatus::NoAuth,
             AuthType::ApiKey | AuthType::Bearer => {
                 if let Some(ref key) = self.api_key {
                     if !key.is_empty() {
