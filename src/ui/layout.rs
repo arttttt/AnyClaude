@@ -47,3 +47,22 @@ pub fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
         ])
         .split(popup_layout[1])[1]
 }
+
+pub fn centered_rect_by_size(area: Rect, width: u16, height: u16) -> Rect {
+    if area.width == 0 || area.height == 0 {
+        return area;
+    }
+
+    let width = width.min(area.width);
+    let height = height.min(area.height);
+
+    let x = area.x + area.width.saturating_sub(width) / 2;
+    let y = area.y + area.height.saturating_sub(height) / 2;
+
+    Rect {
+        x,
+        y,
+        width,
+        height,
+    }
+}

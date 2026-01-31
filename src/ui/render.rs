@@ -1,9 +1,9 @@
 use crate::ui::app::{App, PopupKind};
 use crate::ui::footer::Footer;
 use crate::ui::header::Header;
-use crate::ui::layout::{centered_rect, layout_regions};
+use crate::ui::layout::{centered_rect_by_size, layout_regions};
 use crate::ui::terminal::TerminalBody;
-use crate::ui::theme::{HEADER_TEXT, STATUS_ERROR};
+use crate::ui::theme::{ACTIVE_HIGHLIGHT, CLAUDE_ORANGE, HEADER_TEXT, POPUP_BORDER, STATUS_ERROR};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
@@ -35,14 +35,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
     frame.render_widget(footer_widget.widget(), footer);
 
     if let Some(kind) = app.popup_kind() {
-        let area = centered_rect(60, 30, frame.size());
-        frame.render_widget(Clear, area);
-        let title = match kind {
-            PopupKind::BackendSwitch => "Switch Backend",
-            PopupKind::Status => "Status",
-        };
-        let popup = Block::default().title(title).borders(Borders::ALL);
-        match kind {
+        let (title, lines) = match kind {
             PopupKind::Status => {
                 let mut lines = Vec::new();
                 if let Some(status) = app.proxy_status() {
@@ -88,8 +81,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
                     lines.push(Line::from(format!("IPC error: {error}")));
                 }
 
-                let widget = Paragraph::new(lines).block(popup);
-                frame.render_widget(widget, area);
+                ("Status", lines)
             }
             PopupKind::BackendSwitch => {
                 let mut lines = Vec::new();
@@ -116,7 +108,10 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
                                 Style::default().fg(STATUS_ERROR),
                             ));
                         }
-                        let line = Line::from(spans);
+                        let mut line = Line::from(spans);
+                        if backend.is_active {
+                            line = line.style(Style::default().bg(ACTIVE_HIGHLIGHT));
+                        }
                         lines.push(line);
                     }
                     lines.push(Line::from(""));
@@ -128,9 +123,21 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
                     lines.push(Line::from(format!("IPC error: {error}")));
                 }
 
-                let widget = Paragraph::new(lines).block(popup);
-                frame.render_widget(widget, area);
+                ("Switch Backend", lines)
             }
-        }
+        };
+
+        let content_width = lines.iter().map(Line::width).max().unwrap_or(0) as u16;
+        let popup_width = content_width.saturating_add(4);
+        let popup_height = lines.len().saturating_add(2) as u16;
+        let area = centered_rect_by_size(body, popup_width, popup_height);
+
+        frame.render_widget(Clear, area);
+        let popup = Block::default()
+            .title(Span::styled(title, Style::default().fg(CLAUDE_ORANGE)))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(POPUP_BORDER));
+        let widget = Paragraph::new(lines).block(popup);
+        frame.render_widget(widget, area);
     }
 }
