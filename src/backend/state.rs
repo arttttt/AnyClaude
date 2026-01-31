@@ -296,8 +296,7 @@ mod tests {
                     base_url: "https://api1.example.com".to_string(),
                     auth_type_str: "api_key".to_string(),
                     api_key: None,
-                    auth_env_var: "API1_KEY".to_string(),
-                    api_key: None,
+                    models: vec!["model1".to_string()],
                 },
                 Backend {
                     name: "backend2".to_string(),
@@ -305,8 +304,7 @@ mod tests {
                     base_url: "https://api2.example.com".to_string(),
                     auth_type_str: "bearer".to_string(),
                     api_key: None,
-                    auth_env_var: "API2_KEY".to_string(),
-                    api_key: None,
+                    models: vec!["model2".to_string()],
                 },
             ],
         }
@@ -444,8 +442,7 @@ mod tests {
             base_url: "https://api3.example.com".to_string(),
             auth_type_str: "api_key".to_string(),
             api_key: None,
-            auth_env_var: "API3_KEY".to_string(),
-            api_key: None,
+            models: vec!["model3".to_string()],
         });
 
         state.update_config(new_config).unwrap();

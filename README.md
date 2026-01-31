@@ -66,20 +66,24 @@ cargo build --release
 
 ## Configuration
 
-Backends are configured in `~/.config/claudewrapper/backends.toml`:
+Backends are configured in `~/.config/claude-wrapper/config.toml`:
 
 ```toml
-[[backend]]
-id = "anthropic"
-name = "Anthropic"
+[[backends]]
+name = "anthropic"
+display_name = "Anthropic"
 base_url = "https://api.anthropic.com"
-api_key_env = "ANTHROPIC_API_KEY"
+auth_type = "api_key"
+api_key = "YOUR_API_KEY"
+models = ["claude-sonnet-4-20250514"]
 
-[[backend]]
-id = "glm"
-name = "GLM-4 (Z.AI)"
+[[backends]]
+name = "glm"
+display_name = "GLM-4 (Z.AI)"
 base_url = "https://api.z.ai/api/anthropic"
-api_key_env = "ZAI_API_KEY"
+auth_type = "api_key"
+api_key = "YOUR_API_KEY"
+models = ["glm-4"]
 ```
 
 ## License

@@ -88,14 +88,14 @@ pub struct Backend {
     pub display_name: String,
     /// Base URL for API (e.g., "https://api.anthropic.com").
     pub base_url: String,
-    /// Authentication type: "api_key", "bearer", "none", "passthrough".
+    /// Authentication type: "api_key", "bearer", "none".
     #[serde(rename = "auth_type")]
     pub auth_type_str: String,
-    /// Optional API key stored directly in config (takes precedence over auth_env_var).
+    /// Direct API key for this backend.
     #[serde(default)]
     pub api_key: Option<String>,
-    /// Environment variable name containing the key (e.g., "ANTHROPIC_API_KEY").
-    pub auth_env_var: String,
+    /// List of supported models.
+    pub models: Vec<String>,
 }
 
 impl Default for Backend {
@@ -106,7 +106,7 @@ impl Default for Backend {
             base_url: "https://api.anthropic.com".to_string(),
             auth_type_str: "api_key".to_string(),
             api_key: None,
-            auth_env_var: "ANTHROPIC_API_KEY".to_string(),
+            models: vec!["claude-sonnet-4-20250514".to_string()],
         }
     }
 }

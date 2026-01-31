@@ -29,12 +29,11 @@ pub enum ConfigError {
 impl Config {
     /// Returns the path to the configuration file.
     ///
-    /// Uses `~/.config/claude-wrapper/config.toml` on Unix/macOS.
-    /// Falls back to current directory if home is unavailable.
+    /// Uses `~/.config/claude-wrapper/config.toml` on Unix/macOS,
+    /// or equivalent on other platforms via `dirs::config_dir()`.
+    /// Falls back to current directory if config_dir is unavailable.
     pub fn config_path() -> PathBuf {
-        let config_dir = dirs::home_dir()
-            .map(|h| h.join(".config"))
-            .unwrap_or_else(|| PathBuf::from("."));
+        let config_dir = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
         config_dir.join("claude-wrapper").join("config.toml")
     }
 
@@ -100,9 +99,8 @@ impl Config {
                 if !backend.is_configured() {
                     return Err(ConfigError::ValidationError {
                         message: format!(
-                            "Active backend '{}' is not configured - set {}",
-                            backend.name,
-                            backend.missing_credential_hint()
+                            "Active backend '{}' is not configured - set api_key in config",
+                            backend.name
                         ),
                     });
                 }
@@ -119,11 +117,10 @@ impl Config {
     pub fn log_backend_status(&self) {
         for backend in &self.backends {
             match backend.resolve_credential() {
-                CredentialStatus::Unconfigured { .. } => {
+                CredentialStatus::Unconfigured { reason } => {
                     eprintln!(
-                        "Warning: Backend '{}' is unconfigured - set {}",
-                        backend.name,
-                        backend.missing_credential_hint()
+                        "Warning: Backend '{}' is unconfigured - {}",
+                        backend.name, reason
                     );
                 }
                 CredentialStatus::Configured(_) => {

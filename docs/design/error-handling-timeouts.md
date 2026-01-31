@@ -288,7 +288,7 @@ impl UpstreamClient {
         if !backend.is_configured() {
             return Err(ProxyError::BackendNotConfigured {
                 backend: backend.name.clone(),
-                reason: format!("Environment variable {} not set", backend.auth_env_var)
+                reason: "api_key is not set".to_string()
             });
         }
 

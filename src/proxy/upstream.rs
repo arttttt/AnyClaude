@@ -1,5 +1,5 @@
 use axum::body::Body;
-use axum::http::header::{self, CONTENT_TYPE, HOST};
+use axum::http::header::{CONTENT_TYPE, HOST};
 use axum::http::{Request, Response};
 use http_body_util::BodyExt;
 use reqwest::Client;
@@ -89,7 +89,7 @@ impl UpstreamClient {
         if !backend.is_configured() {
             let err = ProxyError::BackendNotConfigured {
                 backend: backend.name.clone(),
-                reason: format!("Missing credentials - set {}", backend.missing_credential_hint()),
+                reason: "api_key is not set".to_string(),
             };
             observability.finish_error(span, Some(err.status_code().as_u16()));
             return Err(err);
@@ -106,21 +106,15 @@ impl UpstreamClient {
         };
         span.set_request_bytes(body_bytes.len());
         let auth_header = build_auth_header(&backend);
-        let is_passthrough = backend.auth_type() == crate::config::AuthType::Passthrough;
         let mut attempt = 0u32;
 
         let upstream_resp = loop {
             let mut builder = self.client.request(method.clone(), &upstream_uri);
 
             for (name, value) in headers.iter() {
-                // Skip HOST always, skip auth headers unless passthrough mode
-                if name == HOST {
-                    continue;
+                if name != HOST {
+                    builder = builder.header(name, value);
                 }
-                if !is_passthrough && (name == header::AUTHORIZATION || name.as_str() == "x-api-key") {
-                    continue;
-                }
-                builder = builder.header(name, value);
             }
 
             if let Some((name, value)) = auth_header.as_ref() {

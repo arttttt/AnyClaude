@@ -269,8 +269,7 @@ mod tests {
                     base_url: "https://alpha.example.com".to_string(),
                     auth_type_str: "none".to_string(),
                     api_key: None,
-                    auth_env_var: "".to_string(),
-                    api_key: None,
+                    models: vec!["alpha-1".to_string()],
                 },
                 Backend {
                     name: "beta".to_string(),
@@ -278,8 +277,7 @@ mod tests {
                     base_url: "https://beta.example.com".to_string(),
                     auth_type_str: "none".to_string(),
                     api_key: None,
-                    auth_env_var: "".to_string(),
-                    api_key: None,
+                    models: vec!["beta-1".to_string()],
                 },
             ],
         }

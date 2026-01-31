@@ -224,7 +224,8 @@ name = "test"
 display_name = "Test"
 base_url = "https://test.example.com"
 auth_type = "api_key"
-auth_env_var = "TEST_API_KEY"
+api_key = "test-key-value"
+models = ["model-1"]
 "#;
         fs::write(&config_path, content).unwrap();
         config_path
@@ -245,9 +246,6 @@ auth_env_var = "TEST_API_KEY"
 
         let initial_config = Config::default();
         let store = ConfigStore::new(initial_config, config_path.clone());
-
-        // Set required env var for test backend
-        std::env::set_var("TEST_API_KEY", "test-key-value");
 
         // Reload should succeed and update the config
         store.reload().unwrap();
