@@ -162,7 +162,6 @@ mod tests {
             auth_type_str: "none".to_string(),
             auth_env_var: "".to_string(),
             api_key: None,
-            models: vec![],
         };
 
         assert!(matches!(

@@ -96,8 +96,6 @@ pub struct Backend {
     /// Direct API key (takes precedence over auth_env_var if set).
     #[serde(default)]
     pub api_key: Option<String>,
-    /// List of supported models.
-    pub models: Vec<String>,
 }
 
 impl Default for Backend {
@@ -109,7 +107,6 @@ impl Default for Backend {
             auth_type_str: "api_key".to_string(),
             auth_env_var: "ANTHROPIC_API_KEY".to_string(),
             api_key: None,
-            models: vec!["claude-sonnet-4-20250514".to_string()],
         }
     }
 }

@@ -270,7 +270,6 @@ mod tests {
                     auth_type_str: "none".to_string(),
                     auth_env_var: "".to_string(),
                     api_key: None,
-                    models: vec!["alpha-1".to_string()],
                 },
                 Backend {
                     name: "beta".to_string(),
@@ -279,7 +278,6 @@ mod tests {
                     auth_type_str: "none".to_string(),
                     auth_env_var: "".to_string(),
                     api_key: None,
-                    models: vec!["beta-1".to_string()],
                 },
             ],
         }

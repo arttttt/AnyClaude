@@ -225,7 +225,6 @@ display_name = "Test"
 base_url = "https://test.example.com"
 auth_type = "api_key"
 auth_env_var = "TEST_API_KEY"
-models = ["model-1"]
 "#;
         fs::write(&config_path, content).unwrap();
         config_path
