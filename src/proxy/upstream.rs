@@ -89,7 +89,7 @@ impl UpstreamClient {
         if !backend.is_configured() {
             let err = ProxyError::BackendNotConfigured {
                 backend: backend.name.clone(),
-                reason: format!("Environment variable {} not set", backend.auth_env_var),
+                reason: format!("Missing credentials - set {}", backend.missing_credential_hint()),
             };
             observability.finish_error(span, Some(err.status_code().as_u16()));
             return Err(err);

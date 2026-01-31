@@ -1,7 +1,7 @@
-//! Credential resolution from environment variables.
+//! Credential resolution from config and environment variables.
 //!
 //! This module provides secure handling of API keys and credentials
-//! resolved from environment variables at runtime.
+//! resolved from config or environment variables at runtime.
 
 use std::env;
 
@@ -94,11 +94,10 @@ impl Backend {
         match self.auth_type() {
             AuthType::None | AuthType::Passthrough => CredentialStatus::NoAuth,
             AuthType::ApiKey | AuthType::Bearer => {
-                if let Some(ref key) = self.api_key {
-                    if !key.is_empty() {
-                        return CredentialStatus::Configured(SecureString::new(key.clone()));
-                    }
+                if let Some(value) = self.api_key.as_ref().filter(|value| !value.is_empty()) {
+                    return CredentialStatus::Configured(SecureString::new(value.clone()));
                 }
+
                 match env::var(&self.auth_env_var) {
                     Ok(value) if !value.is_empty() => {
                         CredentialStatus::Configured(SecureString::new(value))
@@ -117,6 +116,15 @@ impl Backend {
             self.resolve_credential(),
             CredentialStatus::Configured(_) | CredentialStatus::NoAuth
         )
+    }
+
+    /// Describe how to provide credentials for this backend.
+    pub fn missing_credential_hint(&self) -> String {
+        if self.auth_env_var.is_empty() {
+            "api_key".to_string()
+        } else {
+            format!("api_key or {} environment variable", self.auth_env_var)
+        }
     }
 }
 
@@ -160,8 +168,8 @@ mod tests {
             display_name: "Test".to_string(),
             base_url: "https://example.com".to_string(),
             auth_type_str: "none".to_string(),
-            auth_env_var: "".to_string(),
             api_key: None,
+            auth_env_var: "".to_string(),
         };
 
         assert!(matches!(
@@ -169,5 +177,55 @@ mod tests {
             CredentialStatus::NoAuth
         ));
         assert!(backend.is_configured());
+    }
+
+    #[test]
+    fn test_credential_resolution_prefers_api_key() {
+        let env_var = "TEST_API_KEY_ENV_FALLBACK";
+        std::env::set_var(env_var, "env-key-value");
+
+        let backend = Backend {
+            name: "test".to_string(),
+            display_name: "Test".to_string(),
+            base_url: "https://example.com".to_string(),
+            auth_type_str: "api_key".to_string(),
+            api_key: Some("direct-key-value".to_string()),
+            auth_env_var: env_var.to_string(),
+            models: vec![],
+        };
+
+        match backend.resolve_credential() {
+            CredentialStatus::Configured(value) => {
+                assert_eq!(value.expose(), "direct-key-value");
+            }
+            _ => panic!("Expected configured credential"),
+        }
+
+        std::env::remove_var(env_var);
+    }
+
+    #[test]
+    fn test_credential_resolution_falls_back_to_env() {
+        let env_var = "TEST_API_KEY_FALLBACK";
+        std::env::set_var(env_var, "env-key-value");
+
+        let backend = Backend {
+            name: "test".to_string(),
+            display_name: "Test".to_string(),
+            base_url: "https://example.com".to_string(),
+            auth_type_str: "api_key".to_string(),
+            api_key: Some("".to_string()),
+            auth_env_var: env_var.to_string(),
+            models: vec![],
+        };
+
+        match backend.resolve_credential() {
+            CredentialStatus::Configured(value) => {
+                assert_eq!(value.expose(), "env-key-value");
+            }
+            _ => panic!("Expected configured credential"),
+        }
+
+        std::env::remove_var(env_var);
     }
 }

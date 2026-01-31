@@ -100,8 +100,9 @@ impl Config {
                 if !backend.is_configured() {
                     return Err(ConfigError::ValidationError {
                         message: format!(
-                            "Active backend '{}' is not configured - set {} environment variable",
-                            backend.name, backend.auth_env_var
+                            "Active backend '{}' is not configured - set {}",
+                            backend.name,
+                            backend.missing_credential_hint()
                         ),
                     });
                 }
@@ -118,10 +119,11 @@ impl Config {
     pub fn log_backend_status(&self) {
         for backend in &self.backends {
             match backend.resolve_credential() {
-                CredentialStatus::Unconfigured { env_var } => {
+                CredentialStatus::Unconfigured { .. } => {
                     eprintln!(
-                        "Warning: Backend '{}' is unconfigured - {} is not set",
-                        backend.name, env_var
+                        "Warning: Backend '{}' is unconfigured - set {}",
+                        backend.name,
+                        backend.missing_credential_hint()
                     );
                 }
                 CredentialStatus::Configured(_) => {

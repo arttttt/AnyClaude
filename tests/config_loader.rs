@@ -24,6 +24,7 @@ fn test_config_default_values() {
     assert_eq!(backend.display_name, "Claude");
     assert_eq!(backend.base_url, "https://api.anthropic.com");
     assert_eq!(backend.auth_type(), AuthType::ApiKey);
+    assert_eq!(backend.api_key, None);
     assert_eq!(backend.auth_env_var, "ANTHROPIC_API_KEY");
 }
 
@@ -158,6 +159,7 @@ fn test_backend_is_configured_with_env_var() {
         display_name: "Test".to_string(),
         base_url: "https://example.com".to_string(),
         auth_type_str: "api_key".to_string(),
+        api_key: None,
         auth_env_var: env_var.to_string(),
         api_key: None,
     };
@@ -175,6 +177,7 @@ fn test_backend_not_configured_without_env_var() {
         display_name: "Test".to_string(),
         base_url: "https://example.com".to_string(),
         auth_type_str: "api_key".to_string(),
+        api_key: None,
         auth_env_var: "NONEXISTENT_ENV_VAR_XYZ".to_string(),
         api_key: None,
     };
@@ -190,6 +193,7 @@ fn test_backend_no_auth_always_configured() {
         display_name: "Test".to_string(),
         base_url: "https://example.com".to_string(),
         auth_type_str: "none".to_string(),
+        api_key: None,
         auth_env_var: "".to_string(),
         api_key: None,
     };
@@ -212,6 +216,7 @@ fn test_build_auth_header_api_key() {
         display_name: "Test".to_string(),
         base_url: "https://example.com".to_string(),
         auth_type_str: "api_key".to_string(),
+        api_key: None,
         auth_env_var: env_var.to_string(),
         api_key: None,
     };
@@ -237,6 +242,7 @@ fn test_build_auth_header_bearer() {
         display_name: "Test".to_string(),
         base_url: "https://example.com".to_string(),
         auth_type_str: "bearer".to_string(),
+        api_key: None,
         auth_env_var: env_var.to_string(),
         api_key: None,
     };
@@ -271,6 +277,7 @@ fn test_validation_fails_unconfigured_active_backend() {
             display_name: "Unconfigured".to_string(),
             base_url: "https://example.com".to_string(),
             auth_type_str: "api_key".to_string(),
+            api_key: None,
             auth_env_var: "NONEXISTENT_VAR_ABC123".to_string(),
             api_key: None,
         }],
@@ -312,6 +319,7 @@ fn test_configured_backends_filters_correctly() {
                 display_name: "Configured".to_string(),
                 base_url: "https://example.com".to_string(),
                 auth_type_str: "api_key".to_string(),
+                api_key: None,
                 auth_env_var: env_var.to_string(),
                 api_key: None,
             },
@@ -320,6 +328,7 @@ fn test_configured_backends_filters_correctly() {
                 display_name: "Unconfigured".to_string(),
                 base_url: "https://example.com".to_string(),
                 auth_type_str: "api_key".to_string(),
+                api_key: None,
                 auth_env_var: "NONEXISTENT_VAR_XYZ789".to_string(),
                 api_key: None,
             },
@@ -328,6 +337,7 @@ fn test_configured_backends_filters_correctly() {
                 display_name: "No Auth".to_string(),
                 base_url: "https://example.com".to_string(),
                 auth_type_str: "none".to_string(),
+                api_key: None,
                 auth_env_var: "".to_string(),
                 api_key: None,
             },
