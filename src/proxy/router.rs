@@ -13,6 +13,7 @@ use crate::proxy::error::ErrorResponse;
 use crate::metrics::{BackendOverride, ObservabilityHub, RoutingDecision};
 use crate::proxy::health::HealthHandler;
 use crate::proxy::pool::PoolConfig;
+use crate::proxy::thinking::ThinkingTracker;
 use crate::proxy::timeout::TimeoutConfig;
 use crate::proxy::upstream::UpstreamClient;
 
@@ -34,9 +35,17 @@ impl RouterEngine {
         backend_state: BackendState,
         observability: ObservabilityHub,
     ) -> Self {
+        let thinking_tracker = Arc::new(std::sync::RwLock::new(ThinkingTracker::new(
+            config.get().thinking.mode,
+        )));
         Self {
             health: Arc::new(HealthHandler::new()),
-            upstream: Arc::new(UpstreamClient::new(timeout_config, pool_config)),
+            upstream: Arc::new(UpstreamClient::new(
+                timeout_config,
+                pool_config,
+                config.clone(),
+                thinking_tracker,
+            )),
             config,
             backend_state,
             observability,

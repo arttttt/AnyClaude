@@ -3,6 +3,7 @@ pub mod health;
 pub mod pool;
 pub mod router;
 pub mod shutdown;
+pub mod thinking;
 pub mod timeout;
 pub mod upstream;
 
