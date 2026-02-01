@@ -8,8 +8,11 @@ async fn test_health_integration() {
     let config = Config::default();
     let config_store = ConfigStore::new(config, PathBuf::from("/tmp/test-config.toml"));
     let session_token = "test-session-token".to_string();
-    let server = ProxyServer::new(config_store).expect("Failed to create proxy server");
-    let addr_str = format!("{}", server.addr);
+    let mut server = ProxyServer::new(config_store.clone()).expect("Failed to create proxy server");
+
+    // Bind to port before spawning - this prevents race conditions
+    let (addr, _base_url) = server.try_bind(&config_store).await.expect("Failed to bind");
+    let addr_str = format!("{}", addr);
 
     tokio::spawn(async move {
         let _ = server.run().await;
@@ -39,8 +42,11 @@ async fn test_request_forwarding() {
     let config = Config::default();
     let config_store = ConfigStore::new(config, PathBuf::from("/tmp/test-config.toml"));
     let session_token = "test-session-token".to_string();
-    let server = ProxyServer::new(config_store).expect("Failed to create proxy server");
-    let addr_str = format!("{}", server.addr);
+    let mut server = ProxyServer::new(config_store.clone()).expect("Failed to create proxy server");
+
+    // Bind to port before spawning - this prevents race conditions
+    let (addr, _base_url) = server.try_bind(&config_store).await.expect("Failed to bind");
+    let addr_str = format!("{}", addr);
 
     tokio::spawn(async move {
         let _ = server.run().await;

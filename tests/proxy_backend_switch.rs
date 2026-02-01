@@ -51,9 +51,11 @@ async fn test_request_routed_to_active_backend() {
         vec![create_backend("alpha", &mock.base_url())],
         &bind_addr,
     );
-    let config_store = ConfigStore::new(config, PathBuf::from("/tmp/test.toml"));
-    let server = ProxyServer::new(config_store).unwrap();
-    let proxy_addr = server.addr;
+    let config_store = ConfigStore::new(config.clone(), PathBuf::from("/tmp/test.toml"));
+    let mut server = ProxyServer::new(config_store.clone()).unwrap();
+
+    // Bind to port before spawning - this prevents race conditions
+    let (proxy_addr, _base_url) = server.try_bind(&config_store).await.unwrap();
 
     tokio::spawn(async move {
         let _ = server.run().await;
@@ -92,10 +94,12 @@ async fn test_backend_switch_routes_to_new_backend() {
         ],
         &bind_addr,
     );
-    let config_store = ConfigStore::new(config, PathBuf::from("/tmp/test.toml"));
-    let server = ProxyServer::new(config_store).unwrap();
-    let proxy_addr = server.addr;
+    let config_store = ConfigStore::new(config.clone(), PathBuf::from("/tmp/test.toml"));
+    let mut server = ProxyServer::new(config_store.clone()).unwrap();
     let backend_state = server.backend_state();
+
+    // Bind to port before spawning - this prevents race conditions
+    let (proxy_addr, _base_url) = server.try_bind(&config_store).await.unwrap();
 
     tokio::spawn(async move {
         let _ = server.run().await;
