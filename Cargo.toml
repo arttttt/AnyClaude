@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 # PTY & Terminal
-portable-pty = "0.8"
+portable-pty = "0.9"
 vt100 = "0.16"
 crossterm = { version = "0.27", features = ["event-stream"] }
 signal-hook = "0.4"
@@ -18,9 +18,9 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-util", "si
 uuid = { version = "1.20", features = ["v4"] }
 
 # HTTP Proxy
-axum = { version = "0.7", features = ["json"] }
+axum = { version = "0.8", features = ["json"] }
 http-body-util = "0.1"
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "http2"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "rustls", "http2"] }
 tower = "0.5"
 futures-core = "0.3"
 
