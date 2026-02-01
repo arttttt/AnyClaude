@@ -1,5 +1,6 @@
 use crate::clipboard::{ClipboardContent, ClipboardHandler};
 use crate::config::{Config, ConfigStore, ConfigWatcher};
+use crate::error::{ErrorCategory, ErrorSeverity};
 use crate::ipc::IpcLayer;
 use crate::proxy::ProxyServer;
 use crate::pty::{parse_command, PtySession};
@@ -174,10 +175,32 @@ pub fn run() -> io::Result<()> {
             Ok(AppEvent::IpcMetrics(metrics)) => app.update_metrics(metrics),
             Ok(AppEvent::IpcBackends(backends)) => app.update_backends(backends),
             Ok(AppEvent::IpcError(message)) => app.set_ipc_error(message),
+            Ok(AppEvent::ConfigError(message)) => {
+                app.error_registry().record_with_details(
+                    ErrorSeverity::Warning,
+                    ErrorCategory::Config,
+                    "Config reload failed",
+                    Some(message),
+                );
+            }
+            Ok(AppEvent::PtyError(error)) => {
+                app.error_registry().record_with_details(
+                    ErrorSeverity::Critical,
+                    ErrorCategory::Process,
+                    error.user_message(),
+                    Some(error.details()),
+                );
+            }
             Ok(AppEvent::Shutdown) => {
                 app.request_quit();
             }
             Ok(AppEvent::ProcessExit) => {
+                // Record the exit as informational (not an error if clean exit)
+                app.error_registry().record(
+                    ErrorSeverity::Info,
+                    ErrorCategory::Process,
+                    "Claude Code process exited",
+                );
                 app.request_quit();
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}

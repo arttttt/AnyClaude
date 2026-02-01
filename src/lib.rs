@@ -1,6 +1,7 @@
 pub mod backend;
 pub mod clipboard;
 pub mod config;
+pub mod error;
 pub mod ipc;
 pub mod metrics;
 pub mod proxy;

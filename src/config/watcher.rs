@@ -170,8 +170,8 @@ fn debounce_loop(
                                 let _ = event_tx.send(AppEvent::ConfigReload);
                             }
                             Err(e) => {
-                                // Log error but keep old config
-                                eprintln!("Config reload failed: {}", e);
+                                // Notify UI of reload failure
+                                let _ = event_tx.send(AppEvent::ConfigError(e.to_string()));
                             }
                         }
                         pending_reload = None;

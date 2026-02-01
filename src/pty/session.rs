@@ -1,7 +1,7 @@
 use crate::pty::handle::PtyHandle;
 use crate::pty::screen::{apply_actions, ActionTranslator};
 use crate::pty::vt::VtParser;
-use crate::ui::events::AppEvent;
+use crate::ui::events::{AppEvent, PtyError};
 use portable_pty::{native_pty_system, Child, CommandBuilder, PtySize};
 use std::error::Error;
 use std::io::Read;
@@ -57,12 +57,20 @@ impl PtySession {
             let mut parser = VtParser::new();
             let mut translator = ActionTranslator::new();
             let mut buffer = [0u8; 8192];
+            let mut had_error = false;
 
             loop {
                 let count = match reader.read(&mut buffer) {
-                    Ok(0) => break,
+                    Ok(0) => break, // Clean EOF
                     Ok(count) => count,
-                    Err(_) => break,
+                    Err(e) => {
+                        // Report read error
+                        let _ = notifier.send(AppEvent::PtyError(PtyError::ReadError {
+                            error: e.to_string(),
+                        }));
+                        had_error = true;
+                        break;
+                    }
                 };
                 let actions = parser.parse(&buffer[..count]);
                 if let Ok(mut screen) = screen.lock() {
@@ -70,8 +78,10 @@ impl PtySession {
                 }
                 let _ = notifier.send(AppEvent::PtyOutput);
             }
-            // Notify UI that the child process has exited
-            let _ = notifier.send(AppEvent::ProcessExit);
+            // Notify UI that the child process has exited (only if no error already sent)
+            if !had_error {
+                let _ = notifier.send(AppEvent::ProcessExit);
+            }
         });
 
         Ok(Self {

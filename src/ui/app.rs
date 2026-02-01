@@ -1,4 +1,5 @@
 use crate::config::ConfigStore;
+use crate::error::ErrorRegistry;
 use crate::ipc::{BackendInfo, ProxyStatus};
 use crate::metrics::MetricsSnapshot;
 use crate::pty::PtyHandle;
@@ -40,6 +41,7 @@ pub struct App {
     size: Option<(u16, u16)>,
     pty: Option<PtyHandle>,
     config: ConfigStore,
+    error_registry: ErrorRegistry,
     ipc_sender: Option<UiCommandSender>,
     proxy_status: Option<ProxyStatus>,
     metrics: Option<MetricsSnapshot>,
@@ -63,6 +65,7 @@ impl App {
             size: None,
             pty: None,
             config,
+            error_registry: ErrorRegistry::new(100),
             ipc_sender: None,
             proxy_status: None,
             metrics: None,
@@ -73,6 +76,11 @@ impl App {
             last_metrics_refresh: now,
             last_backends_refresh: now,
         }
+    }
+
+    /// Get access to the error registry.
+    pub fn error_registry(&self) -> &ErrorRegistry {
+        &self.error_registry
     }
 
     pub fn should_quit(&self) -> bool {

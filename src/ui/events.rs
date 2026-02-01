@@ -7,6 +7,42 @@ use crate::ipc::{BackendInfo, ProxyStatus};
 use crate::metrics::MetricsSnapshot;
 use crate::shutdown::ShutdownHandle;
 
+/// Error types for PTY operations.
+#[derive(Debug, Clone)]
+pub enum PtyError {
+    /// Child process exited with code
+    ProcessExited { exit_code: Option<i32> },
+    /// Spawn failed
+    SpawnFailed { command: String, error: String },
+    /// Read error from PTY
+    ReadError { error: String },
+}
+
+impl PtyError {
+    /// User-friendly message for display.
+    pub fn user_message(&self) -> &'static str {
+        match self {
+            PtyError::ProcessExited { .. } => "Claude Code has exited",
+            PtyError::SpawnFailed { .. } => "Failed to start Claude Code",
+            PtyError::ReadError { .. } => "Lost connection to Claude Code",
+        }
+    }
+
+    /// Technical details for diagnostics.
+    pub fn details(&self) -> String {
+        match self {
+            PtyError::ProcessExited { exit_code } => match exit_code {
+                Some(code) => format!("Process exited with code {}", code),
+                None => "Process exited (unknown code)".to_string(),
+            },
+            PtyError::SpawnFailed { command, error } => {
+                format!("Failed to spawn '{}': {}", command, error)
+            }
+            PtyError::ReadError { error } => format!("PTY read error: {}", error),
+        }
+    }
+}
+
 pub enum AppEvent {
     Input(KeyEvent),
     Paste(String),
@@ -17,10 +53,14 @@ pub enum AppEvent {
     PtyOutput,
     /// Config file was successfully reloaded
     ConfigReload,
+    /// Config reload failed
+    ConfigError(String),
     IpcStatus(ProxyStatus),
     IpcMetrics(MetricsSnapshot),
     IpcBackends(Vec<BackendInfo>),
     IpcError(String),
+    /// PTY error occurred
+    PtyError(PtyError),
     /// OS signal received (SIGTERM, SIGINT)
     Shutdown,
     /// Claude child process exited (EOF from PTY reader)

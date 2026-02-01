@@ -1,3 +1,4 @@
+use crate::error::ErrorSeverity;
 use crate::ui::app::{App, PopupKind};
 use crate::ui::footer::Footer;
 use crate::ui::header::Header;
@@ -5,12 +6,14 @@ use crate::ui::layout::{centered_rect_by_size, layout_regions};
 use crate::ui::terminal::TerminalBody;
 use crate::ui::theme::{
     ACTIVE_HIGHLIGHT, CLAUDE_ORANGE, HEADER_TEXT, POPUP_BORDER, STATUS_ERROR, STATUS_OK,
+    STATUS_WARNING,
 };
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 use termwiz::surface::CursorVisibility;
 
 pub fn draw(frame: &mut Frame<'_>, app: &App) {
@@ -18,7 +21,10 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
     let (header, body, footer) = layout_regions(area);
 
     let header_widget = Header::new();
-    frame.render_widget(header_widget.widget(app.proxy_status()), header);
+    frame.render_widget(
+        header_widget.widget(app.proxy_status(), app.error_registry()),
+        header,
+    );
     frame.render_widget(Clear, body);
     if let Some(screen) = app.screen() {
         frame.render_widget(TerminalBody::new(Arc::clone(&screen)), body);
@@ -136,6 +142,71 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
                     lines.push(Line::from("  No backend configured"));
                 }
 
+                // Show recent errors from error registry
+                let recent_errors: Vec<_> = app
+                    .error_registry()
+                    .all_errors()
+                    .into_iter()
+                    .rev()
+                    .filter(|e| e.severity >= ErrorSeverity::Warning)
+                    .take(5)
+                    .collect();
+
+                if !recent_errors.is_empty() {
+                    lines.push(Line::from(""));
+                    lines.push(Line::from(vec![
+                        Span::styled("  Recent Issues:", Style::default().fg(STATUS_WARNING)),
+                    ]));
+
+                    for error in recent_errors {
+                        let time_ago = format_time_ago(error.timestamp);
+                        let color = match error.severity {
+                            ErrorSeverity::Critical | ErrorSeverity::Error => STATUS_ERROR,
+                            ErrorSeverity::Warning => STATUS_WARNING,
+                            ErrorSeverity::Info => STATUS_OK,
+                        };
+                        lines.push(Line::from(vec![
+                            Span::styled(format!("    [{time_ago}] "), Style::default().fg(HEADER_TEXT)),
+                            Span::styled(error.message.clone(), Style::default().fg(color)),
+                        ]));
+
+                        if let Some(details) = &error.details {
+                            // Show first line of details
+                            if let Some(first_line) = details.lines().next() {
+                                let truncated = if first_line.len() > 50 {
+                                    format!("{}...", &first_line[..47])
+                                } else {
+                                    first_line.to_string()
+                                };
+                                lines.push(Line::from(vec![
+                                    Span::styled(format!("      {truncated}"), Style::default().fg(HEADER_TEXT)),
+                                ]));
+                            }
+                        }
+                    }
+                }
+
+                // Show active recovery operations
+                let recoveries = app.error_registry().active_recoveries();
+                if !recoveries.is_empty() {
+                    lines.push(Line::from(""));
+                    lines.push(Line::from(vec![
+                        Span::styled("  Recovery:", Style::default().fg(STATUS_WARNING)),
+                    ]));
+
+                    for recovery in &recoveries {
+                        lines.push(Line::from(vec![
+                            Span::styled(
+                                format!(
+                                    "    {} (attempt {}/{})",
+                                    recovery.operation, recovery.attempt, recovery.max_attempts
+                                ),
+                                Style::default().fg(STATUS_WARNING),
+                            ),
+                        ]));
+                    }
+                }
+
                 lines.push(Line::from(""));
                 lines.push(Line::from(vec![
                     Span::styled("  Esc/Ctrl+S: Close", Style::default().fg(HEADER_TEXT)),
@@ -230,5 +301,19 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
             .border_style(Style::default().fg(POPUP_BORDER));
         let widget = Paragraph::new(lines).block(popup);
         frame.render_widget(widget, area);
+    }
+}
+
+/// Format a timestamp as a human-readable relative time.
+fn format_time_ago(timestamp: SystemTime) -> String {
+    let now = SystemTime::now();
+    let elapsed = now.duration_since(timestamp).unwrap_or(Duration::ZERO);
+
+    if elapsed.as_secs() < 60 {
+        format!("{}s ago", elapsed.as_secs())
+    } else if elapsed.as_secs() < 3600 {
+        format!("{}m ago", elapsed.as_secs() / 60)
+    } else {
+        format!("{}h ago", elapsed.as_secs() / 3600)
     }
 }
