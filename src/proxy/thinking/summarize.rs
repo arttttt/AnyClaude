@@ -8,6 +8,7 @@ use crate::config::SummarizeConfig;
 
 use super::context::{TransformContext, TransformResult, TransformStats};
 use super::error::TransformError;
+use super::strip::{remove_context_management, strip_thinking_blocks};
 use super::traits::ThinkingTransformer;
 
 /// Transformer that summarizes session history when switching backends.
@@ -76,26 +77,11 @@ impl ThinkingTransformer for SummarizeTransformer {
         }
 
         // 3. Strip thinking blocks (they're captured in summary if we switched)
-        // For now, reuse strip logic inline (will be extracted in Phase 2.3)
-        if let Some(messages) = body.get_mut("messages").and_then(|v| v.as_array_mut()) {
-            for message in messages.iter_mut() {
-                if let Some(content) = message.get_mut("content").and_then(|v| v.as_array_mut()) {
-                    let before_len = content.len();
-                    content.retain(|item| {
-                        let item_type = item.get("type").and_then(|t| t.as_str());
-                        !matches!(item_type, Some("thinking") | Some("redacted_thinking"))
-                    });
-                    let removed = before_len - content.len();
-                    stats.stripped_count += removed as u32;
-                }
-            }
-        }
+        stats.stripped_count = strip_thinking_blocks(body);
 
         // Remove context_management if we stripped anything
         if stats.stripped_count > 0 {
-            if let Some(obj) = body.as_object_mut() {
-                obj.remove("context_management");
-            }
+            remove_context_management(body);
         }
 
         Ok(TransformResult::with_stats(stats))

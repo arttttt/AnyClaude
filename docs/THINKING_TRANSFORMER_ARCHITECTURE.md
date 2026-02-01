@@ -580,10 +580,11 @@ src/proxy/thinking/
 - [x] 2.2.7: Обновить `router.rs` — передавать `ThinkingConfig` вместо `ThinkingMode`
 - [x] 2.2.8: Тесты: registry_creates_summarize_transformer, registry_with_full_config
 
-#### Phase 2.3: Strip логика в Summarize
-- [ ] 2.3.1: Вынести strip логику в переиспользуемую функцию `strip_thinking_blocks()`
-- [ ] 2.3.2: Вызвать strip в `SummarizeTransformer::transform_request`
-- [ ] 2.3.3: Тесты strip в контексте Summarize
+#### Phase 2.3: Strip логика в Summarize ✅ DONE
+- [x] 2.3.1: Вынести strip логику в `strip.rs` как `pub fn strip_thinking_blocks()`
+- [x] 2.3.2: Добавить `pub fn remove_context_management()` в `strip.rs`
+- [x] 2.3.3: `SummarizeTransformer` импортирует и использует функции из `strip.rs`
+- [x] 2.3.4: Существующие тесты покрывают strip в контексте Summarize
 
 #### Phase 2.4: Prepend логика
 - [ ] 2.4.1: Метод `prepend_summary_to_user_message(body, summary)`

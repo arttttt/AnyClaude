@@ -7,6 +7,60 @@ use super::context::{TransformContext, TransformResult, TransformStats};
 use super::error::TransformError;
 use super::traits::ThinkingTransformer;
 
+// ============================================================================
+// Public functions for stripping thinking blocks
+// ============================================================================
+
+/// Strip all thinking and redacted_thinking blocks from messages.
+///
+/// Returns the number of blocks removed.
+///
+/// This function is used by both `StripTransformer` and `SummarizeTransformer`
+/// to remove thinking blocks from the request body.
+pub fn strip_thinking_blocks(body: &mut Value) -> u32 {
+    let Some(messages) = body.get_mut("messages").and_then(|v| v.as_array_mut()) else {
+        return 0;
+    };
+
+    let mut stripped_count = 0u32;
+
+    for message in messages.iter_mut() {
+        let Some(content) = message.get_mut("content").and_then(|v| v.as_array_mut()) else {
+            continue;
+        };
+
+        let before_len = content.len();
+
+        // Remove all thinking and redacted_thinking blocks
+        content.retain(|item| {
+            let item_type = item.get("type").and_then(|t| t.as_str());
+            !matches!(item_type, Some("thinking") | Some("redacted_thinking"))
+        });
+
+        stripped_count += (before_len - content.len()) as u32;
+    }
+
+    stripped_count
+}
+
+/// Remove the context_management field from the request body.
+///
+/// This field is used by Claude to manage thinking blocks, but becomes
+/// invalid after we remove them. Should be called after stripping thinking blocks.
+pub fn remove_context_management(body: &mut Value) -> bool {
+    if let Some(obj) = body.as_object_mut() {
+        if obj.remove("context_management").is_some() {
+            tracing::debug!("Removed context_management field after stripping thinking blocks");
+            return true;
+        }
+    }
+    false
+}
+
+// ============================================================================
+// StripTransformer
+// ============================================================================
+
 /// Transformer that strips (removes) all thinking blocks from requests.
 ///
 /// This is the simplest and most compatible mode. It completely removes
@@ -29,37 +83,11 @@ impl ThinkingTransformer for StripTransformer {
     ) -> Result<TransformResult, TransformError> {
         let mut stats = TransformStats::default();
 
-        let Some(messages) = body.get_mut("messages").and_then(|v| v.as_array_mut()) else {
-            return Ok(TransformResult::unchanged());
-        };
-
-        for message in messages.iter_mut() {
-            let Some(content) = message.get_mut("content").and_then(|v| v.as_array_mut()) else {
-                continue;
-            };
-
-            // Count thinking blocks before removal
-            let before_len = content.len();
-
-            // Remove all thinking and redacted_thinking blocks
-            content.retain(|item| {
-                let item_type = item.get("type").and_then(|t| t.as_str());
-                !matches!(item_type, Some("thinking") | Some("redacted_thinking"))
-            });
-
-            let removed = before_len - content.len();
-            stats.stripped_count += removed as u32;
-        }
+        stats.stripped_count = strip_thinking_blocks(body);
 
         // Remove context_management field if we modified anything
-        // This field is used by Claude to manage thinking blocks,
-        // but becomes invalid after we remove them
         if stats.stripped_count > 0 {
-            if let Some(obj) = body.as_object_mut() {
-                if obj.remove("context_management").is_some() {
-                    tracing::debug!("Removed context_management field after stripping thinking blocks");
-                }
-            }
+            remove_context_management(body);
         }
 
         Ok(TransformResult::with_stats(stats))
