@@ -282,7 +282,8 @@ impl UpstreamClient {
 
         if is_streaming {
             let stream = upstream_resp.bytes_stream();
-            let observed = ObservedStream::new(stream, span, observability);
+            let observed =
+                ObservedStream::new(stream, span, observability, self.timeout_config.idle);
             Ok(response_builder.body(Body::from_stream(observed))?)
         } else {
             span.mark_first_byte();
