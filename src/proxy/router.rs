@@ -13,7 +13,7 @@ use crate::proxy::error::ErrorResponse;
 use crate::metrics::{BackendOverride, DebugLogger, ObservabilityHub, RequestMeta, RoutingDecision};
 use crate::proxy::health::HealthHandler;
 use crate::proxy::pool::PoolConfig;
-use crate::proxy::thinking::ThinkingTracker;
+use crate::proxy::thinking::TransformerRegistry;
 use crate::proxy::timeout::TimeoutConfig;
 use crate::proxy::upstream::UpstreamClient;
 
@@ -38,16 +38,16 @@ impl RouterEngine {
         observability: ObservabilityHub,
         debug_logger: Arc<DebugLogger>,
     ) -> Self {
-        let thinking_tracker = Arc::new(parking_lot::RwLock::new(ThinkingTracker::new(
-            config.get().thinking.mode,
-        )));
+        let transformer_registry = Arc::new(TransformerRegistry::new(
+            config.get().thinking.mode.clone(),
+        ));
         Self {
             health: Arc::new(HealthHandler::new()),
             upstream: Arc::new(UpstreamClient::new(
                 timeout_config,
                 pool_config,
                 config.clone(),
-                thinking_tracker,
+                transformer_registry,
                 debug_logger.clone(),
             )),
             config,

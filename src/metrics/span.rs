@@ -51,6 +51,10 @@ impl RequestSpan {
     pub fn record_mut(&mut self) -> &mut RequestRecord {
         &mut self.record
     }
+
+    pub fn request_id(&self) -> &str {
+        &self.record.id
+    }
 }
 
 pub struct RequestTiming {

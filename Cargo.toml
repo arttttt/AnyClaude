@@ -38,6 +38,9 @@ fs2 = "0.4"
 # Concurrency
 parking_lot = "0.12"
 
+# Async traits
+async-trait = "0.1"
+
 # Utilities
 scopeguard = "1.2"
 libc = "0.2"
