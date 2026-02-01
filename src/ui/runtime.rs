@@ -38,7 +38,6 @@ pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Re
     }
     let config_path = Config::config_path();
     let config_store = ConfigStore::new(config, config_path);
-    let proxy_base_url = config_store.get().proxy.base_url.clone();
 
     // Create shutdown coordinator for graceful shutdown
     let shutdown_coordinator = ShutdownCoordinator::new();
@@ -59,8 +58,14 @@ pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Re
     let (ui_command_tx, ui_command_rx) = mpsc::channel(UI_COMMAND_BUFFER);
     let mut app = App::new(tick_rate, config_store.clone());
     app.set_ipc_sender(ui_command_tx.clone());
-    let proxy_server = ProxyServer::new(config_store.clone())
+    let mut proxy_server = ProxyServer::new(config_store.clone())
         .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
+    
+    // Try to bind and get the actual port, updating the base URL
+    let (_actual_addr, actual_base_url) = async_runtime.block_on(async {
+        proxy_server.try_bind(&config_store).await
+    }).map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
+    
     let proxy_handle = proxy_server.handle();
     let backend_state = proxy_server.backend_state();
     let observability = proxy_server.observability();
@@ -105,8 +110,9 @@ pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Re
     let args = claude_args;
     // Set BASE_URL to redirect traffic through proxy
     // Auth token is injected by proxy based on active backend (runtime)
+    // Use the actual port that was bound
     let env = vec![
-        ("ANTHROPIC_BASE_URL".to_string(), proxy_base_url),
+        ("ANTHROPIC_BASE_URL".to_string(), actual_base_url),
     ];
     let scrollback_lines = config_store.get().terminal.scrollback_lines;
     let mut pty_session = PtySession::spawn(command, args, env, scrollback_lines, events.sender())

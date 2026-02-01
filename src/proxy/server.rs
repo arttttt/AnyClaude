@@ -26,12 +26,6 @@ impl ProxyServer {
     pub fn new(
         config: ConfigStore,
     ) -> Result<Self, crate::backend::BackendError> {
-        let addr = config
-            .get()
-            .proxy
-            .bind_addr
-            .parse()
-            .expect("Invalid bind address");
         let timeout_config = TimeoutConfig::from(&config.get().defaults);
         let pool_config = PoolConfig::from(&config.get().defaults);
         let backend_state = BackendState::from_config(config.get())?;
@@ -44,12 +38,55 @@ impl ProxyServer {
             observability.clone(),
         );
         Ok(Self {
-            addr,
+            addr: SocketAddr::from(([127, 0, 0, 1], 0)), // Will be determined at bind time
             router,
             shutdown: Arc::new(ShutdownManager::new()),
             backend_state,
             observability,
         })
+    }
+
+    /// Try to bind to the configured address, falling back to incremental ports if busy.
+    /// Returns the bound address and the base URL for Claude Code.
+    pub async fn try_bind(&mut self, config: &ConfigStore) -> Result<(SocketAddr, String), Box<dyn std::error::Error>> {
+        let bind_addr_str = config.get().proxy.bind_addr.clone();
+        let base_url_template = config.get().proxy.base_url.clone();
+        
+        // Parse the configured bind address to get the starting port
+        let bind_addr: SocketAddr = bind_addr_str.parse()
+            .map_err(|e| format!("Invalid bind address '{}': {}", bind_addr_str, e))?;
+        
+        let start_port = bind_addr.port();
+        let host = bind_addr.ip();
+        
+        // Try ports from start_port up to start_port + 100
+        for port in start_port..=start_port.saturating_add(100) {
+            let try_addr = SocketAddr::new(host, port);
+            match TcpListener::bind(try_addr).await {
+                Ok(listener) => {
+                    let actual_addr = listener.local_addr()?;
+                    drop(listener); // Release the listener, we'll bind again in run()
+                    
+                    // Build the base URL with the actual port
+                    let actual_base_url = if base_url_template.contains("localhost") || 
+                                           base_url_template.contains("127.0.0.1") {
+                        format!("http://127.0.0.1:{}", actual_addr.port())
+                    } else {
+                        base_url_template
+                    };
+                    
+                    self.addr = actual_addr;
+                    tracing::info!("Proxy will bind to {} (base_url: {})", actual_addr, actual_base_url);
+                    return Ok((actual_addr, actual_base_url));
+                }
+                Err(e) => {
+                    tracing::debug!("Port {} busy: {}", port, e);
+                    continue;
+                }
+            }
+        }
+        
+        Err(format!("Could not find available port in range {}-{}", start_port, start_port + 100).into())
     }
 
     pub fn backend_state(&self) -> BackendState {
@@ -72,7 +109,8 @@ impl ProxyServer {
 
     pub async fn run(&self) -> Result<(), Box<dyn std::error::Error>> {
         tracing::info!("Starting proxy server on {}", self.addr);
-        let listener = TcpListener::bind(self.addr).await?;
+        let listener = TcpListener::bind(self.addr).await
+            .map_err(|e| format!("Failed to bind to {}: {}", self.addr, e))?;
         tracing::info!("Proxy server listening on {}", self.addr);
 
         let app = build_router(self.router.clone());
