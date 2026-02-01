@@ -34,6 +34,7 @@ notify = "6.1"
 
 # Utilities
 scopeguard = "1.2"
+libc = "0.2"
 
 # Clipboard
 arboard = { version = "3.6", default-features = true }

@@ -3,6 +3,7 @@ use crate::config::{Config, ConfigStore, ConfigWatcher};
 use crate::ipc::IpcLayer;
 use crate::proxy::ProxyServer;
 use crate::pty::{parse_command, PtySession};
+use crate::shutdown::{ShutdownCoordinator, ShutdownPhase};
 use crate::ui::app::{App, UiCommand};
 use crate::ui::events::{AppEvent, EventHandler};
 use crate::ui::input::{handle_key, InputAction};
@@ -32,7 +33,11 @@ pub fn run() -> io::Result<()> {
     let config_store = ConfigStore::new(config, config_path);
     let proxy_base_url = config_store.get().proxy.base_url.clone();
 
-    let events = EventHandler::new(tick_rate);
+    // Create shutdown coordinator for graceful shutdown
+    let shutdown_coordinator = ShutdownCoordinator::new();
+    let shutdown_handle = shutdown_coordinator.handle();
+
+    let events = EventHandler::new(tick_rate, shutdown_handle.clone());
     let async_runtime = Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -78,6 +83,13 @@ pub fn run() -> io::Result<()> {
         bridge_backend_state,
         bridge_events,
     ));
+
+    // Spawn OS signal handler
+    let signal_events = events.sender();
+    async_runtime.spawn(async move {
+        wait_for_os_signal().await;
+        let _ = signal_events.send(AppEvent::Shutdown);
+    });
 
     app.request_status_refresh();
     app.request_backends_refresh();
@@ -162,15 +174,33 @@ pub fn run() -> io::Result<()> {
             Ok(AppEvent::IpcMetrics(metrics)) => app.update_metrics(metrics),
             Ok(AppEvent::IpcBackends(backends)) => app.update_backends(backends),
             Ok(AppEvent::IpcError(message)) => app.set_ipc_error(message),
+            Ok(AppEvent::Shutdown) => {
+                app.request_quit();
+            }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
 
+    // Signal shutdown to all components
+    shutdown_coordinator.signal();
+
+    // Phase 2: Stop input
+    shutdown_coordinator.advance(ShutdownPhase::StoppingInput);
+    drop(events);
+
+    // Phase 3 & 4: Terminate child and close proxy
+    shutdown_coordinator.advance(ShutdownPhase::TerminatingChild);
     proxy_handle.shutdown();
     let _ = pty_session.shutdown();
+
+    // Phase 5: Cleanup
+    shutdown_coordinator.advance(ShutdownPhase::Cleanup);
     drop(guard);
-    async_runtime.shutdown_timeout(Duration::from_secs(5));
+    async_runtime.shutdown_timeout(Duration::from_secs(2));
+
+    shutdown_coordinator.advance(ShutdownPhase::Complete);
+    tracing::info!("Shutdown complete");
     Ok(())
 }
 
@@ -258,5 +288,33 @@ fn handle_image_paste(app: &mut App, clipboard: &mut Option<ClipboardHandler>) {
             app.on_paste(&text);
         }
         ClipboardContent::Empty => {}
+    }
+}
+
+/// Wait for OS shutdown signals (SIGTERM, SIGINT).
+async fn wait_for_os_signal() {
+    use tokio::signal;
+
+    #[cfg(unix)]
+    {
+        let mut sigterm = signal::unix::signal(signal::unix::SignalKind::terminate())
+            .expect("Failed to install SIGTERM handler");
+
+        tokio::select! {
+            _ = signal::ctrl_c() => {
+                tracing::info!("Received SIGINT");
+            }
+            _ = sigterm.recv() => {
+                tracing::info!("Received SIGTERM");
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        signal::ctrl_c()
+            .await
+            .expect("Failed to listen for Ctrl+C");
+        tracing::info!("Received Ctrl+C");
     }
 }

@@ -1,6 +1,64 @@
 use claudewrapper::proxy::shutdown::ShutdownManager;
+use claudewrapper::shutdown::{ShutdownCoordinator, ShutdownPhase};
 use std::time::Duration;
 
+// Tests for ShutdownCoordinator
+#[test]
+fn test_shutdown_coordinator_initialization() {
+    let coordinator = ShutdownCoordinator::new();
+    assert!(!coordinator.is_shutting_down());
+    assert_eq!(coordinator.phase(), ShutdownPhase::Running);
+}
+
+#[test]
+fn test_shutdown_coordinator_signal() {
+    let coordinator = ShutdownCoordinator::new();
+    assert!(!coordinator.is_shutting_down());
+
+    coordinator.signal();
+    assert!(coordinator.is_shutting_down());
+
+    // Signal again should be idempotent
+    coordinator.signal();
+    assert!(coordinator.is_shutting_down());
+}
+
+#[test]
+fn test_shutdown_coordinator_phases() {
+    let coordinator = ShutdownCoordinator::new();
+
+    coordinator.advance(ShutdownPhase::Signaled);
+    assert_eq!(coordinator.phase(), ShutdownPhase::Signaled);
+
+    coordinator.advance(ShutdownPhase::StoppingInput);
+    assert_eq!(coordinator.phase(), ShutdownPhase::StoppingInput);
+
+    coordinator.advance(ShutdownPhase::Complete);
+    assert_eq!(coordinator.phase(), ShutdownPhase::Complete);
+}
+
+#[test]
+fn test_shutdown_handle_shares_state() {
+    let coordinator = ShutdownCoordinator::new();
+    let handle = coordinator.handle();
+
+    assert!(!handle.is_shutting_down());
+
+    coordinator.signal();
+    assert!(handle.is_shutting_down());
+}
+
+#[test]
+fn test_shutdown_handle_can_signal() {
+    let coordinator = ShutdownCoordinator::new();
+    let handle = coordinator.handle();
+
+    handle.signal();
+    assert!(coordinator.is_shutting_down());
+    assert!(handle.is_shutting_down());
+}
+
+// Tests for proxy ShutdownManager
 #[tokio::test]
 async fn test_shutdown_manager_initialization() {
     let manager = ShutdownManager::new();

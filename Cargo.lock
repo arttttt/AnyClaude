@@ -257,6 +257,7 @@ dependencies = [
  "futures-core",
  "http-body-util",
  "image",
+ "libc",
  "notify",
  "portable-pty",
  "ratatui",

@@ -84,9 +84,34 @@ impl PtySession {
     }
 
     pub fn shutdown(&mut self) -> Result<(), Box<dyn Error>> {
+        // Close stdin to signal EOF to child
         self.handle.close_writer();
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+
+        // Give child a chance to exit gracefully with SIGTERM
+        #[cfg(unix)]
+        if let Some(pid) = self.child.process_id() {
+            // SAFETY: kill() is safe to call with valid pid
+            unsafe {
+                libc::kill(pid as i32, libc::SIGTERM);
+            }
+        }
+
+        // Wait with timeout for graceful exit
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(300);
+        loop {
+            match self.child.try_wait()? {
+                Some(_) => break,
+                None if std::time::Instant::now() >= deadline => {
+                    // Force kill after timeout
+                    let _ = self.child.kill();
+                    let _ = self.child.wait();
+                    break;
+                }
+                None => std::thread::sleep(std::time::Duration::from_millis(10)),
+            }
+        }
+
+        // Join reader thread
         if let Some(reader_handle) = self.reader_handle.take() {
             let _ = reader_handle.join();
         }

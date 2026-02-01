@@ -5,4 +5,5 @@ pub mod ipc;
 pub mod metrics;
 pub mod proxy;
 pub mod pty;
+pub mod shutdown;
 pub mod ui;

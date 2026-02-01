@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use crate::ipc::{BackendInfo, ProxyStatus};
 use crate::metrics::MetricsSnapshot;
+use crate::shutdown::ShutdownHandle;
 
 pub enum AppEvent {
     Input(KeyEvent),
@@ -21,6 +22,8 @@ pub enum AppEvent {
     IpcMetrics(MetricsSnapshot),
     IpcBackends(Vec<BackendInfo>),
     IpcError(String),
+    /// OS signal received (SIGTERM, SIGINT)
+    Shutdown,
 }
 
 pub struct EventHandler {
@@ -29,14 +32,20 @@ pub struct EventHandler {
 }
 
 impl EventHandler {
-    pub fn new(tick_rate: Duration) -> Self {
+    pub fn new(tick_rate: Duration, shutdown: ShutdownHandle) -> Self {
         let (tx, rx) = mpsc::channel();
         let event_tx = tx.clone();
 
         thread::spawn(move || {
             let mut last_tick = Instant::now();
             loop {
-                let timeout = tick_rate.saturating_sub(last_tick.elapsed());
+                // Check shutdown flag before blocking on poll
+                if shutdown.is_shutting_down() {
+                    break;
+                }
+
+                // Use short poll timeout to check shutdown flag frequently
+                let timeout = tick_rate.saturating_sub(last_tick.elapsed()).min(Duration::from_millis(50));
                 if event::poll(timeout).unwrap_or(false) {
                     match event::read() {
                         Ok(Event::Key(key)) => {
