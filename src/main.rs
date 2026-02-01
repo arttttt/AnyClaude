@@ -1,5 +1,6 @@
 use clap::Parser;
-use std::io;
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+use std::io::{self, IsTerminal};
 
 use claudewrapper::config::Config;
 
@@ -17,10 +18,27 @@ struct Cli {
 }
 
 fn main() -> io::Result<()> {
-    // Note: We intentionally don't call init_tracing() here.
-    // Tracing to stdout corrupts the TUI display (logs appear in header area).
-    // The proxy runs without console logging when in TUI mode.
+    // Enter raw mode IMMEDIATELY to capture any early input from tmux send-keys.
+    // Without this, input arriving before setup_terminal() is lost in cooked mode.
+    // Only do this if stdin is a terminal (tests run without TTY).
+    let is_tty = io::stdin().is_terminal();
+    if is_tty {
+        enable_raw_mode()?;
+    }
 
+    // Run main logic, ensuring raw mode is disabled on any exit path
+    let result = run_main();
+
+    // Always disable raw mode before exiting (guard handles it for normal path,
+    // but we need this for error paths before guard is created)
+    if is_tty && result.is_err() {
+        let _ = disable_raw_mode();
+    }
+
+    result
+}
+
+fn run_main() -> io::Result<()> {
     let cli = Cli::parse();
 
     // Load config to validate backend
@@ -29,6 +47,8 @@ fn main() -> io::Result<()> {
     if let Some(ref backend_name) = cli.backend {
         let exists = config.backends.iter().any(|b| &b.name == backend_name);
         if !exists {
+            // Must exit raw mode before printing errors
+            let _ = disable_raw_mode();
             let available: Vec<_> = config.backends.iter().map(|b| b.name.as_str()).collect();
             eprintln!("Error: Backend '{}' not found in config", backend_name);
             if available.is_empty() {
