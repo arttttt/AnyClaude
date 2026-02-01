@@ -40,7 +40,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
         }
     }
     let footer_widget = Footer::new();
-    frame.render_widget(footer_widget.widget(), footer);
+    frame.render_widget(footer_widget.widget(footer), footer);
 
     if let Some(kind) = app.popup_kind() {
         let (title, lines) = match kind {
