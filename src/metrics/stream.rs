@@ -8,7 +8,9 @@ use futures_core::Stream;
 use tokio::time::{Instant, Sleep};
 
 use super::hub::ObservabilityHub;
+use super::redaction::redact_body_preview;
 use super::span::RequestSpan;
+use super::types::ResponseMeta;
 
 /// Stream wrapper that adds observability and idle timeout to SSE streams.
 ///
@@ -20,21 +22,73 @@ pub struct ObservedStream<S> {
     hub: ObservabilityHub,
     idle_timeout: Duration,
     deadline: Pin<Box<Sleep>>,
+    response_preview: Option<ResponsePreview>,
+}
+
+pub struct ResponsePreview {
+    pub limit: usize,
+    pub content_type: String,
+    pub buffer: Vec<u8>,
+}
+
+impl ResponsePreview {
+    pub fn new(limit: usize, content_type: String) -> Option<Self> {
+        if limit == 0 {
+            return None;
+        }
+        Some(Self {
+            limit,
+            content_type,
+            buffer: Vec::new(),
+        })
+    }
+
+    fn push(&mut self, bytes: &[u8]) {
+        if self.buffer.len() >= self.limit {
+            return;
+        }
+        let remaining = self.limit - self.buffer.len();
+        let slice = if bytes.len() > remaining {
+            &bytes[..remaining]
+        } else {
+            bytes
+        };
+        self.buffer.extend_from_slice(slice);
+    }
 }
 
 impl<S> ObservedStream<S> {
-    pub fn new(inner: S, span: RequestSpan, hub: ObservabilityHub, idle_timeout: Duration) -> Self {
+    pub fn new(
+        inner: S,
+        span: RequestSpan,
+        hub: ObservabilityHub,
+        idle_timeout: Duration,
+        response_preview: Option<ResponsePreview>,
+    ) -> Self {
         Self {
             inner,
             span: Some(span),
             hub,
             idle_timeout,
             deadline: Box::pin(tokio::time::sleep(idle_timeout)),
+            response_preview,
         }
     }
 
     fn finish(&mut self) {
-        if let Some(span) = self.span.take() {
+        if let Some(mut span) = self.span.take() {
+            if let Some(preview) = self.response_preview.take() {
+                let preview_value =
+                    redact_body_preview(&preview.buffer, &preview.content_type, preview.limit);
+                let meta = span
+                    .record_mut()
+                    .response_meta
+                    .get_or_insert_with(|| ResponseMeta {
+                        headers: None,
+                        body_preview: None,
+                    });
+                meta.body_preview = preview_value;
+            }
             self.hub.finish_request(span);
         }
     }
@@ -74,6 +128,9 @@ where
                 if let Some(span) = &mut self.span {
                     span.mark_first_byte();
                     span.add_response_bytes(bytes.len());
+                }
+                if let Some(preview) = &mut self.response_preview {
+                    preview.push(&bytes);
                 }
                 Poll::Ready(Some(Ok(bytes)))
             }

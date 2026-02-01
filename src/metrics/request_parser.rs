@@ -1,7 +1,8 @@
 use crate::metrics::{ObservabilityPlugin, PreRequestContext};
+use serde::Serialize;
 use serde_json::Value;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct RequestAnalysis {
     pub model: Option<String>,
     pub max_tokens: Option<u64>,

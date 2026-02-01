@@ -5,7 +5,7 @@ use std::time::Instant;
 use tokio::sync::mpsc;
 
 use crate::backend::BackendState;
-use crate::metrics::{MetricsSnapshot, ObservabilityHub};
+use crate::metrics::{DebugLogger, MetricsSnapshot, ObservabilityHub};
 use crate::proxy::shutdown::ShutdownManager;
 
 use super::types::{BackendInfo, IpcCommand, ProxyStatus};
@@ -23,6 +23,7 @@ impl IpcServer {
         mut self,
         backend_state: BackendState,
         observability: ObservabilityHub,
+        debug_logger: Arc<DebugLogger>,
         shutdown: Arc<ShutdownManager>,
         started_at: Instant,
     ) {
@@ -81,6 +82,18 @@ impl IpcServer {
                     }
                     if respond_to.send(backends).is_err() {
                         tracing::trace!("IPC: ListBackends response dropped (receiver gone)");
+                    }
+                }
+                IpcCommand::GetDebugLogging { respond_to } => {
+                    let config = debug_logger.config();
+                    if respond_to.send(config).is_err() {
+                        tracing::trace!("IPC: GetDebugLogging response dropped (receiver gone)");
+                    }
+                }
+                IpcCommand::SetDebugLogging { config, respond_to } => {
+                    debug_logger.set_config(config);
+                    if respond_to.send(Ok(())).is_err() {
+                        tracing::trace!("IPC: SetDebugLogging response dropped (receiver gone)");
                     }
                 }
             }

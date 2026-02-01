@@ -55,7 +55,9 @@ impl Config {
     /// - Returns an error if reading, parsing, or validation fails.
     pub fn load_from(path: &Path) -> Result<Self, ConfigError> {
         if !path.exists() {
-            return Ok(Config::default());
+            let mut config = Config::default();
+            config.debug_logging.apply_env_overrides();
+            return Ok(config);
         }
 
         // Open file and acquire shared lock for reading
@@ -72,18 +74,21 @@ impl Config {
 
         // Read content while holding the lock
         let mut content = String::new();
-        (&file).read_to_string(&mut content).map_err(|e| ConfigError::ReadError {
-            path: path.to_path_buf(),
-            source: e,
-        })?;
+        (&file)
+            .read_to_string(&mut content)
+            .map_err(|e| ConfigError::ReadError {
+                path: path.to_path_buf(),
+                source: e,
+            })?;
 
         // Lock is automatically released when file is dropped
 
-        let config: Config = toml::from_str(&content).map_err(|e| ConfigError::ParseError {
+        let mut config: Config = toml::from_str(&content).map_err(|e| ConfigError::ParseError {
             path: path.to_path_buf(),
             source: e,
         })?;
 
+        config.debug_logging.apply_env_overrides();
         config.validate()?;
         Ok(config)
     }

@@ -64,6 +64,7 @@ pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Re
     let proxy_handle = proxy_server.handle();
     let backend_state = proxy_server.backend_state();
     let observability = proxy_server.observability();
+    let debug_logger = proxy_server.debug_logger();
     let shutdown = proxy_server.shutdown_handle();
     let started_at = std::time::Instant::now();
 
@@ -76,6 +77,7 @@ pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Re
     async_runtime.spawn(ipc_server.run(
         backend_state.clone(),
         observability,
+        debug_logger,
         shutdown,
         started_at,
     ));

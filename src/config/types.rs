@@ -10,6 +10,8 @@ pub struct Config {
     pub thinking: ThinkingConfig,
     #[serde(default)]
     pub terminal: TerminalConfig,
+    #[serde(default)]
+    pub debug_logging: DebugLoggingConfig,
     pub backends: Vec<Backend>,
 }
 
@@ -66,6 +68,67 @@ pub struct TerminalConfig {
     pub scrollback_lines: usize,
 }
 
+/// Debug logging configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DebugLoggingConfig {
+    #[serde(default)]
+    pub level: DebugLogLevel,
+    #[serde(default)]
+    pub format: DebugLogFormat,
+    #[serde(default)]
+    pub destination: DebugLogDestination,
+    #[serde(default = "default_debug_log_file_path")]
+    pub file_path: String,
+    #[serde(default = "default_debug_body_preview_bytes")]
+    pub body_preview_bytes: usize,
+    #[serde(default = "default_debug_header_preview")]
+    pub header_preview: bool,
+    #[serde(default)]
+    pub rotation: DebugLogRotation,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum DebugLogLevel {
+    Off,
+    Basic,
+    Verbose,
+    Full,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DebugLogFormat {
+    Console,
+    Json,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DebugLogDestination {
+    Stderr,
+    File,
+    Both,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DebugLogRotation {
+    #[serde(default)]
+    pub mode: DebugLogRotationMode,
+    #[serde(default = "default_debug_rotation_max_bytes")]
+    pub max_bytes: u64,
+    #[serde(default = "default_debug_rotation_max_files")]
+    pub max_files: usize,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DebugLogRotationMode {
+    None,
+    Size,
+    Daily,
+}
+
 /// Handling mode for thinking blocks when switching backends.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -103,6 +166,26 @@ fn default_scrollback_lines() -> usize {
     10_000
 }
 
+fn default_debug_log_file_path() -> String {
+    "~/.config/claude-wrapper/debug.log".to_string()
+}
+
+fn default_debug_body_preview_bytes() -> usize {
+    1024
+}
+
+fn default_debug_header_preview() -> bool {
+    true
+}
+
+fn default_debug_rotation_max_bytes() -> u64 {
+    10 * 1024 * 1024
+}
+
+fn default_debug_rotation_max_files() -> usize {
+    5
+}
+
 fn default_proxy_bind_addr() -> String {
     "127.0.0.1:8080".to_string()
 }
@@ -126,6 +209,15 @@ pub struct Backend {
     /// Direct API key for this backend.
     #[serde(default)]
     pub api_key: Option<String>,
+    /// Optional pricing per million tokens.
+    #[serde(default)]
+    pub pricing: Option<BackendPricing>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackendPricing {
+    pub input_per_million: f64,
+    pub output_per_million: f64,
 }
 
 impl Default for Backend {
@@ -136,6 +228,7 @@ impl Default for Backend {
             base_url: "https://api.anthropic.com".to_string(),
             auth_type_str: "passthrough".to_string(),
             api_key: None,
+            pricing: None,
         }
     }
 }
@@ -162,6 +255,7 @@ impl Default for Config {
             proxy: ProxyConfig::default(),
             thinking: ThinkingConfig::default(),
             terminal: TerminalConfig::default(),
+            debug_logging: DebugLoggingConfig::default(),
             backends: vec![Backend::default()],
         }
     }
@@ -194,6 +288,121 @@ impl Default for TerminalConfig {
     fn default() -> Self {
         Self {
             scrollback_lines: default_scrollback_lines(),
+        }
+    }
+}
+
+impl Default for DebugLoggingConfig {
+    fn default() -> Self {
+        Self {
+            level: DebugLogLevel::Off,
+            format: DebugLogFormat::Console,
+            destination: DebugLogDestination::Stderr,
+            file_path: default_debug_log_file_path(),
+            body_preview_bytes: default_debug_body_preview_bytes(),
+            header_preview: default_debug_header_preview(),
+            rotation: DebugLogRotation::default(),
+        }
+    }
+}
+
+impl Default for DebugLogRotation {
+    fn default() -> Self {
+        Self {
+            mode: DebugLogRotationMode::None,
+            max_bytes: default_debug_rotation_max_bytes(),
+            max_files: default_debug_rotation_max_files(),
+        }
+    }
+}
+
+impl Default for DebugLogLevel {
+    fn default() -> Self {
+        DebugLogLevel::Off
+    }
+}
+
+impl Default for DebugLogFormat {
+    fn default() -> Self {
+        DebugLogFormat::Console
+    }
+}
+
+impl Default for DebugLogDestination {
+    fn default() -> Self {
+        DebugLogDestination::Stderr
+    }
+}
+
+impl Default for DebugLogRotationMode {
+    fn default() -> Self {
+        DebugLogRotationMode::None
+    }
+}
+
+impl DebugLoggingConfig {
+    pub fn apply_env_overrides(&mut self) {
+        if let Ok(value) = std::env::var("CLAUDE_WRAPPER_DEBUG_LEVEL") {
+            if let Some(level) = DebugLogLevel::parse(&value) {
+                self.level = level;
+            }
+        }
+
+        if let Ok(value) = std::env::var("CLAUDE_WRAPPER_DEBUG_FORMAT") {
+            if let Some(format) = DebugLogFormat::parse(&value) {
+                self.format = format;
+            }
+        }
+
+        if let Ok(value) = std::env::var("CLAUDE_WRAPPER_DEBUG_DEST") {
+            if let Some(dest) = DebugLogDestination::parse(&value) {
+                self.destination = dest;
+            }
+        }
+
+        if let Ok(value) = std::env::var("CLAUDE_WRAPPER_DEBUG_FILE") {
+            if !value.trim().is_empty() {
+                self.file_path = value;
+            }
+        }
+
+        if let Ok(value) = std::env::var("CLAUDE_WRAPPER_DEBUG_BODY_PREVIEW_BYTES") {
+            if let Ok(parsed) = value.parse::<usize>() {
+                self.body_preview_bytes = parsed;
+            }
+        }
+    }
+}
+
+impl DebugLogLevel {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_lowercase().as_str() {
+            "off" => Some(DebugLogLevel::Off),
+            "basic" => Some(DebugLogLevel::Basic),
+            "verbose" => Some(DebugLogLevel::Verbose),
+            "full" => Some(DebugLogLevel::Full),
+            _ => None,
+        }
+    }
+}
+
+impl DebugLogFormat {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_lowercase().as_str() {
+            "console" => Some(DebugLogFormat::Console),
+            "json" | "jsonl" => Some(DebugLogFormat::Json),
+            _ => None,
+        }
+    }
+}
+
+impl DebugLogDestination {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_lowercase().as_str() {
+            "stderr" => Some(DebugLogDestination::Stderr),
+            "file" => Some(DebugLogDestination::File),
+            "both" => Some(DebugLogDestination::Both),
+            _ => None,
         }
     }
 }

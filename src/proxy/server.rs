@@ -7,7 +7,7 @@ use tokio::net::TcpListener;
 
 use crate::backend::BackendState;
 use crate::config::ConfigStore;
-use crate::metrics::ObservabilityHub;
+use crate::metrics::{DebugLogger, ObservabilityHub};
 use crate::proxy::connection::ConnectionCounter;
 use crate::proxy::pool::PoolConfig;
 use crate::proxy::router::{build_router, RouterEngine};
@@ -23,6 +23,7 @@ pub struct ProxyServer {
     shutdown: Arc<ShutdownManager>,
     backend_state: BackendState,
     observability: ObservabilityHub,
+    debug_logger: Arc<DebugLogger>,
 }
 
 impl ProxyServer {
@@ -32,13 +33,16 @@ impl ProxyServer {
         let timeout_config = TimeoutConfig::from(&config.get().defaults);
         let pool_config = PoolConfig::from(&config.get().defaults);
         let backend_state = BackendState::from_config(config.get())?;
-        let observability = ObservabilityHub::new(1000);
+        let debug_logger = Arc::new(DebugLogger::new(config.get().debug_logging.clone()));
+        let observability = ObservabilityHub::new(1000)
+            .with_plugins(vec![debug_logger.clone()]);
         let router = RouterEngine::new(
             config,
             timeout_config,
             pool_config,
             backend_state.clone(),
             observability.clone(),
+            debug_logger.clone(),
         );
         Ok(Self {
             addr: SocketAddr::from(([127, 0, 0, 1], 0)), // Will be determined at bind time
@@ -47,6 +51,7 @@ impl ProxyServer {
             shutdown: Arc::new(ShutdownManager::new()),
             backend_state,
             observability,
+            debug_logger,
         })
     }
 
@@ -103,6 +108,10 @@ impl ProxyServer {
 
     pub fn observability(&self) -> ObservabilityHub {
         self.observability.clone()
+    }
+
+    pub fn debug_logger(&self) -> Arc<DebugLogger> {
+        self.debug_logger.clone()
     }
 
     pub fn shutdown_handle(&self) -> Arc<ShutdownManager> {

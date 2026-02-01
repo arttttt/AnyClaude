@@ -5,7 +5,10 @@
 
 mod common;
 
-use claudewrapper::config::{Backend, Config, ConfigStore, Defaults, ProxyConfig, TerminalConfig, ThinkingConfig};
+use claudewrapper::config::{
+    Backend, Config, ConfigStore, DebugLoggingConfig, Defaults, ProxyConfig, TerminalConfig,
+    ThinkingConfig,
+};
 use claudewrapper::proxy::ProxyServer;
 use common::mock_backend::{MockBackend, MockResponse};
 use reqwest::Client;
@@ -33,6 +36,7 @@ fn test_config(backend: Backend, bind_addr: &str) -> Config {
         },
         thinking: ThinkingConfig::default(),
         terminal: TerminalConfig::default(),
+        debug_logging: DebugLoggingConfig::default(),
         backends: vec![backend],
     }
 }
@@ -44,6 +48,7 @@ fn create_backend(name: &str, base_url: &str) -> Backend {
         base_url: base_url.to_string(),
         auth_type_str: "passthrough".to_string(),
         api_key: None,
+        pricing: None,
     }
 }
 

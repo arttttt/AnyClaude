@@ -14,4 +14,8 @@ pub use auth::{build_auth_header, AuthHeader};
 pub use credentials::{AuthType, CredentialStatus, SecureString};
 pub use loader::ConfigError;
 pub use store::ConfigStore;
-pub use types::{Backend, Config, Defaults, ProxyConfig, TerminalConfig, ThinkingConfig, ThinkingMode};
+pub use types::{
+    Backend, BackendPricing, Config, DebugLogDestination, DebugLogFormat, DebugLogLevel,
+    DebugLogRotation, DebugLogRotationMode, DebugLoggingConfig, Defaults, ProxyConfig,
+    TerminalConfig, ThinkingConfig, ThinkingMode,
+};

@@ -109,10 +109,7 @@ impl BackendState {
     ///
     /// This is fast and non-blocking for concurrent readers.
     pub fn get_active_backend(&self) -> String {
-        self.inner
-            .read()
-                        .active_backend
-            .clone()
+        self.inner.read().active_backend.clone()
     }
 
     /// Get the full configuration for the currently active backend.
@@ -148,10 +145,7 @@ impl BackendState {
 
     /// Get the full current configuration.
     pub fn get_config(&self) -> Config {
-        self.inner
-            .read()
-                        .config
-            .clone()
+        self.inner.read().config.clone()
     }
 
     /// Switch to a different backend.
@@ -203,10 +197,7 @@ impl BackendState {
 
     /// Get the switch log for debugging/auditing.
     pub fn get_switch_log(&self) -> Vec<SwitchLogEntry> {
-        self.inner
-            .read()
-                        .switch_log
-            .clone()
+        self.inner.read().switch_log.clone()
     }
 
     /// Validate that a backend ID exists in the current configuration.
@@ -290,6 +281,7 @@ mod tests {
             proxy: crate::config::ProxyConfig::default(),
             thinking: crate::config::ThinkingConfig::default(),
             terminal: crate::config::TerminalConfig::default(),
+            debug_logging: crate::config::DebugLoggingConfig::default(),
             backends: vec![
                 Backend {
                     name: "backend1".to_string(),
@@ -297,7 +289,7 @@ mod tests {
                     base_url: "https://api1.example.com".to_string(),
                     auth_type_str: "api_key".to_string(),
                     api_key: None,
-
+                    pricing: None,
                 },
                 Backend {
                     name: "backend2".to_string(),
@@ -305,7 +297,7 @@ mod tests {
                     base_url: "https://api2.example.com".to_string(),
                     auth_type_str: "bearer".to_string(),
                     api_key: None,
-
+                    pricing: None,
                 },
             ],
         }
@@ -443,7 +435,7 @@ mod tests {
             base_url: "https://api3.example.com".to_string(),
             auth_type_str: "api_key".to_string(),
             api_key: None,
-            
+            pricing: None,
         });
 
         state.update_config(new_config).unwrap();

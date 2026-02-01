@@ -1,7 +1,9 @@
 use super::*;
 use crate::backend::BackendState;
-use crate::config::{Backend, Config, Defaults, ProxyConfig, TerminalConfig, ThinkingConfig};
-use crate::metrics::ObservabilityHub;
+use crate::config::{
+    Backend, Config, DebugLoggingConfig, Defaults, ProxyConfig, TerminalConfig, ThinkingConfig,
+};
+use crate::metrics::{DebugLogger, ObservabilityHub};
 use crate::proxy::shutdown::ShutdownManager;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -21,6 +23,7 @@ fn test_config() -> Config {
         proxy: ProxyConfig::default(),
         thinking: ThinkingConfig::default(),
         terminal: TerminalConfig::default(),
+        debug_logging: DebugLoggingConfig::default(),
         backends: vec![
             Backend {
                 name: "alpha".to_string(),
@@ -28,6 +31,7 @@ fn test_config() -> Config {
                 base_url: "https://alpha.example.com".to_string(),
                 auth_type_str: "none".to_string(),
                 api_key: None,
+                pricing: None,
             },
             Backend {
                 name: "beta".to_string(),
@@ -35,6 +39,7 @@ fn test_config() -> Config {
                 base_url: "https://beta.example.com".to_string(),
                 auth_type_str: "none".to_string(),
                 api_key: None,
+                pricing: None,
             },
         ],
     }
@@ -44,13 +49,15 @@ fn test_config() -> Config {
 async fn ipc_switch_backend_and_status() {
     let config = test_config();
     let backend_state = BackendState::from_config(config).expect("backend state");
-    let observability = ObservabilityHub::new(10);
+    let debug_logger = Arc::new(DebugLogger::new(DebugLoggingConfig::default()));
+    let observability = ObservabilityHub::new(10).with_plugins(vec![debug_logger.clone()]);
     let shutdown = Arc::new(ShutdownManager::new());
     let (client, server) = IpcLayer::new();
 
     let server_task = tokio::spawn(server.run(
         backend_state.clone(),
         observability,
+        debug_logger,
         shutdown,
         Instant::now(),
     ));

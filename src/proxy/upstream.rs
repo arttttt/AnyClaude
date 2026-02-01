@@ -5,9 +5,12 @@ use http_body_util::BodyExt;
 use reqwest::Client;
 use tokio::time::sleep;
 use crate::backend::BackendState;
-use crate::config::build_auth_header;
+use crate::config::{build_auth_header, DebugLogLevel};
 use crate::config::ConfigStore;
-use crate::metrics::{ObservedStream, ObservabilityHub, RequestSpan};
+use crate::metrics::{
+    redact_body_preview, redact_headers, DebugLogger, ObservedStream, ObservabilityHub,
+    RequestMeta, RequestParser, RequestSpan, ResponseMeta, ResponseParser, ResponsePreview,
+};
 use crate::proxy::error::ProxyError;
 use crate::proxy::pool::PoolConfig;
 use crate::proxy::thinking::ThinkingTracker;
@@ -21,6 +24,9 @@ pub struct UpstreamClient {
     pool_config: PoolConfig,
     config: ConfigStore,
     thinking_tracker: Arc<RwLock<ThinkingTracker>>,
+    debug_logger: Arc<DebugLogger>,
+    request_parser: RequestParser,
+    response_parser: ResponseParser,
 }
 
 impl UpstreamClient {
@@ -29,6 +35,7 @@ impl UpstreamClient {
         pool_config: PoolConfig,
         config: ConfigStore,
         thinking_tracker: Arc<RwLock<ThinkingTracker>>,
+        debug_logger: Arc<DebugLogger>,
     ) -> Self {
         let client = Client::builder()
             .connect_timeout(timeout_config.connect)
@@ -43,6 +50,9 @@ impl UpstreamClient {
             pool_config,
             config,
             thinking_tracker,
+            debug_logger,
+            request_parser: RequestParser::new(true),
+            response_parser: ResponseParser::new(),
         }
     }
 
@@ -98,6 +108,23 @@ impl UpstreamClient {
             .map(|pq| pq.as_str())
             .unwrap_or("/");
 
+        let debug_config = self.debug_logger.config();
+        let debug_level = debug_config.level;
+        if debug_level >= DebugLogLevel::Full && debug_config.header_preview {
+            let record = span.record_mut();
+            let meta = record.request_meta.get_or_insert_with(|| {
+                let query = uri.query().map(|value| value.to_string());
+                RequestMeta {
+                    method: method.to_string(),
+                    path: uri.path().to_string(),
+                    query,
+                    headers: None,
+                    body_preview: None,
+                }
+            });
+            meta.headers = Some(redact_headers(&headers));
+        }
+
         // Validate backend is configured
         if !backend.is_configured() {
             let err = ProxyError::BackendNotConfigured {
@@ -122,6 +149,32 @@ impl UpstreamClient {
             .get(CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
+
+        if debug_level >= DebugLogLevel::Verbose {
+            let analysis = self.request_parser.parse_request(&body_bytes);
+            span.record_mut().request_analysis = Some(analysis);
+        }
+
+        if debug_level >= DebugLogLevel::Full {
+            let meta = span
+                .record_mut()
+                .request_meta
+                .get_or_insert_with(|| {
+                    let query = uri.query().map(|value| value.to_string());
+                    RequestMeta {
+                        method: method.to_string(),
+                        path: uri.path().to_string(),
+                        query,
+                        headers: None,
+                        body_preview: None,
+                    }
+                });
+            meta.body_preview = redact_body_preview(
+                &body_bytes,
+                request_content_type,
+                debug_config.body_preview_bytes,
+            );
+        }
 
         if request_content_type.contains("application/json") {
             let mut tracker = self
@@ -257,19 +310,33 @@ impl UpstreamClient {
         let content_type = upstream_resp
             .headers()
             .get(CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok());
+            .and_then(|v| v.to_str().ok())
+            .map(|value| value.to_string());
 
-        let is_streaming = content_type.map_or(false, |ct| ct.contains("text/event-stream"));
+        let is_streaming = content_type
+            .as_deref()
+            .map_or(false, |ct| ct.contains("text/event-stream"));
 
         let status = upstream_resp.status();
         span.set_status(status.as_u16());
+
+        if debug_level >= DebugLogLevel::Full && debug_config.header_preview {
+            let meta = span
+                .record_mut()
+                .response_meta
+                .get_or_insert_with(|| ResponseMeta {
+                    headers: None,
+                    body_preview: None,
+                });
+            meta.headers = Some(redact_headers(upstream_resp.headers()));
+        }
 
         // Log error responses for debugging
         if !status.is_success() {
             tracing::warn!(
                 backend = %backend.name,
                 status = %status,
-                content_type = ?content_type,
+                content_type = ?content_type.as_deref(),
                 "Upstream returned error status"
             );
         }
@@ -282,8 +349,21 @@ impl UpstreamClient {
 
         if is_streaming {
             let stream = upstream_resp.bytes_stream();
-            let observed =
-                ObservedStream::new(stream, span, observability, self.timeout_config.idle);
+            let response_preview = if debug_level >= DebugLogLevel::Full {
+                ResponsePreview::new(
+                    debug_config.body_preview_bytes,
+                    content_type.clone().unwrap_or_default(),
+                )
+            } else {
+                None
+            };
+            let observed = ObservedStream::new(
+                stream,
+                span,
+                observability,
+                self.timeout_config.idle,
+                response_preview,
+            );
             Ok(response_builder.body(Body::from_stream(observed))?)
         } else {
             span.mark_first_byte();
@@ -295,6 +375,38 @@ impl UpstreamClient {
                     return Err(err);
                 }
             };
+
+            if debug_level >= DebugLogLevel::Verbose {
+                let mut analysis = self.response_parser.parse_response(&body_bytes);
+                if analysis.cost_usd.is_none() {
+                    analysis.cost_usd = compute_cost_usd(
+                        &backend,
+                        analysis.input_tokens.or_else(|| {
+                            span.record_mut()
+                                .request_analysis
+                                .as_ref()
+                                .and_then(|analysis| analysis.estimated_input_tokens)
+                        }),
+                        analysis.output_tokens,
+                    );
+                }
+                span.record_mut().response_analysis = Some(analysis);
+            }
+
+            if debug_level >= DebugLogLevel::Full {
+                let meta = span
+                    .record_mut()
+                    .response_meta
+                    .get_or_insert_with(|| ResponseMeta {
+                        headers: None,
+                        body_preview: None,
+                    });
+                meta.body_preview = redact_body_preview(
+                    &body_bytes,
+                    content_type.as_deref().unwrap_or(""),
+                    debug_config.body_preview_bytes,
+                );
+            }
 
             // Log error response body for debugging
             if !status.is_success() {
@@ -319,6 +431,20 @@ impl UpstreamClient {
     }
 }
 
+fn compute_cost_usd(
+    backend: &crate::config::Backend,
+    input_tokens: Option<u64>,
+    output_tokens: Option<u64>,
+) -> Option<f64> {
+    let pricing = backend.pricing.as_ref()?;
+    let input_tokens = input_tokens.unwrap_or(0) as f64;
+    let output_tokens = output_tokens.unwrap_or(0) as f64;
+    let cost = (input_tokens * pricing.input_per_million
+        + output_tokens * pricing.output_per_million)
+        / 1_000_000.0;
+    Some(cost)
+}
+
 impl Default for UpstreamClient {
     fn default() -> Self {
         let config = ConfigStore::new(
@@ -328,6 +454,13 @@ impl Default for UpstreamClient {
         let tracker = Arc::new(RwLock::new(ThinkingTracker::new(
             crate::config::ThinkingMode::DropSignature,
         )));
-        Self::new(TimeoutConfig::default(), PoolConfig::default(), config, tracker)
+        let debug_logger = Arc::new(DebugLogger::new(config.get().debug_logging.clone()));
+        Self::new(
+            TimeoutConfig::default(),
+            PoolConfig::default(),
+            config,
+            tracker,
+            debug_logger,
+        )
     }
 }

@@ -1,6 +1,6 @@
 use claudewrapper::config::{
-    build_auth_header, AuthType, Backend, Config, ConfigError, CredentialStatus, Defaults,
-    ProxyConfig, TerminalConfig, ThinkingConfig,
+    build_auth_header, AuthType, Backend, Config, ConfigError, CredentialStatus,
+    DebugLoggingConfig, Defaults, ProxyConfig, TerminalConfig, ThinkingConfig,
 };
 
 /// Test that Config::default() produces the expected values per spec.
@@ -52,6 +52,7 @@ fn test_validation_fails_empty_backends() {
         proxy: ProxyConfig::default(),
         thinking: ThinkingConfig::default(),
         terminal: TerminalConfig::default(),
+        debug_logging: DebugLoggingConfig::default(),
         backends: vec![],
     };
 
@@ -83,6 +84,7 @@ fn test_validation_fails_missing_active_backend() {
         proxy: ProxyConfig::default(),
         thinking: ThinkingConfig::default(),
         terminal: TerminalConfig::default(),
+        debug_logging: DebugLoggingConfig::default(),
         backends: vec![Backend::default()],
     };
 
@@ -159,6 +161,7 @@ fn test_backend_is_configured_with_api_key() {
         base_url: "https://example.com".to_string(),
         auth_type_str: "api_key".to_string(),
         api_key: Some("test-key-value".to_string()),
+        pricing: None,
     };
 
     assert!(backend.is_configured());
@@ -173,6 +176,7 @@ fn test_backend_not_configured_without_api_key() {
         base_url: "https://example.com".to_string(),
         auth_type_str: "api_key".to_string(),
         api_key: None,
+        pricing: None,
     };
 
     assert!(!backend.is_configured());
@@ -187,6 +191,7 @@ fn test_backend_passthrough_always_configured() {
         base_url: "https://example.com".to_string(),
         auth_type_str: "passthrough".to_string(),
         api_key: None,
+        pricing: None,
     };
 
     assert!(backend.is_configured());
@@ -205,6 +210,7 @@ fn test_build_auth_header_api_key() {
         base_url: "https://example.com".to_string(),
         auth_type_str: "api_key".to_string(),
         api_key: Some("my-secret-key".to_string()),
+        pricing: None,
     };
 
     let header = build_auth_header(&backend);
@@ -224,6 +230,7 @@ fn test_build_auth_header_bearer() {
         base_url: "https://example.com".to_string(),
         auth_type_str: "bearer".to_string(),
         api_key: Some("my-bearer-token".to_string()),
+        pricing: None,
     };
 
     let header = build_auth_header(&backend);
@@ -251,13 +258,15 @@ fn test_validation_fails_unconfigured_active_backend() {
         proxy: ProxyConfig::default(),
         thinking: ThinkingConfig::default(),
         terminal: TerminalConfig::default(),
+        debug_logging: DebugLoggingConfig::default(),
         backends: vec![Backend {
             name: "unconfigured".to_string(),
             display_name: "Unconfigured".to_string(),
             base_url: "https://example.com".to_string(),
             auth_type_str: "api_key".to_string(),
             api_key: None,
-            }],
+            pricing: None,
+        }],
     };
 
     let result = config.validate();
@@ -289,6 +298,7 @@ fn test_configured_backends_filters_correctly() {
         proxy: ProxyConfig::default(),
         thinking: ThinkingConfig::default(),
         terminal: TerminalConfig::default(),
+        debug_logging: DebugLoggingConfig::default(),
         backends: vec![
             Backend {
                 name: "configured".to_string(),
@@ -296,21 +306,24 @@ fn test_configured_backends_filters_correctly() {
                 base_url: "https://example.com".to_string(),
                 auth_type_str: "api_key".to_string(),
                 api_key: Some("test-key".to_string()),
-                    },
+                pricing: None,
+            },
             Backend {
                 name: "unconfigured".to_string(),
                 display_name: "Unconfigured".to_string(),
                 base_url: "https://example.com".to_string(),
                 auth_type_str: "api_key".to_string(),
                 api_key: None,
-                    },
+                pricing: None,
+            },
             Backend {
                 name: "passthrough".to_string(),
                 display_name: "Passthrough".to_string(),
                 base_url: "https://example.com".to_string(),
                 auth_type_str: "passthrough".to_string(),
                 api_key: None,
-                    },
+                pricing: None,
+            },
         ],
     };
 

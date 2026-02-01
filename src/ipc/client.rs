@@ -3,6 +3,7 @@ use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::backend::BackendError;
+use crate::config::DebugLoggingConfig;
 use crate::metrics::MetricsSnapshot;
 
 use super::types::{BackendInfo, IpcCommand, IpcError, ProxyStatus};
@@ -69,6 +70,30 @@ impl IpcClient {
             .map_err(|_| IpcError::Disconnected)?;
 
         recv_with_timeout(receiver).await
+    }
+
+    pub async fn get_debug_logging(&self) -> Result<DebugLoggingConfig, IpcError> {
+        let (respond_to, receiver) = oneshot::channel();
+        self.sender
+            .send(IpcCommand::GetDebugLogging { respond_to })
+            .await
+            .map_err(|_| IpcError::Disconnected)?;
+
+        recv_with_timeout(receiver).await
+    }
+
+    pub async fn set_debug_logging(
+        &self,
+        config: DebugLoggingConfig,
+    ) -> Result<(), IpcError> {
+        let (respond_to, receiver) = oneshot::channel();
+        self.sender
+            .send(IpcCommand::SetDebugLogging { config, respond_to })
+            .await
+            .map_err(|_| IpcError::Disconnected)?;
+
+        let result = recv_with_timeout(receiver).await?;
+        result
     }
 }
 

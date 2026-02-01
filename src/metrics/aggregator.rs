@@ -59,7 +59,10 @@ impl BackendAccumulator {
     }
 }
 
-pub fn apply_percentiles(per_backend: &mut HashMap<String, BackendMetrics>, records: &[RequestRecord]) {
+pub fn apply_percentiles(
+    per_backend: &mut HashMap<String, BackendMetrics>,
+    records: &[RequestRecord],
+) {
     let mut per_backend_latencies: HashMap<String, Vec<u64>> = HashMap::new();
 
     for record in records {

@@ -66,6 +66,8 @@ impl ObservabilityHub {
             request_analysis: None,
             response_analysis: None,
             routing_decision: None,
+            request_meta: None,
+            response_meta: None,
         };
 
         let mut backend_override = None;
@@ -114,11 +116,7 @@ impl ObservabilityHub {
         let recent = self.inner.ring.snapshot();
         let mut per_backend = HashMap::new();
 
-        let aggregates = self
-            .inner
-            .aggregates
-            .read()
-                        .clone();
+        let aggregates = self.inner.aggregates.read().clone();
 
         for (backend, acc) in aggregates {
             let mut metrics = BackendMetrics::default();

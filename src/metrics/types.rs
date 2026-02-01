@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::time::SystemTime;
 
+use serde::Serialize;
+
 use axum::body::Body;
 use axum::http::Request;
 
@@ -20,17 +22,38 @@ pub struct RequestRecord {
     pub request_analysis: Option<super::RequestAnalysis>,
     pub response_analysis: Option<ResponseAnalysis>,
     pub routing_decision: Option<RoutingDecision>,
+    pub request_meta: Option<RequestMeta>,
+    pub response_meta: Option<ResponseMeta>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ResponseAnalysis {
     pub summary: String,
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub stop_reason: Option<String>,
+    pub cost_usd: Option<f64>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct RoutingDecision {
     pub backend: String,
     pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RequestMeta {
+    pub method: String,
+    pub path: String,
+    pub query: Option<String>,
+    pub headers: Option<Vec<(String, String)>>,
+    pub body_preview: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ResponseMeta {
+    pub headers: Option<Vec<(String, String)>>,
+    pub body_preview: Option<String>,
 }
 
 #[derive(Debug, Default, Clone)]

@@ -8,9 +8,9 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::backend::BackendState;
-use crate::config::ConfigStore;
+use crate::config::{ConfigStore, DebugLogLevel};
 use crate::proxy::error::ErrorResponse;
-use crate::metrics::{BackendOverride, ObservabilityHub, RoutingDecision};
+use crate::metrics::{BackendOverride, DebugLogger, ObservabilityHub, RequestMeta, RoutingDecision};
 use crate::proxy::health::HealthHandler;
 use crate::proxy::pool::PoolConfig;
 use crate::proxy::thinking::ThinkingTracker;
@@ -25,6 +25,8 @@ pub struct RouterEngine {
     config: ConfigStore,
     backend_state: BackendState,
     observability: ObservabilityHub,
+    #[allow(dead_code)]
+    debug_logger: Arc<DebugLogger>,
 }
 
 impl RouterEngine {
@@ -34,6 +36,7 @@ impl RouterEngine {
         pool_config: PoolConfig,
         backend_state: BackendState,
         observability: ObservabilityHub,
+        debug_logger: Arc<DebugLogger>,
     ) -> Self {
         let thinking_tracker = Arc::new(parking_lot::RwLock::new(ThinkingTracker::new(
             config.get().thinking.mode,
@@ -45,10 +48,12 @@ impl RouterEngine {
                 pool_config,
                 config.clone(),
                 thinking_tracker,
+                debug_logger.clone(),
             )),
             config,
             backend_state,
             observability,
+            debug_logger,
         }
     }
 }
@@ -86,6 +91,20 @@ async fn proxy_handler(
     let mut start = state
         .observability
         .start_request(request_id.clone(), &req, &active_backend);
+
+    if state.debug_logger.level() != DebugLogLevel::Off {
+        start.span.record_mut().request_meta = Some(RequestMeta {
+            method: req.method().to_string(),
+            path: req.uri().path().to_string(),
+            query: if query_str.is_empty() {
+                None
+            } else {
+                Some(query_str.to_string())
+            },
+            headers: None,
+            body_preview: None,
+        });
+    }
 
     let backend_override = start
         .backend_override
