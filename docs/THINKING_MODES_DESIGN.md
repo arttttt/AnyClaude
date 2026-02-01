@@ -173,10 +173,18 @@ ThinkingMode::Strip => {
 **При переключении backend:**
 1. Пользователь запрашивает смену backend (например, Anthropic → GLM)
 2. ClaudeWrapper показывает UI: "Preparing switch..."
-3. Все thinking блоки в истории суммаризируются через summarizer модель
-4. Thinking блоки заменяются на текстовые блоки с резюме
-5. Переключение завершается
-6. **Claude продолжает работу без перезапуска** — новые запросы идут к новому backend
+3. Для каждого assistant message в истории:
+   - Thinking блоки → суммаризируются через summarizer модель
+   - Tool_use + tool_result блоки → суммаризируются в список действий
+   - Оба summary объединяются в текстовый блок
+4. Переключение завершается
+5. **Claude продолжает работу без перезапуска** — новые запросы идут к новому backend
+
+**Почему удаляем tool_use/tool_result:**
+- Signature в thinking блоках привязан к backend
+- API требует thinking блок перед tool_use (при включенном thinking)
+- После switch signature невалиден → API отклонит запрос
+- Решение: суммаризируем и thinking, и tools в текст
 
 ### Конфигурация
 
@@ -206,39 +214,62 @@ cache_ttl_seconds = 3600
 
 ```
 [SYSTEM]
-You are a summarization assistant. Summarize the following AI reasoning/thinking content.
-Focus on:
-- Key decisions made
-- Important findings or discoveries
-- Current plan or next steps
-- Critical context that should be preserved
+You are a summarization assistant. Summarize the following AI turn including
+both reasoning and actions taken.
 
-Be concise but preserve essential information. Output only the summary, no preamble.
+Output in this exact format:
+<reasoning>
+Brief summary of the reasoning process and key decisions
+</reasoning>
+<actions>
+- List of actions taken with key parameters
+</actions>
+
+Be concise. Preserve critical context. No preamble.
 
 [USER]
+THINKING:
 {thinking_content}
+
+ACTIONS:
+{tool_calls_with_arguments_and_results}
 ```
 
 ### Формат вывода
 
-**Вариант 1: Plain text**
-```
-Summary: Analyzed codebase structure, found race condition in port binding.
-Decision: Use atomic port allocation. Next: implement fix in proxy/server.rs
-```
+**Рекомендуемый: XML tags (два раздела)**
 
-**Вариант 2: XML tags**
-```xml
-<thinking-summary>
-Analyzed codebase structure, found race condition in port binding.
-Decision: Use atomic port allocation. Next: implement fix in proxy/server.rs
-</thinking-summary>
-```
-
-**Вариант 3: JSON**
+До суммаризации:
 ```json
-{"type": "thinking_summary", "content": "..."}
+{
+  "role": "assistant",
+  "content": [
+    {"type": "thinking", "thinking": "Need to check config...", "signature": "abc"},
+    {"type": "tool_use", "name": "Read", "input": {"path": "config.json"}},
+  ]
+}
+// + tool_result от user
+// + финальный text response
 ```
+
+После суммаризации:
+```json
+{
+  "role": "assistant",
+  "content": [
+    {
+      "type": "text",
+      "text": "<reasoning>\nAnalyzed project structure, decided to check configuration for port settings.\n</reasoning>\n<actions>\n- Read config.json to check port configuration\n- Found port 8080 is hardcoded\n</actions>"
+    },
+    {"type": "text", "text": "Конфиг содержит порт 8080..."}
+  ]
+}
+```
+
+**Преимущества XML формата:**
+- Структурированный, легко парсить при необходимости
+- Модель понимает разделение reasoning/actions
+- Не конфликтует с другими форматами в контексте
 
 ### Flow переключения backend
 
@@ -259,17 +290,20 @@ Decision: Use atomic port allocation. Next: implement fix in proxy/server.rs
 │           │                                                      │
 │           ▼                                                      │
 │  ┌─────────────────────────────────────────┐                    │
-│  │ Для каждого thinking блока в истории:   │                    │
-│  │  → Отправить к summarizer (GLM-flash)   │                    │
-│  │  → Получить сжатое резюме               │                    │
-│  │  → Заменить thinking → text             │                    │
+│  │ Для каждого assistant message:          │                    │
+│  │  1. Собрать thinking блоки              │                    │
+│  │  2. Собрать tool_use + tool_result      │                    │
+│  │  3. Отправить к summarizer              │                    │
+│  │  4. Получить <reasoning> + <actions>    │                    │
+│  │  5. Заменить на текстовый блок          │                    │
 │  └─────────────────────────────────────────┘                    │
 │           │                                                      │
 │           ▼                                                      │
 │  ┌─────────────────────────────────────────┐                    │
 │  │ История теперь содержит:                │                    │
-│  │  - Обычные сообщения (без изменений)    │                    │
-│  │  - Резюме вместо thinking блоков        │                    │
+│  │  - [text: <reasoning>...</reasoning>    │                    │
+│  │         <actions>...</actions>]         │                    │
+│  │  - [text: оригинальные ответы]          │                    │
 │  └─────────────────────────────────────────┘                    │
 │           │                                                      │
 │           ▼                                                      │
@@ -290,92 +324,133 @@ Decision: Use atomic port allocation. Next: implement fix in proxy/server.rs
 - **Нативная работа thinking** во время обычной сессии
 - API сам оптимизирует thinking (суммаризация, кэширование)
 - Thinking блоки не считаются в контекст (API их strip-ит)
-- Сохраняет контекст размышлений при переключении
+- Сохраняет контекст **и размышлений, и действий** при переключении
 - **Не требует перезапуска Claude** (в отличие от `native`)
 - Суммаризация происходит **только при переключении**, не на каждый запрос
+- **Нет проблем с signature** — tool_use блоки тоже заменяются на текст
 
 ### Недостатки
 
 - Добавляет latency **при переключении** (запрос к summarizer)
 - Требует настройки summarizer backend
 - Потеря деталей при суммаризации (только при switch)
-- После переключения новый backend не видит "нативный" thinking
+- После переключения модель не знает точные параметры прошлых tool calls
+- Потенциально модель может повторить уже выполненные действия
 
-### ⚠️ Важно: Signature и Tool Use
+### ✅ Решение проблемы Signature и Tool Use
 
-После суммаризации **signature теряется**. Это означает:
+**Проблема:** После суммаризации signature теряется. API требует thinking блок с signature перед tool_use.
 
-1. Если Claude использовал tools ДО switch — history содержит tool_use блоки
-2. После switch thinking заменён на текстовое резюме (без signature)
-3. API может отклонить запрос: "Expected thinking block before tool_use"
+**Решение:** Суммаризируем **и thinking, и tool_use/tool_result** в единый текстовый блок:
 
-**Решения:**
-- **Вариант A**: Суммаризировать только thinking, оставляя tool_use/tool_result as-is
-- **Вариант B**: При наличии tools — использовать более агрессивную очистку
-- **Вариант C**: Предупреждать пользователя о потенциальных проблемах
+```
+До:
+[thinking+signature] → [tool_use] → | [tool_result] | → [text]
+
+После:
+[text: <reasoning>...</reasoning><actions>...</actions>] → [text]
+```
+
+**Почему это работает:**
+- Нет tool_use блоков → API не требует thinking перед ними
+- Контекст действий сохранён в `<actions>` секции
+- Модель понимает что делала раньше из текстового описания
 
 ### Реализация
 
 ```rust
-// Summarizer вызывается только при переключении backend
-pub struct ThinkingSummarizer {
-    client: Client,
-    config: SummarizerConfig,
-    cache: Option<LruCache<String, String>>,
+/// Данные для суммаризации одного assistant turn
+struct TurnData {
+    thinking_blocks: Vec<String>,
+    tool_calls: Vec<ToolCallInfo>,
 }
 
-impl ThinkingSummarizer {
-    /// Суммаризировать все thinking блоки в истории
-    /// Вызывается ТОЛЬКО при переключении backend
-    pub async fn summarize_history(
+struct ToolCallInfo {
+    name: String,
+    input: serde_json::Value,
+    result: Option<String>,
+}
+
+pub struct HistorySummarizer {
+    client: Client,
+    config: SummarizerConfig,
+}
+
+impl HistorySummarizer {
+    /// Суммаризировать историю при переключении backend
+    pub async fn summarize_for_switch(
         &self,
         messages: &mut Vec<Message>
     ) -> Result<SummarizeResult> {
-        let mut summarized_count = 0;
+        let mut stats = SummarizeResult::default();
 
-        for message in messages.iter_mut() {
-            for content in message.content.iter_mut() {
-                if content.is_thinking_block() {
-                    let thinking = content.get_thinking_text()?;
+        // Группируем сообщения по turn (assistant + следующий user с tool_result)
+        let turns = self.extract_turns(messages);
 
-                    // Проверить кэш
-                    let summary = if let Some(cached) = self.check_cache(&thinking) {
-                        cached
-                    } else {
-                        let result = self.call_summarizer(&thinking).await?;
-                        self.cache_summary(&thinking, &result);
-                        result
-                    };
+        for turn in turns {
+            // 1. Собираем thinking и tools
+            let turn_data = self.collect_turn_data(&turn);
 
-                    // Заменить thinking блок на текстовый
-                    *content = Content::Text {
-                        text: format!("<thinking-summary>{}</thinking-summary>", summary),
-                    };
-                    summarized_count += 1;
-                }
+            if turn_data.is_empty() {
+                continue;
+            }
+
+            // 2. Суммаризируем через внешнюю модель
+            let summary = self.call_summarizer(&turn_data).await?;
+
+            // 3. Заменяем блоки на текстовое резюме
+            self.replace_with_summary(&mut turn, summary)?;
+
+            stats.thinking_summarized += turn_data.thinking_blocks.len();
+            stats.tools_summarized += turn_data.tool_calls.len();
+        }
+
+        Ok(stats)
+    }
+
+    fn build_prompt(&self, data: &TurnData) -> String {
+        let mut prompt = String::new();
+
+        if !data.thinking_blocks.is_empty() {
+            prompt.push_str("THINKING:\n");
+            for t in &data.thinking_blocks {
+                prompt.push_str(t);
+                prompt.push_str("\n\n");
             }
         }
 
-        Ok(SummarizeResult { summarized_count })
+        if !data.tool_calls.is_empty() {
+            prompt.push_str("ACTIONS:\n");
+            for tool in &data.tool_calls {
+                prompt.push_str(&format!("- {}({})", tool.name, tool.input));
+                if let Some(result) = &tool.result {
+                    let truncated = truncate(result, 200);
+                    prompt.push_str(&format!(" → {}", truncated));
+                }
+                prompt.push('\n');
+            }
+        }
+
+        prompt
     }
 }
 
 // В логике переключения backend
 pub async fn switch_backend(&mut self, new_backend: &str) -> Result<()> {
     if self.thinking_mode == ThinkingMode::Summarize {
-        // Показать UI прогресса
         self.show_progress("Preparing backend switch...");
 
-        // Суммаризировать все thinking блоки
-        let result = self.summarizer.summarize_history(&mut self.message_history).await?;
+        let result = self.summarizer
+            .summarize_for_switch(&mut self.message_history)
+            .await?;
 
         tracing::info!(
-            summarized = result.summarized_count,
-            "Summarized thinking blocks for backend switch"
+            thinking = result.thinking_summarized,
+            tools = result.tools_summarized,
+            "Summarized history for backend switch"
         );
     }
 
-    // Переключить backend (без перезапуска Claude)
     self.active_backend = new_backend.to_string();
     Ok(())
 }
@@ -384,9 +459,10 @@ pub async fn switch_backend(&mut self, new_backend: &str) -> Result<()> {
 ### Открытые вопросы
 
 - [ ] Как обрабатывать ошибки summarizer? Fallback на strip?
-- [ ] Суммаризировать каждый thinking блок отдельно или batch?
-- [ ] Нужен ли rate limiting для summarizer запросов?
+- [ ] Суммаризировать каждый turn отдельно или batch все turns?
+- [ ] Ограничивать ли размер tool_result перед отправкой summarizer?
 - [ ] Как показывать прогресс суммаризации в TUI?
+- [ ] Кэшировать ли результаты суммаризации?
 - [ ] Кэшировать ли резюме на диск (для повторных switch)?
 - [ ] Что делать при частом переключении туда-обратно?
 
