@@ -3,7 +3,7 @@ use crate::config::{Config, ConfigStore, ConfigWatcher};
 use crate::error::{ErrorCategory, ErrorSeverity};
 use crate::ipc::IpcLayer;
 use crate::proxy::{init_tracing, ProxyServer};
-use crate::pty::{parse_command, PtySession};
+use crate::pty::PtySession;
 use crate::shutdown::{ShutdownCoordinator, ShutdownPhase};
 use crate::ui::app::{App, UiCommand};
 use crate::ui::events::{mouse_scroll_direction, AppEvent, EventHandler};
@@ -24,15 +24,18 @@ const STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const METRICS_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 const BACKENDS_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 
-pub fn run() -> io::Result<()> {
+pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Result<()> {
     // Initialize tracing (file logging if CLAUDE_WRAPPER_LOG is set)
     init_tracing();
 
     let (mut terminal, guard) = setup_terminal()?;
     let tick_rate = Duration::from_millis(250);
 
-    // Load initial config
-    let config = Config::load().unwrap_or_default();
+    // Load initial config and apply backend override
+    let mut config = Config::load().unwrap_or_default();
+    if let Some(backend_name) = backend_override {
+        config.defaults.active = backend_name;
+    }
     let config_path = Config::config_path();
     let config_store = ConfigStore::new(config, config_path);
     let proxy_base_url = config_store.get().proxy.base_url.clone();
@@ -98,7 +101,8 @@ pub fn run() -> io::Result<()> {
     app.request_status_refresh();
     app.request_backends_refresh();
 
-    let (command, args) = parse_command();
+    let command = "claude".to_string();
+    let args = claude_args;
     // Set BASE_URL to redirect traffic through proxy
     // Auth token is injected by proxy based on active backend (runtime)
     let env = vec![
