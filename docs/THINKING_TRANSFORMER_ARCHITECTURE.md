@@ -206,11 +206,50 @@ impl ThinkingTransformer for StripTransformer {
 
 #### SummarizeTransformer (будущее)
 
+**Принцип работы:**
+
+1. При переключении бэкенда показывается UI-диалог с прогрессом
+2. Вызывается LLM (настраиваемая модель) для суммаризации истории сессии
+3. Результат сохраняется в памяти
+4. При первом запросе к новому бэкенду саммари добавляется к сообщению пользователя (prepend)
+
+**Почему prepend к сообщению, а не system prompt:**
+- Это не системная информация — контекст предыдущей сессии
+- Используется один раз, не раздувает контекст последующих запросов
+- Может меняться со временем
+
 ```rust
 /// Режим summarize: нативная работа + суммаризация при switch.
 pub struct SummarizeTransformer {
-    summarizer_client: SummarizerClient,
-    config: SummarizerConfig,
+    /// Последние сообщения для суммаризации (обновляются при каждом запросе)
+    last_messages: RwLock<Option<Vec<Value>>>,
+    /// Готовое саммари, ожидающее использования в первом запросе
+    pending_summary: RwLock<Option<String>>,
+    /// Конфигурация суммаризатора
+    config: SummarizeConfig,
+    /// HTTP клиент для вызова LLM
+    client: reqwest::Client,
+}
+
+/// Конфигурация суммаризации
+#[derive(Debug, Clone, Deserialize)]
+pub struct SummarizeConfig {
+    /// Модель для суммаризации ("claude-3-haiku", "gpt-4o-mini", или "current")
+    pub model: String,
+    /// Бэкенд для суммаризации (если model != "current")
+    pub backend: Option<String>,
+    /// Максимальное количество токенов в саммари
+    #[serde(default = "default_max_tokens")]
+    pub max_tokens: u32,
+    /// Промпт для суммаризации
+    #[serde(default = "default_summarize_prompt")]
+    pub prompt: String,
+}
+
+fn default_max_tokens() -> u32 { 500 }
+fn default_summarize_prompt() -> String {
+    "Summarize this coding session for handoff to another AI assistant. \
+     Focus on: current task, files modified, decisions made, next steps.".into()
 }
 
 #[async_trait]
@@ -219,21 +258,116 @@ impl ThinkingTransformer for SummarizeTransformer {
 
     async fn transform_request(
         &self,
-        _body: &mut Value,
+        body: &mut Value,
         _context: &TransformContext,
     ) -> Result<TransformResult, TransformError> {
-        // В обычном режиме - ничего не делаем (passthrough)
-        Ok(TransformResult::default())
+        let mut result = TransformResult::default();
+
+        // 1. Сохраняем messages для будущей суммаризации
+        if let Some(messages) = body.get("messages") {
+            *self.last_messages.write().await = Some(
+                messages.as_array().cloned().unwrap_or_default()
+            );
+        }
+
+        // 2. Если есть pending_summary — prepend к первому user message
+        if let Some(summary) = self.pending_summary.write().await.take() {
+            self.prepend_summary_to_user_message(body, &summary);
+            result.stats.summarized_count = 1;
+            result.changed = true;
+        }
+
+        // 3. Strip thinking блоков (они учтены в summary)
+        let strip_result = self.strip_thinking_blocks(body);
+        result.stats.stripped_count = strip_result.stats.stripped_count;
+        result.changed = result.changed || strip_result.changed;
+
+        Ok(result)
     }
 
+    /// Вызывается ИЗ UI при переключении бэкенда (до переключения).
+    /// UI показывает диалог с прогрессом.
     async fn on_backend_switch(
         &self,
         from: &str,
         to: &str,
-        body: &mut Value,
     ) -> Result<(), TransformError> {
-        // Суммаризируем все thinking блоки
-        self.summarize_thinking_blocks(body).await
+        tracing::info!(from = %from, to = %to, "Summarizing session for backend switch");
+
+        // Получаем сохранённые сообщения
+        let messages = self.last_messages.read().await.clone()
+            .ok_or_else(|| TransformError::SummarizationError(
+                "No messages to summarize".into()
+            ))?;
+
+        // Вызываем LLM для суммаризации
+        let summary = self.call_summarize_llm(&messages).await?;
+
+        // Сохраняем для использования в первом запросе
+        *self.pending_summary.write().await = Some(summary);
+
+        Ok(())
+    }
+}
+
+impl SummarizeTransformer {
+    /// Добавляет саммари в начало первого user message
+    fn prepend_summary_to_user_message(&self, body: &mut Value, summary: &str) {
+        if let Some(messages) = body.get_mut("messages").and_then(|v| v.as_array_mut()) {
+            // Находим первое user сообщение
+            for message in messages.iter_mut() {
+                if message.get("role").and_then(|r| r.as_str()) == Some("user") {
+                    // Prepend summary
+                    if let Some(content) = message.get_mut("content").and_then(|c| c.as_str()) {
+                        let new_content = format!(
+                            "[Session context from previous assistant]\n{}\n\n---\n\n{}",
+                            summary, content
+                        );
+                        message["content"] = Value::String(new_content);
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Вызов LLM API для суммаризации
+    async fn call_summarize_llm(&self, messages: &[Value]) -> Result<String, TransformError> {
+        // Формируем запрос к LLM
+        let request_body = json!({
+            "model": self.config.model,
+            "max_tokens": self.config.max_tokens,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": format!(
+                        "{}\n\n<session>\n{}\n</session>",
+                        self.config.prompt,
+                        serde_json::to_string_pretty(messages).unwrap_or_default()
+                    )
+                }
+            ]
+        });
+
+        // Отправляем запрос (backend URL и auth берутся из config)
+        let response = self.client
+            .post(&self.get_summarize_endpoint())
+            .json(&request_body)
+            .send()
+            .await
+            .map_err(|e| TransformError::SummarizationError(e.to_string()))?;
+
+        // Парсим ответ
+        let response_json: Value = response.json().await
+            .map_err(|e| TransformError::SummarizationError(e.to_string()))?;
+
+        // Извлекаем текст ответа
+        response_json["content"][0]["text"]
+            .as_str()
+            .map(|s| s.to_string())
+            .ok_or_else(|| TransformError::SummarizationError(
+                "Invalid response format".into()
+            ))
     }
 }
 ```
@@ -314,47 +448,194 @@ impl UpstreamClient {
 }
 ```
 
-## Миграция
+## Интеграция с UI (событие переключения бэкенда)
 
-### Шаг 1: Создать новую структуру файлов
-```bash
-src/proxy/thinking/
-├── mod.rs
-├── traits.rs
-├── context.rs
-└── strip.rs
+При переключении бэкенда (Summarize mode) нужен UI-диалог с прогрессом:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│          Switching to GLM-4                                 │
+│                                                             │
+│     [████████████░░░░░░░░] Summarizing session...          │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-### Шаг 2: Реализовать StripTransformer
-- Перенести логику удаления из текущего `thinking.rs`
-- Добавить тесты
+### Поток событий
 
-### Шаг 3: Создать TransformerRegistry
-- Интегрировать с конфигом
-- Поддержка горячей замены
+```
+User clicks "Switch to GLM"
+         ↓
+┌────────────────────────────────────────────────────────────┐
+│ IPC Handler (backend_switch command)                       │
+├────────────────────────────────────────────────────────────┤
+│ 1. НЕ переключаем бэкенд сразу                             │
+│ 2. Проверяем режим: if mode == Summarize                   │
+│ 3. Отправляем UI событие "show_summarize_progress"         │
+│ 4. Вызываем transformer.on_backend_switch(from, to).await  │
+│ 5. Отправляем UI событие "hide_summarize_progress"         │
+│ 6. ТЕПЕРЬ переключаем бэкенд                               │
+└────────────────────────────────────────────────────────────┘
+```
 
-### Шаг 4: Обновить UpstreamClient
-- Заменить `ThinkingTracker` на `TransformerRegistry`
-- Сделать трансформацию async
+### Код интеграции
 
-### Шаг 5: Deprecate старый код
-- `ThinkingMode::DropSignature` → `Strip`
-- `ThinkingMode::ConvertToText` → удалить
-- `ThinkingMode::ConvertToTags` → удалить (причина проблемы)
+```rust
+// ipc/handler.rs
 
-## Обратная совместимость
+async fn handle_switch_backend(
+    &self,
+    target_backend: String,
+) -> Result<IpcResponse, IpcError> {
+    let current_backend = self.backend_state.get_active_backend();
+
+    // Если режим Summarize — нужна суммаризация перед переключением
+    if self.config.get().thinking.mode == ThinkingMode::Summarize {
+        // Уведомляем UI о начале суммаризации
+        self.ui_sender.send(UiEvent::ShowSummarizeProgress {
+            from: current_backend.clone(),
+            to: target_backend.clone(),
+        })?;
+
+        // Вызываем on_backend_switch (async LLM call)
+        let transformer = self.transformer_registry.get().await;
+        if let Err(e) = transformer.on_backend_switch(&current_backend, &target_backend).await {
+            tracing::error!(error = %e, "Failed to summarize session");
+            // Продолжаем переключение даже при ошибке суммаризации
+        }
+
+        // Уведомляем UI о завершении
+        self.ui_sender.send(UiEvent::HideSummarizeProgress)?;
+    }
+
+    // Теперь переключаем бэкенд
+    self.backend_state.switch_backend(&target_backend)?;
+
+    Ok(IpcResponse::BackendSwitched { backend: target_backend })
+}
+```
+
+### UI события
+
+```rust
+pub enum UiEvent {
+    // ... existing events ...
+
+    /// Показать диалог прогресса суммаризации
+    ShowSummarizeProgress {
+        from: String,
+        to: String,
+    },
+
+    /// Скрыть диалог прогресса
+    HideSummarizeProgress,
+
+    /// Ошибка суммаризации (опционально показать)
+    SummarizeError {
+        error: String,
+    },
+}
+```
+
+## Миграция
+
+### Phase 0: Инфраструктура ✅ DONE
+
+```bash
+src/proxy/thinking/
+├── mod.rs         # TransformerRegistry
+├── traits.rs      # ThinkingTransformer trait
+├── context.rs     # TransformContext, TransformResult
+├── error.rs       # TransformError
+└── strip.rs       # StripTransformer
+```
+
+- [x] Создать модульную структуру
+- [x] Реализовать ThinkingTransformer trait с async_trait
+- [x] Реализовать TransformerRegistry с tokio::sync::RwLock
+- [x] Интегрировать с UpstreamClient
+- [x] Удалить старый ThinkingTracker
+
+### Phase 1: Strip Mode ✅ DONE
+
+- [x] Реализовать StripTransformer
+- [x] Тесты для strip режима
+- [x] Удалить legacy режимы (DropSignature, ConvertToText, ConvertToTags)
+
+### Phase 2: Summarize Mode 🔄 TODO
+
+**Конфигурация:**
+- [ ] Добавить SummarizeConfig в ThinkingConfig
+- [ ] Парсинг [thinking.summarize] секции из TOML
+
+**SummarizeTransformer:**
+- [ ] Хранение last_messages (обновление при каждом запросе)
+- [ ] Хранение pending_summary
+- [ ] Метод call_summarize_llm для вызова LLM API
+- [ ] Метод prepend_summary_to_user_message
+- [ ] Strip thinking блоков после использования summary
+
+**Интеграция:**
+- [ ] Обновить on_backend_switch сигнатуру (убрать body параметр)
+- [ ] Интеграция с IPC handler для события переключения
+- [ ] UI события ShowSummarizeProgress / HideSummarizeProgress
+- [ ] UI диалог прогресса суммаризации
+
+**Тесты:**
+- [ ] Unit тесты для SummarizeTransformer
+- [ ] Integration тест с mock LLM
+- [ ] E2E тест переключения бэкенда
+
+### Phase 3: Native Mode 📋 FUTURE
+
+- [ ] Дизайн handoff механизма
+- [ ] NativeTransformer реализация
+- [ ] UI для handoff диалога
+
+## Конфигурация
 
 ```toml
 [thinking]
-# Старые значения (deprecated, с предупреждением):
-mode = "drop_signature"  # → strip
-mode = "convert_to_text" # → strip + warning
-mode = "convert_to_tags" # → strip + warning
+mode = "strip"  # "strip" | "summarize" | "native"
 
-# Новые значения:
-mode = "strip"      # Удалять thinking блоки
-mode = "summarize"  # Нативно + суммаризация при switch
-mode = "native"     # Нативно + handoff при switch
+# Настройки для summarize режима
+[thinking.summarize]
+# Модель для суммаризации:
+# - Конкретная модель: "claude-3-haiku-20240307", "gpt-4o-mini"
+# - "current" — использовать текущий бэкенд (до переключения)
+model = "claude-3-haiku-20240307"
+
+# Бэкенд для суммаризации (если model != "current")
+# Опционально — если не указан, используется бэкенд с указанной моделью
+backend = "claude"
+
+# Максимальное количество токенов в саммари
+max_tokens = 500
+
+# Кастомный промпт (опционально)
+prompt = "Summarize this coding session..."
+```
+
+### Примеры конфигураций
+
+**Быстрая суммаризация через Haiku:**
+```toml
+[thinking]
+mode = "summarize"
+
+[thinking.summarize]
+model = "claude-3-haiku-20240307"
+max_tokens = 300
+```
+
+**Суммаризация через текущий бэкенд:**
+```toml
+[thinking]
+mode = "summarize"
+
+[thinking.summarize]
+model = "current"  # Использует бэкенд ДО переключения
+max_tokens = 500
 ```
 
 ## Тестирование
