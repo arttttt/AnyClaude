@@ -177,6 +177,9 @@ pub fn run() -> io::Result<()> {
             Ok(AppEvent::Shutdown) => {
                 app.request_quit();
             }
+            Ok(AppEvent::ProcessExit) => {
+                app.request_quit();
+            }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         }

@@ -70,6 +70,8 @@ impl PtySession {
                 }
                 let _ = notifier.send(AppEvent::PtyOutput);
             }
+            // Notify UI that the child process has exited
+            let _ = notifier.send(AppEvent::ProcessExit);
         });
 
         Ok(Self {

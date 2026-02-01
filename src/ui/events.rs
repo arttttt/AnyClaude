@@ -23,6 +23,8 @@ pub enum AppEvent {
     IpcError(String),
     /// OS signal received (SIGTERM, SIGINT)
     Shutdown,
+    /// Claude child process exited (EOF from PTY reader)
+    ProcessExit,
 }
 
 pub struct EventHandler {
