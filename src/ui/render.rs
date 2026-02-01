@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 pub fn draw(frame: &mut Frame<'_>, app: &App) {
-    let area = frame.size();
+    let area = frame.area();
     let (header, body, footer) = layout_regions(area);
 
     let header_widget = Header::new();
@@ -35,7 +35,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
                     let cursor = screen.cursor_position();
                     let x = body.x + (cursor.1 as u16).min(body.width.saturating_sub(1));
                     let y = body.y + (cursor.0 as u16).min(body.height.saturating_sub(1));
-                    frame.set_cursor(x, y);
+                    frame.set_cursor_position((x, y));
                 }
             }
         }

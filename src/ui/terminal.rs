@@ -33,11 +33,12 @@ impl Widget for TerminalBody {
                 if let Some(cell) = cell {
                     let style = style_from_cell(cell);
                     let symbol = cell.contents();
-                    let cell_ref = buf.get_mut(x, y);
-                    if symbol.is_empty() {
-                        cell_ref.set_symbol(" ").set_style(style);
-                    } else {
-                        cell_ref.set_symbol(&symbol).set_style(style);
+                    if let Some(cell_ref) = buf.cell_mut((x, y)) {
+                        if symbol.is_empty() {
+                            cell_ref.set_symbol(" ").set_style(style);
+                        } else {
+                            cell_ref.set_symbol(&symbol).set_style(style);
+                        }
                     }
                 }
             }
