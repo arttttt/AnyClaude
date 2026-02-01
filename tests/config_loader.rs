@@ -1,6 +1,7 @@
 use claudewrapper::config::{
     build_auth_header, AuthType, Backend, Config, ConfigError, CredentialStatus,
-    DebugLoggingConfig, Defaults, ProxyConfig, TerminalConfig, ThinkingConfig,
+    DebugLoggingConfig, Defaults, ProxyConfig, SummarizeConfig, TerminalConfig, ThinkingConfig,
+    ThinkingMode,
 };
 
 /// Test that Config::default() produces the expected values per spec.
@@ -334,4 +335,82 @@ fn test_configured_backends_filters_correctly() {
     assert!(configured.iter().any(|b| b.name == "configured"));
     assert!(configured.iter().any(|b| b.name == "passthrough"));
     assert!(!configured.iter().any(|b| b.name == "unconfigured"));
+}
+
+// ============================================================================
+// Thinking / Summarize Config Tests
+// ============================================================================
+
+/// Test parsing TOML with [thinking.summarize] section.
+#[test]
+fn test_parse_thinking_summarize_config() {
+    let toml_content = r#"
+[defaults]
+active = "claude"
+timeout_seconds = 30
+
+[thinking]
+mode = "summarize"
+
+[thinking.summarize]
+model = "claude-3-haiku-20240307"
+backend = "claude"
+max_tokens = 300
+prompt = "Custom summarization prompt"
+
+[[backends]]
+name = "claude"
+display_name = "Claude"
+base_url = "https://api.anthropic.com"
+auth_type = "api_key"
+api_key = "test-key"
+"#;
+
+    let config: Config = toml::from_str(toml_content).expect("Should parse valid TOML");
+
+    assert_eq!(config.thinking.mode, ThinkingMode::Summarize);
+    assert_eq!(config.thinking.summarize.model, "claude-3-haiku-20240307");
+    assert_eq!(config.thinking.summarize.backend, Some("claude".to_string()));
+    assert_eq!(config.thinking.summarize.max_tokens, 300);
+    assert_eq!(config.thinking.summarize.prompt, "Custom summarization prompt");
+}
+
+/// Test that [thinking.summarize] uses defaults when not specified.
+#[test]
+fn test_thinking_summarize_defaults() {
+    let toml_content = r#"
+[defaults]
+active = "claude"
+timeout_seconds = 30
+
+[thinking]
+mode = "summarize"
+
+[[backends]]
+name = "claude"
+display_name = "Claude"
+base_url = "https://api.anthropic.com"
+auth_type = "api_key"
+api_key = "test-key"
+"#;
+
+    let config: Config = toml::from_str(toml_content).expect("Should parse valid TOML");
+
+    assert_eq!(config.thinking.mode, ThinkingMode::Summarize);
+    // Should use defaults
+    assert_eq!(config.thinking.summarize.model, "claude-3-haiku-20240307");
+    assert_eq!(config.thinking.summarize.backend, None);
+    assert_eq!(config.thinking.summarize.max_tokens, 500);
+    assert!(config.thinking.summarize.prompt.contains("Summarize"));
+}
+
+/// Test SummarizeConfig default values.
+#[test]
+fn test_summarize_config_default() {
+    let config = SummarizeConfig::default();
+
+    assert_eq!(config.model, "claude-3-haiku-20240307");
+    assert_eq!(config.backend, None);
+    assert_eq!(config.max_tokens, 500);
+    assert!(config.prompt.contains("handoff"));
 }

@@ -58,6 +58,35 @@ pub struct ProxyConfig {
 pub struct ThinkingConfig {
     #[serde(default)]
     pub mode: ThinkingMode,
+    /// Configuration for summarize mode (used when mode = "summarize")
+    #[serde(default)]
+    pub summarize: SummarizeConfig,
+}
+
+/// Configuration for the summarize thinking mode.
+///
+/// When switching backends, this mode summarizes the session history
+/// using an LLM call before the switch.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SummarizeConfig {
+    /// Model to use for summarization.
+    /// - Specific model name: "claude-3-haiku-20240307", "gpt-4o-mini"
+    /// - "current": use the current backend before switching
+    #[serde(default = "default_summarize_model")]
+    pub model: String,
+
+    /// Backend to use for summarization (if model != "current").
+    /// If not specified, uses the backend that has the specified model.
+    #[serde(default)]
+    pub backend: Option<String>,
+
+    /// Maximum tokens in the generated summary.
+    #[serde(default = "default_summarize_max_tokens")]
+    pub max_tokens: u32,
+
+    /// Custom prompt for summarization.
+    #[serde(default = "default_summarize_prompt")]
+    pub prompt: String,
 }
 
 /// Terminal display settings.
@@ -203,6 +232,21 @@ fn default_proxy_base_url() -> String {
     "http://127.0.0.1:8080".to_string()
 }
 
+fn default_summarize_model() -> String {
+    "claude-3-haiku-20240307".to_string()
+}
+
+fn default_summarize_max_tokens() -> u32 {
+    500
+}
+
+fn default_summarize_prompt() -> String {
+    "Summarize this coding session for handoff to another AI assistant. \
+     Focus on: current task, files modified, decisions made, and next steps. \
+     Be concise but include all important context."
+        .to_string()
+}
+
 /// Backend configuration for an API provider.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Backend {
@@ -283,6 +327,18 @@ impl Default for ThinkingConfig {
     fn default() -> Self {
         Self {
             mode: ThinkingMode::Strip,
+            summarize: SummarizeConfig::default(),
+        }
+    }
+}
+
+impl Default for SummarizeConfig {
+    fn default() -> Self {
+        Self {
+            model: default_summarize_model(),
+            backend: None,
+            max_tokens: default_summarize_max_tokens(),
+            prompt: default_summarize_prompt(),
         }
     }
 }

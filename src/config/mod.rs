@@ -17,5 +17,5 @@ pub use store::ConfigStore;
 pub use types::{
     Backend, BackendPricing, Config, DebugLogDestination, DebugLogFormat, DebugLogLevel,
     DebugLogRotation, DebugLogRotationMode, DebugLoggingConfig, Defaults, ProxyConfig,
-    TerminalConfig, ThinkingConfig, ThinkingMode,
+    SummarizeConfig, TerminalConfig, ThinkingConfig, ThinkingMode,
 };
