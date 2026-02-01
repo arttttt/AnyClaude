@@ -564,27 +564,61 @@ src/proxy/thinking/
 
 ### Phase 2: Summarize Mode 🔄 TODO
 
-**Конфигурация:**
-- [ ] Добавить SummarizeConfig в ThinkingConfig
-- [ ] Парсинг [thinking.summarize] секции из TOML
+#### Phase 2.1: Конфигурация
+- [ ] 2.1.1: Добавить `SummarizeConfig` структуру в `src/config/types.rs`
+- [ ] 2.1.2: Добавить `summarize: Option<SummarizeConfig>` в `ThinkingConfig`
+- [ ] 2.1.3: Дефолтные значения и serde аннотации
+- [ ] 2.1.4: Тест парсинга TOML с секцией `[thinking.summarize]`
 
-**SummarizeTransformer:**
-- [ ] Хранение last_messages (обновление при каждом запросе)
-- [ ] Хранение pending_summary
-- [ ] Метод call_summarize_llm для вызова LLM API
-- [ ] Метод prepend_summary_to_user_message
-- [ ] Strip thinking блоков после использования summary
+#### Phase 2.2: SummarizeTransformer каркас
+- [ ] 2.2.1: Создать файл `src/proxy/thinking/summarize.rs`
+- [ ] 2.2.2: Структура с полями `last_messages`, `pending_summary`, `config`
+- [ ] 2.2.3: Конструктор `new(config: SummarizeConfig)`
+- [ ] 2.2.4: Реализация `name()` → "summarize"
+- [ ] 2.2.5: Базовый `transform_request` — только сохранение messages
+- [ ] 2.2.6: Добавить в `mod.rs` и `TransformerRegistry::create_transformer`
 
-**Интеграция:**
-- [ ] Обновить on_backend_switch сигнатуру (убрать body параметр)
-- [ ] Интеграция с IPC handler для события переключения
-- [ ] UI события ShowSummarizeProgress / HideSummarizeProgress
-- [ ] UI диалог прогресса суммаризации
+#### Phase 2.3: Strip логика в Summarize
+- [ ] 2.3.1: Вынести strip логику в переиспользуемую функцию `strip_thinking_blocks()`
+- [ ] 2.3.2: Вызвать strip в `SummarizeTransformer::transform_request`
+- [ ] 2.3.3: Тесты strip в контексте Summarize
 
-**Тесты:**
-- [ ] Unit тесты для SummarizeTransformer
-- [ ] Integration тест с mock LLM
-- [ ] E2E тест переключения бэкенда
+#### Phase 2.4: Prepend логика
+- [ ] 2.4.1: Метод `prepend_summary_to_user_message(body, summary)`
+- [ ] 2.4.2: Интеграция в `transform_request` — проверка и использование `pending_summary`
+- [ ] 2.4.3: Тесты prepend к разным форматам сообщений
+
+#### Phase 2.5: LLM клиент
+- [ ] 2.5.1: Добавить `reqwest::Client` в структуру `SummarizeTransformer`
+- [ ] 2.5.2: Метод `build_summarize_request(messages) -> Value`
+- [ ] 2.5.3: Метод `get_summarize_endpoint() -> String` (из конфига)
+- [ ] 2.5.4: Метод `call_summarize_llm(messages) -> Result<String, TransformError>`
+- [ ] 2.5.5: Парсинг ответа API (Anthropic формат)
+- [ ] 2.5.6: Mock тесты с wiremock
+
+#### Phase 2.6: on_backend_switch
+- [ ] 2.6.1: Обновить сигнатуру trait — убрать `body` параметр
+- [ ] 2.6.2: Обновить `StripTransformer::on_backend_switch` (пустая реализация)
+- [ ] 2.6.3: Реализация `SummarizeTransformer::on_backend_switch`:
+  - Получить `last_messages`
+  - Вызвать `call_summarize_llm`
+  - Сохранить результат в `pending_summary`
+- [ ] 2.6.4: Тесты on_backend_switch
+
+#### Phase 2.7: IPC интеграция
+- [ ] 2.7.1: Добавить `Arc<TransformerRegistry>` в IPC handler
+- [ ] 2.7.2: В `handle_switch_backend`:
+  - Проверить режим (Summarize?)
+  - Вызвать `transformer.on_backend_switch(from, to).await`
+  - Только потом переключить бэкенд
+- [ ] 2.7.3: Тесты IPC с mock transformer
+
+#### Phase 2.8: UI события и диалог
+- [ ] 2.8.1: Добавить `UiEvent::ShowSummarizeProgress { from, to }`
+- [ ] 2.8.2: Добавить `UiEvent::HideSummarizeProgress`
+- [ ] 2.8.3: Отправка событий из IPC handler (до/после on_backend_switch)
+- [ ] 2.8.4: Обработка в TUI — показ/скрытие диалога прогресса
+- [ ] 2.8.5: Дизайн диалога (спиннер, текст "Summarizing session...")
 
 ### Phase 3: Native Mode 📋 FUTURE
 
