@@ -4,10 +4,11 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use crossterm::ExecutableCommand;
+use parking_lot::Mutex;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use std::io::{self, Stdout};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 pub struct TerminalGuard {
     cleanup: Arc<Mutex<Option<Box<dyn FnOnce() + Send + 'static>>>>,
@@ -21,29 +22,23 @@ impl TerminalGuard {
     }
 
     fn set_cleanup<F: FnOnce() + Send + 'static>(&self, cleanup: F) {
-        if let Ok(mut slot) = self.cleanup.lock() {
-            *slot = Some(Box::new(cleanup));
-        }
+        *self.cleanup.lock() = Some(Box::new(cleanup));
     }
 
     fn install_panic_hook(&self) {
         let cleanup = Arc::clone(&self.cleanup);
         let default_hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
-            if let Ok(mut slot) = cleanup.lock() {
-                if let Some(cleanup) = slot.take() {
-                    cleanup();
-                }
+            if let Some(cleanup_fn) = cleanup.lock().take() {
+                cleanup_fn();
             }
             default_hook(info);
         }));
     }
 
     fn restore(&self) {
-        if let Ok(mut slot) = self.cleanup.lock() {
-            if let Some(cleanup) = slot.take() {
-                cleanup();
-            }
+        if let Some(cleanup_fn) = self.cleanup.lock().take() {
+            cleanup_fn();
         }
     }
 }

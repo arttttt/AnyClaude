@@ -35,7 +35,7 @@ impl RouterEngine {
         backend_state: BackendState,
         observability: ObservabilityHub,
     ) -> Self {
-        let thinking_tracker = Arc::new(std::sync::RwLock::new(ThinkingTracker::new(
+        let thinking_tracker = Arc::new(parking_lot::RwLock::new(ThinkingTracker::new(
             config.get().thinking.mode,
         )));
         Self {

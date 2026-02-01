@@ -5,7 +5,9 @@
 //! CLI argument overrides.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+
+use parking_lot::RwLock;
 
 use crate::config::loader::ConfigError;
 use crate::config::types::Config;
@@ -34,7 +36,7 @@ impl ConfigStore {
     /// This is cheap because Config is Clone.
     /// Multiple readers can call this concurrently.
     pub fn get(&self) -> Config {
-        self.inner.read().expect("config lock poisoned").clone()
+        self.inner.read().clone()
     }
 
     /// Reload config from the file.
@@ -43,7 +45,7 @@ impl ConfigStore {
     /// On failure, keeps the old config and returns the error.
     pub fn reload(&self) -> Result<(), ConfigError> {
         let config = Config::load_from(&self.path)?;
-        let mut guard = self.inner.write().expect("config lock poisoned");
+        let mut guard = self.inner.write();
         *guard = config;
         Ok(())
     }

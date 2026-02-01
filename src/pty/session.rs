@@ -1,10 +1,11 @@
 use crate::pty::handle::PtyHandle;
 use crate::ui::events::{AppEvent, PtyError};
+use parking_lot::Mutex;
 use portable_pty::{native_pty_system, Child, CommandBuilder, PtySize};
 use std::error::Error;
 use std::io::Read;
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread;
 
 pub struct PtySession {
@@ -72,9 +73,7 @@ impl PtySession {
                     }
                 };
 
-                if let Ok(mut parser) = reader_parser.lock() {
-                    parser.process(&buffer[..count]);
-                }
+                reader_parser.lock().process(&buffer[..count]);
                 let _ = notifier.send(AppEvent::PtyOutput);
             }
             // Notify UI that the child process has exited (only if no error already sent)

@@ -4,8 +4,9 @@ use crate::ipc::{BackendInfo, ProxyStatus};
 use crate::metrics::MetricsSnapshot;
 use crate::pty::PtyHandle;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use parking_lot::Mutex;
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 

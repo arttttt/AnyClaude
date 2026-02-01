@@ -1,8 +1,9 @@
 use crate::pty::hotkey::is_wrapper_hotkey;
+use parking_lot::Mutex;
 use portable_pty::{MasterPty, PtySize};
 use std::error::Error;
 use std::io::{self, Write};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct PtyHandle {
@@ -29,11 +30,8 @@ impl PtyHandle {
     }
 
     pub fn send_input(&self, bytes: &[u8]) -> io::Result<()> {
-        let mut writer = self
-            .writer
-            .lock()
-            .map_err(|_| io::Error::new(io::ErrorKind::Other, "input writer lock poisoned"))?;
-        let Some(writer) = writer.as_mut() else {
+        let mut writer_guard = self.writer.lock();
+        let Some(writer) = writer_guard.as_mut() else {
             return Ok(());
         };
         let mut filtered = Vec::with_capacity(bytes.len());
@@ -58,44 +56,33 @@ impl PtyHandle {
             pixel_width: 0,
             pixel_height: 0,
         };
-        if let Ok(master) = self.master.lock() {
-            master.resize(size)?;
-        }
-        if let Ok(mut parser) = self.parser.lock() {
-            parser.screen_mut().set_size(rows, cols);
-        }
+        self.master.lock().resize(size)?;
+        self.parser.lock().screen_mut().set_size(rows, cols);
         Ok(())
     }
 
     /// Get the current scrollback offset.
     pub fn scrollback(&self) -> usize {
-        self.parser
-            .lock()
-            .map(|p| p.screen().scrollback())
-            .unwrap_or(0)
+        self.parser.lock().screen().scrollback()
     }
 
     /// Set the scrollback offset.
     pub fn set_scrollback(&self, offset: usize) {
-        if let Ok(mut parser) = self.parser.lock() {
-            parser.screen_mut().set_scrollback(offset);
-        }
+        self.parser.lock().screen_mut().set_scrollback(offset);
     }
 
     /// Scroll up by the given number of lines.
     pub fn scroll_up(&self, lines: usize) {
-        if let Ok(mut parser) = self.parser.lock() {
-            let current = parser.screen().scrollback();
-            parser.screen_mut().set_scrollback(current.saturating_add(lines));
-        }
+        let mut parser = self.parser.lock();
+        let current = parser.screen().scrollback();
+        parser.screen_mut().set_scrollback(current.saturating_add(lines));
     }
 
     /// Scroll down by the given number of lines.
     pub fn scroll_down(&self, lines: usize) {
-        if let Ok(mut parser) = self.parser.lock() {
-            let current = parser.screen().scrollback();
-            parser.screen_mut().set_scrollback(current.saturating_sub(lines));
-        }
+        let mut parser = self.parser.lock();
+        let current = parser.screen().scrollback();
+        parser.screen_mut().set_scrollback(current.saturating_sub(lines));
     }
 
     /// Reset scrollback to show current (live) content.
@@ -104,8 +91,6 @@ impl PtyHandle {
     }
 
     pub fn close_writer(&self) {
-        if let Ok(mut writer) = self.writer.lock() {
-            *writer = None;
-        }
+        *self.writer.lock() = None;
     }
 }

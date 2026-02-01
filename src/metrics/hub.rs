@@ -1,6 +1,8 @@
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::time::SystemTime;
+
+use parking_lot::RwLock;
 
 use axum::body::Body;
 use axum::http::Request;
@@ -116,8 +118,7 @@ impl ObservabilityHub {
             .inner
             .aggregates
             .read()
-            .expect("metrics aggregates lock poisoned")
-            .clone();
+                        .clone();
 
         for (backend, acc) in aggregates {
             let mut metrics = BackendMetrics::default();
@@ -141,11 +142,7 @@ impl ObservabilityHub {
     }
 
     fn update_aggregates(&self, record: &RequestRecord) {
-        let mut aggregates = self
-            .inner
-            .aggregates
-            .write()
-            .expect("metrics aggregates lock poisoned");
+        let mut aggregates = self.inner.aggregates.write();
 
         let entry = aggregates
             .entry(record.backend.clone())

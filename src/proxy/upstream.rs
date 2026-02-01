@@ -12,7 +12,8 @@ use crate::proxy::error::ProxyError;
 use crate::proxy::pool::PoolConfig;
 use crate::proxy::thinking::ThinkingTracker;
 use crate::proxy::timeout::TimeoutConfig;
-use std::sync::{Arc, RwLock};
+use parking_lot::RwLock;
+use std::sync::Arc;
 
 pub struct UpstreamClient {
     client: Client,
@@ -126,7 +127,7 @@ impl UpstreamClient {
             let mut tracker = self
                 .thinking_tracker
                 .write()
-                .expect("thinking tracker lock poisoned");
+                ;
             tracker.set_mode(self.config.get().thinking.mode);
 
             let output = tracker.transform_request(&backend.name, &body_bytes);

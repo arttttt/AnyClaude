@@ -29,14 +29,13 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
         frame.render_widget(TerminalBody::new(Arc::clone(&parser)), body);
         // Only show cursor when in live view (scrollback == 0) and terminal has focus
         if app.focus_is_terminal() && app.scrollback() == 0 && body.width > 0 && body.height > 0 {
-            if let Ok(parser) = parser.lock() {
-                let screen = parser.screen();
-                if !screen.hide_cursor() {
-                    let cursor = screen.cursor_position();
-                    let x = body.x + (cursor.1 as u16).min(body.width.saturating_sub(1));
-                    let y = body.y + (cursor.0 as u16).min(body.height.saturating_sub(1));
-                    frame.set_cursor_position((x, y));
-                }
+            let parser_guard = parser.lock();
+            let screen = parser_guard.screen();
+            if !screen.hide_cursor() {
+                let cursor = screen.cursor_position();
+                let x = body.x + (cursor.1 as u16).min(body.width.saturating_sub(1));
+                let y = body.y + (cursor.0 as u16).min(body.height.saturating_sub(1));
+                frame.set_cursor_position((x, y));
             }
         }
     }

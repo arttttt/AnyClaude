@@ -1,8 +1,9 @@
+use parking_lot::Mutex;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::Widget;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 pub struct TerminalBody {
     parser: Arc<Mutex<vt100::Parser>>,
@@ -16,10 +17,7 @@ impl TerminalBody {
 
 impl Widget for TerminalBody {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let parser = match self.parser.lock() {
-            Ok(parser) => parser,
-            Err(_) => return,
-        };
+        let parser = self.parser.lock();
 
         let screen = parser.screen();
         let max_rows = area.height as usize;

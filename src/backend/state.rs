@@ -3,8 +3,10 @@
 //! Provides thread-safe backend state management with support for
 //! runtime switching without interrupting in-flight requests.
 
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::time::SystemTime;
+
+use parking_lot::RwLock;
 
 use crate::config::{Backend, Config};
 
@@ -109,8 +111,7 @@ impl BackendState {
     pub fn get_active_backend(&self) -> String {
         self.inner
             .read()
-            .expect("backend state lock poisoned")
-            .active_backend
+                        .active_backend
             .clone()
     }
 
@@ -119,7 +120,7 @@ impl BackendState {
     /// Returns an error if the backend is no longer in config (shouldn't happen
     /// unless config was reloaded with different backends).
     pub fn get_active_backend_config(&self) -> Result<Backend, BackendError> {
-        let state = self.inner.read().expect("backend state lock poisoned");
+        let state = self.inner.read();
         state
             .config
             .backends
@@ -133,7 +134,7 @@ impl BackendState {
 
     /// Get the configuration for a specific backend by name.
     pub fn get_backend_config(&self, backend_id: &str) -> Result<Backend, BackendError> {
-        let state = self.inner.read().expect("backend state lock poisoned");
+        let state = self.inner.read();
         state
             .config
             .backends
@@ -149,8 +150,7 @@ impl BackendState {
     pub fn get_config(&self) -> Config {
         self.inner
             .read()
-            .expect("backend state lock poisoned")
-            .config
+                        .config
             .clone()
     }
 
@@ -165,7 +165,7 @@ impl BackendState {
     /// # Performance
     /// Switch is atomic and takes less than 1ms under normal conditions.
     pub fn switch_backend(&self, backend_id: &str) -> Result<(), BackendError> {
-        let mut state = self.inner.write().expect("backend state lock poisoned");
+        let mut state = self.inner.write();
 
         // Validate the target backend exists
         if !state.config.backends.iter().any(|b| b.name == backend_id) {
@@ -205,20 +205,19 @@ impl BackendState {
     pub fn get_switch_log(&self) -> Vec<SwitchLogEntry> {
         self.inner
             .read()
-            .expect("backend state lock poisoned")
-            .switch_log
+                        .switch_log
             .clone()
     }
 
     /// Validate that a backend ID exists in the current configuration.
     pub fn validate_backend(&self, backend_id: &str) -> bool {
-        let state = self.inner.read().expect("backend state lock poisoned");
+        let state = self.inner.read();
         state.config.backends.iter().any(|b| b.name == backend_id)
     }
 
     /// Get list of available backend IDs.
     pub fn list_backends(&self) -> Vec<String> {
-        let state = self.inner.read().expect("backend state lock poisoned");
+        let state = self.inner.read();
         state
             .config
             .backends
@@ -236,7 +235,7 @@ impl BackendState {
             return Err(BackendError::NoBackendsConfigured);
         }
 
-        let mut state = self.inner.write().expect("backend state lock poisoned");
+        let mut state = self.inner.write();
 
         // Check if current backend still exists
         let current_exists = new_config

@@ -7,8 +7,10 @@
 //! - Graceful degradation state
 
 use std::collections::{HashSet, VecDeque};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
+
+use parking_lot::RwLock;
 
 /// Severity level for application errors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -146,7 +148,7 @@ impl ErrorRegistry {
         message: impl Into<String>,
         details: Option<impl Into<String>>,
     ) -> u64 {
-        let mut inner = self.inner.write().expect("error registry lock poisoned");
+        let mut inner = self.inner.write();
         let id = inner.next_id;
         inner.next_id += 1;
 
@@ -185,7 +187,7 @@ impl ErrorRegistry {
         details: Option<impl Into<String>>,
         recovery_hint: impl Into<String>,
     ) -> u64 {
-        let mut inner = self.inner.write().expect("error registry lock poisoned");
+        let mut inner = self.inner.write();
         let id = inner.next_id;
         inner.next_id += 1;
 
@@ -215,7 +217,7 @@ impl ErrorRegistry {
 
     /// Get the most recent critical/error (for header display).
     pub fn current_error(&self) -> Option<AppError> {
-        let inner = self.inner.read().expect("error registry lock poisoned");
+        let inner = self.inner.read();
         inner
             .errors
             .iter()
@@ -226,13 +228,13 @@ impl ErrorRegistry {
 
     /// Get all errors for diagnostics panel.
     pub fn all_errors(&self) -> Vec<AppError> {
-        let inner = self.inner.read().expect("error registry lock poisoned");
+        let inner = self.inner.read();
         inner.errors.iter().cloned().collect()
     }
 
     /// Get errors by category.
     pub fn errors_by_category(&self, category: ErrorCategory) -> Vec<AppError> {
-        let inner = self.inner.read().expect("error registry lock poisoned");
+        let inner = self.inner.read();
         inner
             .errors
             .iter()
@@ -243,7 +245,7 @@ impl ErrorRegistry {
 
     /// Acknowledge an error (removes from header display).
     pub fn acknowledge(&self, error_id: u64) {
-        let mut inner = self.inner.write().expect("error registry lock poisoned");
+        let mut inner = self.inner.write();
         if let Some(error) = inner.errors.iter_mut().find(|e| e.id == error_id) {
             error.acknowledged = true;
         }
@@ -251,7 +253,7 @@ impl ErrorRegistry {
 
     /// Acknowledge all errors.
     pub fn acknowledge_all(&self) {
-        let mut inner = self.inner.write().expect("error registry lock poisoned");
+        let mut inner = self.inner.write();
         for error in inner.errors.iter_mut() {
             error.acknowledged = true;
         }
@@ -259,7 +261,7 @@ impl ErrorRegistry {
 
     /// Clear errors older than duration.
     pub fn clear_old(&self, older_than: Duration) {
-        let mut inner = self.inner.write().expect("error registry lock poisoned");
+        let mut inner = self.inner.write();
         let cutoff = SystemTime::now()
             .checked_sub(older_than)
             .unwrap_or(SystemTime::UNIX_EPOCH);
@@ -268,7 +270,7 @@ impl ErrorRegistry {
 
     /// Start tracking a recovery operation.
     pub fn start_recovery(&self, operation: impl Into<String>, max_attempts: u32) {
-        let mut inner = self.inner.write().expect("error registry lock poisoned");
+        let mut inner = self.inner.write();
         let operation = operation.into();
 
         // Remove existing recovery for same operation
@@ -285,7 +287,7 @@ impl ErrorRegistry {
 
     /// Update recovery attempt.
     pub fn update_recovery(&self, operation: &str, attempt: u32, next_retry: Option<SystemTime>) {
-        let mut inner = self.inner.write().expect("error registry lock poisoned");
+        let mut inner = self.inner.write();
         if let Some(recovery) = inner.recoveries.iter_mut().find(|r| r.operation == operation) {
             recovery.attempt = attempt;
             recovery.next_retry = next_retry;
@@ -294,7 +296,7 @@ impl ErrorRegistry {
 
     /// Mark recovery as succeeded.
     pub fn recovery_succeeded(&self, operation: &str) {
-        let mut inner = self.inner.write().expect("error registry lock poisoned");
+        let mut inner = self.inner.write();
         inner.recoveries.retain(|r| r.operation != operation);
 
         // Restore health if no more recoveries and no unacknowledged errors
@@ -312,7 +314,7 @@ impl ErrorRegistry {
 
     /// Mark recovery as failed.
     pub fn recovery_failed(&self, operation: &str) {
-        let mut inner = self.inner.write().expect("error registry lock poisoned");
+        let mut inner = self.inner.write();
         if let Some(recovery) = inner.recoveries.iter_mut().find(|r| r.operation == operation) {
             recovery.succeeded = false;
         }
@@ -321,26 +323,26 @@ impl ErrorRegistry {
 
     /// Get current recovery operations.
     pub fn active_recoveries(&self) -> Vec<RecoveryState> {
-        let inner = self.inner.read().expect("error registry lock poisoned");
+        let inner = self.inner.read();
         inner.recoveries.clone()
     }
 
     /// Check if system is healthy.
     pub fn is_healthy(&self) -> bool {
-        let inner = self.inner.read().expect("error registry lock poisoned");
+        let inner = self.inner.read();
         inner.healthy
     }
 
     /// Set system health status.
     pub fn set_health(&self, healthy: bool, reason: Option<String>) {
-        let mut inner = self.inner.write().expect("error registry lock poisoned");
+        let mut inner = self.inner.write();
         inner.healthy = healthy;
         inner.unhealthy_reason = reason;
     }
 
     /// Mark a feature as degraded.
     pub fn degrade_feature(&self, feature: Feature, reason: impl Into<String>) {
-        let mut inner = self.inner.write().expect("error registry lock poisoned");
+        let mut inner = self.inner.write();
         inner.degraded_features.insert(feature);
 
         // Also record as warning
@@ -366,19 +368,19 @@ impl ErrorRegistry {
 
     /// Check if feature is available.
     pub fn is_feature_available(&self, feature: Feature) -> bool {
-        let inner = self.inner.read().expect("error registry lock poisoned");
+        let inner = self.inner.read();
         !inner.degraded_features.contains(&feature)
     }
 
     /// Restore a feature.
     pub fn restore_feature(&self, feature: Feature) {
-        let mut inner = self.inner.write().expect("error registry lock poisoned");
+        let mut inner = self.inner.write();
         inner.degraded_features.remove(&feature);
     }
 
     /// Get list of degraded features.
     pub fn degraded_features(&self) -> Vec<Feature> {
-        let inner = self.inner.read().expect("error registry lock poisoned");
+        let inner = self.inner.read();
         inner.degraded_features.iter().copied().collect()
     }
 }

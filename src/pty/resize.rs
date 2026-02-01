@@ -1,6 +1,7 @@
+use parking_lot::Mutex;
 use portable_pty::{MasterPty, PtySize};
 use std::error::Error;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread;
 
 #[cfg(unix)]
@@ -38,12 +39,8 @@ impl ResizeWatcher {
                         pixel_width: 0,
                         pixel_height: 0,
                     };
-                    if let Ok(master) = master.lock() {
-                        let _ = master.resize(size);
-                    }
-                    if let Ok(mut parser) = parser.lock() {
-                        parser.screen_mut().set_size(rows, cols);
-                    }
+                    let _ = master.lock().resize(size);
+                    parser.lock().screen_mut().set_size(rows, cols);
                 }
             });
             return Ok(Some(Self { handle, thread }));

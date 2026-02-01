@@ -1,10 +1,11 @@
 use crate::pty::hotkey::is_wrapper_hotkey;
 use crate::pty::resize::ResizeWatcher;
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, size as terminal_size};
+use parking_lot::Mutex;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::error::Error;
 use std::io::{self, Read, Write};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread;
 
 pub struct PtyManager {
@@ -106,9 +107,7 @@ impl PtyManager {
     }
 
     fn resize_parser(&self, cols: u16, rows: u16) {
-        if let Ok(mut parser) = self.parser.lock() {
-            parser.screen_mut().set_size(rows, cols);
-        }
+        self.parser.lock().screen_mut().set_size(rows, cols);
     }
 }
 

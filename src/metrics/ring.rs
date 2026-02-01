@@ -1,5 +1,7 @@
 use std::collections::VecDeque;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+
+use parking_lot::RwLock;
 
 use super::types::RequestRecord;
 
@@ -18,7 +20,7 @@ impl RequestRingBuffer {
     }
 
     pub fn push(&self, record: RequestRecord) {
-        let mut records = self.records.write().expect("ring buffer lock poisoned");
+        let mut records = self.records.write();
         if records.len() == self.capacity {
             records.pop_front();
         }
@@ -26,7 +28,7 @@ impl RequestRingBuffer {
     }
 
     pub fn snapshot(&self) -> Vec<RequestRecord> {
-        let records = self.records.read().expect("ring buffer lock poisoned");
+        let records = self.records.read();
         records.iter().cloned().collect()
     }
 }
