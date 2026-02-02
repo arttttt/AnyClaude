@@ -139,13 +139,19 @@ impl ThinkingTransformer for SummarizeTransformer {
         let mut stats = TransformStats::default();
 
         // 1. Save messages for potential future summarization
-        if let Some(messages) = body.get("messages").and_then(|m| m.as_array()) {
-            let mut last_messages = self.last_messages.write().await;
-            *last_messages = Some(messages.clone());
-            tracing::trace!(
-                message_count = messages.len(),
-                "Saved messages for potential summarization"
-            );
+        // Only save for real chat completion requests (have "stream" field),
+        // not for count_tokens or other auxiliary requests that could overwrite
+        // the real conversation with minimal/test messages.
+        let is_chat_completion = body.get("stream").is_some();
+        if is_chat_completion {
+            if let Some(messages) = body.get("messages").and_then(|m| m.as_array()) {
+                let mut last_messages = self.last_messages.write().await;
+                *last_messages = Some(messages.clone());
+                tracing::trace!(
+                    message_count = messages.len(),
+                    "Saved messages for potential summarization"
+                );
+            }
         }
 
         // 2. Check if we have a pending summary to prepend
