@@ -85,6 +85,8 @@ impl SummarizerClient {
 
         // Build the request body in Anthropic Messages API format
         let request_body = self.build_request(messages);
+        let request_json = serde_json::to_string_pretty(&request_body)
+            .unwrap_or_else(|_| "<serialization error>".to_string());
 
         let url = format!("{}/v1/messages", self.config.base_url.trim_end_matches('/'));
 
@@ -121,14 +123,16 @@ impl SummarizerClient {
                 "Summarization API error"
             );
 
-            // Log to debug logger
+            // Log error with request body for debugging
             if let Some(logger) = &self.debug_logger {
-                logger.log_auxiliary(
+                logger.log_auxiliary_full(
                     "summarize",
                     Some(status.as_u16()),
                     Some(latency_ms),
                     None,
                     Some(&error_text),
+                    Some(&request_json),
+                    None,
                 );
             }
 
@@ -138,20 +142,27 @@ impl SummarizerClient {
             });
         }
 
-        let response_body: ApiResponse = response.json().await.map_err(|e| {
+        let response_text = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "<read error>".to_string());
+
+        let response_body: ApiResponse = serde_json::from_str(&response_text).map_err(|e| {
             SummarizeError::ParseError(format!("Failed to parse response JSON: {}", e))
         })?;
 
         let result = self.extract_text_content(response_body)?;
 
-        // Log success
+        // Log success with request/response for debugging
         if let Some(logger) = &self.debug_logger {
-            logger.log_auxiliary(
+            logger.log_auxiliary_full(
                 "summarize",
                 Some(status.as_u16()),
                 Some(latency_ms),
                 Some(&format!("summary_len={}", result.len())),
                 None,
+                Some(&request_json),
+                Some(&response_text),
             );
         }
 

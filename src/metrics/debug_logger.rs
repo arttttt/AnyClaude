@@ -57,6 +57,10 @@ pub struct AuxiliaryLogEvent {
     pub latency_ms: Option<u64>,
     pub message: Option<String>,
     pub error: Option<String>,
+    /// Request body (for verbose logging).
+    pub request_body: Option<String>,
+    /// Response body (for verbose logging).
+    pub response_body: Option<String>,
 }
 
 pub struct DebugLogger {
@@ -106,6 +110,20 @@ impl DebugLogger {
         message: Option<&str>,
         error: Option<&str>,
     ) {
+        self.log_auxiliary_full(operation, status, latency_ms, message, error, None, None);
+    }
+
+    /// Log an auxiliary event with request/response bodies (for verbose debugging).
+    pub fn log_auxiliary_full(
+        &self,
+        operation: &str,
+        status: Option<u16>,
+        latency_ms: Option<u64>,
+        message: Option<&str>,
+        error: Option<&str>,
+        request_body: Option<&str>,
+        response_body: Option<&str>,
+    ) {
         if self.level() == DebugLogLevel::Off {
             return;
         }
@@ -117,6 +135,8 @@ impl DebugLogger {
             latency_ms,
             message: message.map(|s| s.to_string()),
             error: error.map(|s| s.to_string()),
+            request_body: request_body.map(|s| s.to_string()),
+            response_body: response_body.map(|s| s.to_string()),
         };
         let _ = self.sender.try_send(LogEvent::Auxiliary(event));
     }
@@ -322,25 +342,56 @@ fn format_auxiliary_console(event: &AuxiliaryLogEvent, use_color: bool) -> Strin
     };
     let latency = event.latency_ms.map_or("-".to_string(), |v| v.to_string());
 
+    // Header with separator for visibility
+    let separator = if use_color {
+        "\x1b[36m───────────────────────────────────────────────────────────────────────\x1b[0m"
+    } else {
+        "───────────────────────────────────────────────────────────────────────"
+    };
+
+    let op_display = if use_color {
+        format!("\x1b[1;33m[{}]\x1b[0m", event.operation.to_uppercase())
+    } else {
+        format!("[{}]", event.operation.to_uppercase())
+    };
+
     let mut line = format!(
-        "{} [{}] status={} latency_ms={}",
-        timestamp, event.operation, status_display, latency
+        "{}\n{} {} status={} latency_ms={}",
+        separator, timestamp, op_display, status_display, latency
     );
 
     if let Some(msg) = &event.message {
-        line.push_str(&format!(" message=\"{}\"", msg));
+        line.push_str(&format!("\n  message: {}", msg));
     }
 
     if let Some(err) = &event.error {
         let err_display = if use_color {
-            format!("\x1b[31m{}\x1b[0m", err) // Red
+            format!("\x1b[31m{}\x1b[0m", err)
         } else {
             err.clone()
         };
-        line.push_str(&format!(" error=\"{}\"", err_display));
+        line.push_str(&format!("\n  error: {}", err_display));
+    }
+
+    // Show request/response bodies if present
+    if let Some(req) = &event.request_body {
+        line.push_str(&format!("\n  request_body:\n{}", indent_text(req, 4)));
+    }
+
+    if let Some(resp) = &event.response_body {
+        line.push_str(&format!("\n  response_body:\n{}", indent_text(resp, 4)));
     }
 
     line
+}
+
+/// Indent each line of text by the given number of spaces.
+fn indent_text(text: &str, spaces: usize) -> String {
+    let indent = " ".repeat(spaces);
+    text.lines()
+        .map(|line| format!("{}{}", indent, line))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn format_auxiliary_json(event: &AuxiliaryLogEvent) -> String {
@@ -352,6 +403,8 @@ fn format_auxiliary_json(event: &AuxiliaryLogEvent) -> String {
         "latency_ms": event.latency_ms,
         "message": event.message,
         "error": event.error,
+        "request_body": event.request_body,
+        "response_body": event.response_body,
     });
     value.to_string()
 }

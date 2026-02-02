@@ -30,12 +30,14 @@ pub struct SummarizeTransformer {
     config: SummarizeConfig,
     /// Client for calling the summarization API.
     summarizer: Option<SummarizerClient>,
+    /// Debug logger for verbose logging.
+    debug_logger: Option<Arc<DebugLogger>>,
 }
 
 impl SummarizeTransformer {
     /// Create a new SummarizeTransformer with the given configuration.
     pub fn new(config: SummarizeConfig, debug_logger: Option<Arc<DebugLogger>>) -> Self {
-        let summarizer = SummarizerClient::new(config.clone(), debug_logger);
+        let summarizer = SummarizerClient::new(config.clone(), debug_logger.clone());
 
         if summarizer.is_none() {
             tracing::warn!(
@@ -48,6 +50,7 @@ impl SummarizeTransformer {
             pending_summary: RwLock::new(None),
             config,
             summarizer,
+            debug_logger,
         }
     }
 
@@ -146,6 +149,21 @@ impl ThinkingTransformer for SummarizeTransformer {
                 if prepend_summary_to_user_message(body, &summary) {
                     stats.summarized_count = 1;
                     tracing::info!("Prepended session summary to first user message");
+
+                    // Log the modified request body for debugging
+                    if let Some(logger) = &self.debug_logger {
+                        let body_json = serde_json::to_string_pretty(body)
+                            .unwrap_or_else(|_| "<serialization error>".to_string());
+                        logger.log_auxiliary_full(
+                            "summarize-prepend",
+                            None,
+                            None,
+                            Some(&format!("summary_len={}", summary.len())),
+                            None,
+                            Some(&body_json),
+                            None,
+                        );
+                    }
                 } else {
                     tracing::warn!("Had pending summary but no user message to prepend to");
                 }
