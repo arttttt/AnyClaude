@@ -9,6 +9,7 @@ use crate::config::SummarizeConfig;
 use super::context::{TransformContext, TransformResult, TransformStats};
 use super::error::TransformError;
 use super::strip::{remove_context_management, strip_thinking_blocks};
+use super::summarizer::SummarizerClient;
 use super::traits::ThinkingTransformer;
 
 /// Transformer that summarizes session history when switching backends.
@@ -25,21 +26,37 @@ pub struct SummarizeTransformer {
     pending_summary: RwLock<Option<String>>,
     /// Configuration for summarization.
     config: SummarizeConfig,
+    /// Client for calling the summarization API.
+    summarizer: Option<SummarizerClient>,
 }
 
 impl SummarizeTransformer {
     /// Create a new SummarizeTransformer with the given configuration.
     pub fn new(config: SummarizeConfig) -> Self {
+        let summarizer = SummarizerClient::new(config.clone());
+
+        if summarizer.is_none() {
+            tracing::warn!(
+                "SummarizeTransformer created without API key - summarization will not work"
+            );
+        }
+
         Self {
             last_messages: RwLock::new(None),
             pending_summary: RwLock::new(None),
             config,
+            summarizer,
         }
     }
 
     /// Get the current configuration.
     pub fn config(&self) -> &SummarizeConfig {
         &self.config
+    }
+
+    /// Check if summarization is available (API key configured).
+    pub fn is_summarization_available(&self) -> bool {
+        self.summarizer.is_some()
     }
 }
 
@@ -153,10 +170,56 @@ impl ThinkingTransformer for SummarizeTransformer {
         tracing::info!(
             from = %from_backend,
             to = %to_backend,
-            "Backend switch detected, summarization will be implemented in Phase 2.5-2.6"
+            "Backend switch detected, starting summarization"
         );
-        // TODO: Phase 2.5 - call LLM to summarize last_messages
-        // TODO: Store result in pending_summary
+
+        // Get the summarizer client
+        let summarizer = match &self.summarizer {
+            Some(s) => s,
+            None => {
+                tracing::warn!("Summarization not available - no API key configured");
+                return Err(TransformError::BackendUnavailable(
+                    "Summarizer not configured - missing API key".to_string(),
+                ));
+            }
+        };
+
+        // Get the messages to summarize
+        let messages = {
+            let guard = self.last_messages.read().await;
+            guard.clone()
+        };
+
+        let messages = match messages {
+            Some(m) if !m.is_empty() => m,
+            _ => {
+                tracing::info!("No messages to summarize, skipping");
+                return Ok(());
+            }
+        };
+
+        tracing::debug!(
+            message_count = messages.len(),
+            "Summarizing session messages"
+        );
+
+        // Call the summarization API
+        let summary = summarizer.summarize(&messages).await.map_err(|e| {
+            tracing::error!(error = %e, "Summarization API call failed");
+            TransformError::from(e)
+        })?;
+
+        tracing::info!(
+            summary_len = summary.len(),
+            "Summarization complete, storing for next request"
+        );
+
+        // Store the summary for the next request
+        {
+            let mut pending = self.pending_summary.write().await;
+            *pending = Some(summary);
+        }
+
         Ok(())
     }
 }
@@ -357,5 +420,68 @@ mod tests {
         // Pending should be cleared
         let pending = transformer.pending_summary.read().await;
         assert!(pending.is_none());
+    }
+
+    // ========================================================================
+    // on_backend_switch tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn on_backend_switch_fails_without_summarizer() {
+        // Config without API key - summarizer won't be created
+        let config = make_config();
+        let transformer = SummarizeTransformer::new(config);
+
+        // Simulate having messages saved
+        {
+            let mut messages = transformer.last_messages.write().await;
+            *messages = Some(vec![json!({"role": "user", "content": "Hello"})]);
+        }
+
+        let mut body = json!({});
+        let result = transformer
+            .on_backend_switch("backend-a", "backend-b", &mut body)
+            .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("not available") || err.contains("not configured"));
+    }
+
+    #[tokio::test]
+    async fn on_backend_switch_skips_when_no_messages() {
+        let config = SummarizeConfig {
+            api_key: Some("test-key".to_string()),
+            ..make_config()
+        };
+        let transformer = SummarizeTransformer::new(config);
+
+        // No messages saved - should skip without error
+        let mut body = json!({});
+        let result = transformer
+            .on_backend_switch("backend-a", "backend-b", &mut body)
+            .await;
+
+        assert!(result.is_ok());
+
+        // No pending summary should be set
+        let pending = transformer.pending_summary.read().await;
+        assert!(pending.is_none());
+    }
+
+    #[tokio::test]
+    async fn is_summarization_available_reflects_api_key() {
+        // Without API key
+        let config = make_config();
+        let transformer = SummarizeTransformer::new(config);
+        assert!(!transformer.is_summarization_available());
+
+        // With API key
+        let config_with_key = SummarizeConfig {
+            api_key: Some("test-key".to_string()),
+            ..make_config()
+        };
+        let transformer_with_key = SummarizeTransformer::new(config_with_key);
+        assert!(transformer_with_key.is_summarization_available());
     }
 }
