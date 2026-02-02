@@ -2,16 +2,17 @@
 
 TUI wrapper for Claude Code with hot-swappable backend support and transparent API proxying.
 
-**Note:** Only Anthropic API-compatible backends are supported (Anthropic, GLM, and other providers that implement the Anthropic API format).
+**Note:** Only Anthropic API-compatible backends are supported (Anthropic, GLM/Z.ai, and other providers that implement the Anthropic API format).
 
 ## Features
 
-- **Hot-Swap Backends** — Switch between Anthropic, GLM, and other providers without restart
+- **Hot-Swap Backends** — Switch between Anthropic, GLM, and other providers without restarting Claude
+- **Session Context Preservation** — Summarize conversation on backend switch (summarize mode)
 - **Transparent Proxy** — Routes API requests through active backend
-- **Thinking Block Compatibility** — Transform thinking blocks between provider formats
+- **Thinking Block Handling** — Strip or summarize thinking blocks for cross-provider compatibility
 - **Live Configuration** — Config hot reload on file changes
-- **Image Paste** — Paste images from clipboard
-- **Metrics** — Request latency, error tracking (Ctrl+S)
+- **Image Paste** — Paste images from clipboard (Ctrl+V)
+- **Debug Logging** — Request/response logging with configurable detail levels
 
 ## Architecture
 
@@ -54,14 +55,38 @@ The wrapper automatically:
 
 ### Hotkeys
 
-- `Ctrl+B` — Backend switcher
-- `Ctrl+S` — Status/metrics popup
-- `Ctrl+Q` — Quit
-- `1-9` — Quick-select backend (in switcher)
+| Key | Action |
+|-----|--------|
+| `Ctrl+B` | Backend switcher popup |
+| `Ctrl+S` | Status/metrics popup |
+| `Ctrl+V` | Paste image from clipboard |
+| `Ctrl+Q` | Quit |
+| `1-9` | Quick-select backend (in switcher) |
 
 ## Configuration
 
 Config location: `~/.config/claude-wrapper/config.toml`
+
+### Minimal Example
+
+```toml
+[defaults]
+active = "anthropic"
+
+[[backends]]
+name = "anthropic"
+display_name = "Anthropic"
+base_url = "https://api.anthropic.com"
+auth_type = "api_key"
+api_key_env = "ANTHROPIC_API_KEY"
+
+[[backends]]
+name = "glm"
+display_name = "GLM (Z.ai)"
+base_url = "https://api.z.ai/api/anthropic"
+auth_type = "bearer"
+api_key_env = "ZAI_API_KEY"
+```
 
 ### Full Example
 
@@ -84,7 +109,18 @@ base_url = "http://127.0.0.1:8080"
 scrollback_lines = 10000          # History buffer size
 
 [thinking]
-mode = "drop_signature"           # See "Thinking Block Modes" below
+mode = "summarize"                # "strip" or "summarize"
+
+[thinking.summarize]
+base_url = "https://api.z.ai/api/anthropic"  # Anthropic-compatible API
+model = "glm-4.7"                             # Model for summarization
+max_tokens = 500                              # Max tokens in summary
+# api_key = "your-key"                        # Or use SUMMARIZER_API_KEY env var
+
+[debug_logging]
+enabled = true
+level = "verbose"                 # "basic", "verbose", or "full"
+path = "~/.config/claude-wrapper/debug.log"
 
 [[backends]]
 name = "anthropic"
@@ -95,10 +131,10 @@ api_key_env = "ANTHROPIC_API_KEY"
 
 [[backends]]
 name = "glm"
-display_name = "GLM-4 (Z.AI)"
-base_url = "https://open.bigmodel.cn/api/paas/v4"
+display_name = "GLM (Z.ai)"
+base_url = "https://api.z.ai/api/anthropic"
 auth_type = "bearer"
-api_key_env = "GLM_API_KEY"
+api_key_env = "ZAI_API_KEY"
 
 [[backends]]
 name = "custom"
@@ -128,7 +164,7 @@ When switching between providers, thinking blocks need special handling due to s
 
 **Recommended:** Use `summarize` mode for most cases — it preserves conversation context when switching backends.
 
-#### Strip Mode (Simple)
+#### Strip Mode
 
 ```toml
 [thinking]
@@ -143,7 +179,7 @@ Completely removes thinking blocks from message history. Fast and stable, but lo
 [thinking]
 mode = "summarize"
 
-[summarize]
+[thinking.summarize]
 base_url = "https://api.z.ai/api/anthropic"  # Anthropic-compatible API
 model = "glm-4.7"                             # Model for summarization
 max_tokens = 500                              # Max tokens in summary
@@ -156,6 +192,31 @@ When you switch backends:
 3. New backend receives context: `[CONTEXT FROM PREVIOUS SESSION]...[/CONTEXT FROM PREVIOUS SESSION]`
 
 This allows seamless backend switching while preserving conversation context.
+
+### Debug Logging
+
+Enable detailed request/response logging for debugging:
+
+```toml
+[debug_logging]
+enabled = true
+level = "verbose"   # "basic" | "verbose" | "full"
+path = "~/.config/claude-wrapper/debug.log"
+```
+
+| Level | Content |
+|-------|---------|
+| `basic` | Request timestamps, status codes, latency |
+| `verbose` | + Token counts, model info, cost estimates |
+| `full` | + Request/response body previews, headers |
+
+## Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `ANTHROPIC_API_KEY` | API key for Anthropic backend |
+| `ZAI_API_KEY` | API key for Z.ai/GLM backend |
+| `SUMMARIZER_API_KEY` | API key for summarization (if not in config) |
 
 ## License
 
