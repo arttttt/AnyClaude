@@ -40,6 +40,7 @@ pub use summarizer::SummarizerClient;
 pub use traits::ThinkingTransformer;
 
 use crate::config::{ThinkingConfig, ThinkingMode};
+use crate::metrics::DebugLogger;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -49,34 +50,43 @@ use tokio::sync::RwLock;
 pub struct TransformerRegistry {
     current: RwLock<Arc<dyn ThinkingTransformer>>,
     config: std::sync::RwLock<ThinkingConfig>,
+    debug_logger: Option<Arc<DebugLogger>>,
 }
 
 impl TransformerRegistry {
     /// Create a new registry with the given thinking config.
-    pub fn new(config: ThinkingConfig) -> Self {
-        let transformer = Self::create_transformer(&config);
+    pub fn new(config: ThinkingConfig, debug_logger: Option<Arc<DebugLogger>>) -> Self {
+        let transformer = Self::create_transformer(&config, debug_logger.clone());
         Self {
             current: RwLock::new(transformer),
             config: std::sync::RwLock::new(config),
+            debug_logger,
         }
     }
 
     /// Create a new registry with just a mode (uses default summarize config).
+    /// Note: This constructor is for testing without debug logging.
     pub fn with_mode(mode: ThinkingMode) -> Self {
-        Self::new(ThinkingConfig {
-            mode,
-            ..Default::default()
-        })
+        Self::new(
+            ThinkingConfig {
+                mode,
+                ..Default::default()
+            },
+            None,
+        )
     }
 
     /// Create a transformer for the given config.
-    fn create_transformer(config: &ThinkingConfig) -> Arc<dyn ThinkingTransformer> {
+    fn create_transformer(
+        config: &ThinkingConfig,
+        debug_logger: Option<Arc<DebugLogger>>,
+    ) -> Arc<dyn ThinkingTransformer> {
         match config.mode {
             ThinkingMode::Strip => Arc::new(StripTransformer),
 
             ThinkingMode::Summarize => {
                 tracing::info!("Creating SummarizeTransformer");
-                Arc::new(SummarizeTransformer::new(config.summarize.clone()))
+                Arc::new(SummarizeTransformer::new(config.summarize.clone(), debug_logger))
             }
 
             ThinkingMode::Native => {
@@ -116,7 +126,7 @@ impl TransformerRegistry {
 
         // Now do async work without holding the sync lock
         if let Some(config) = new_config {
-            let transformer = Self::create_transformer(&config);
+            let transformer = Self::create_transformer(&config, self.debug_logger.clone());
             *self.current.write().await = transformer;
         }
     }
@@ -199,7 +209,7 @@ mod tests {
                 max_tokens: 100,
             },
         };
-        let registry = TransformerRegistry::new(config);
+        let registry = TransformerRegistry::new(config, None);
         let transformer = registry.get().await;
         assert_eq!(transformer.name(), "summarize");
         assert_eq!(registry.current_mode(), ThinkingMode::Summarize);

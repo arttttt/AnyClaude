@@ -6,8 +6,11 @@
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::sync::Arc;
+use std::time::Instant;
 
 use crate::config::SummarizeConfig;
+use crate::metrics::DebugLogger;
 
 use super::error::SummarizeError;
 
@@ -31,13 +34,14 @@ pub struct SummarizerClient {
     client: Client,
     config: SummarizeConfig,
     api_key: String,
+    debug_logger: Option<Arc<DebugLogger>>,
 }
 
 impl SummarizerClient {
     /// Create a new SummarizerClient from config.
     ///
     /// Returns `None` if no API key is available (neither in config nor env var).
-    pub fn new(config: SummarizeConfig) -> Option<Self> {
+    pub fn new(config: SummarizeConfig, debug_logger: Option<Arc<DebugLogger>>) -> Option<Self> {
         let api_key = config
             .api_key
             .clone()
@@ -52,6 +56,7 @@ impl SummarizerClient {
             client,
             config,
             api_key,
+            debug_logger,
         })
     }
 
@@ -90,6 +95,7 @@ impl SummarizerClient {
             "Sending summarization request"
         );
 
+        let start = Instant::now();
         let response = self
             .client
             .post(&url)
@@ -100,6 +106,7 @@ impl SummarizerClient {
             .send()
             .await?;
 
+        let latency_ms = start.elapsed().as_millis() as u64;
         let status = response.status();
 
         if !status.is_success() {
@@ -114,6 +121,17 @@ impl SummarizerClient {
                 "Summarization API error"
             );
 
+            // Log to debug logger
+            if let Some(logger) = &self.debug_logger {
+                logger.log_auxiliary(
+                    "summarize",
+                    Some(status.as_u16()),
+                    Some(latency_ms),
+                    None,
+                    Some(&error_text),
+                );
+            }
+
             return Err(SummarizeError::ApiError {
                 status: status.as_u16(),
                 message: error_text,
@@ -124,7 +142,20 @@ impl SummarizerClient {
             SummarizeError::ParseError(format!("Failed to parse response JSON: {}", e))
         })?;
 
-        self.extract_text_content(response_body)
+        let result = self.extract_text_content(response_body)?;
+
+        // Log success
+        if let Some(logger) = &self.debug_logger {
+            logger.log_auxiliary(
+                "summarize",
+                Some(status.as_u16()),
+                Some(latency_ms),
+                Some(&format!("summary_len={}", result.len())),
+                None,
+            );
+        }
+
+        Ok(result)
     }
 
     /// Build the Anthropic Messages API request body.
@@ -244,7 +275,7 @@ mod tests {
     #[test]
     fn client_creation_with_config_key() {
         let config = make_test_config();
-        let client = SummarizerClient::new(config);
+        let client = SummarizerClient::new(config, None);
         assert!(client.is_some());
     }
 
@@ -257,13 +288,13 @@ mod tests {
         // This will only succeed if ZAI_API_KEY is set in env
         // For unit test, we can't guarantee the env var is unset
         // So we just verify the function doesn't panic
-        let _ = SummarizerClient::new(config);
+        let _ = SummarizerClient::new(config, None);
     }
 
     #[test]
     fn format_messages_handles_string_content() {
         let config = make_test_config();
-        let client = SummarizerClient::new(config).unwrap();
+        let client = SummarizerClient::new(config, None).unwrap();
 
         let messages = vec![
             json!({"role": "user", "content": "Hello"}),
@@ -281,7 +312,7 @@ mod tests {
     #[test]
     fn format_messages_handles_array_content() {
         let config = make_test_config();
-        let client = SummarizerClient::new(config).unwrap();
+        let client = SummarizerClient::new(config, None).unwrap();
 
         let messages = vec![json!({
             "role": "assistant",
@@ -301,7 +332,7 @@ mod tests {
     #[test]
     fn build_request_includes_prompt() {
         let config = make_test_config();
-        let client = SummarizerClient::new(config).unwrap();
+        let client = SummarizerClient::new(config, None).unwrap();
 
         let messages = vec![json!({"role": "user", "content": "Test"})];
         let request = client.build_request(&messages);
@@ -315,7 +346,7 @@ mod tests {
     #[test]
     fn extract_text_content_works() {
         let config = make_test_config();
-        let client = SummarizerClient::new(config).unwrap();
+        let client = SummarizerClient::new(config, None).unwrap();
 
         let response = ApiResponse {
             content: vec![ContentBlock {
@@ -331,7 +362,7 @@ mod tests {
     #[test]
     fn extract_text_content_empty_response() {
         let config = make_test_config();
-        let client = SummarizerClient::new(config).unwrap();
+        let client = SummarizerClient::new(config, None).unwrap();
 
         let response = ApiResponse { content: vec![] };
 
@@ -351,7 +382,7 @@ mod tests {
             max_tokens: 200,
         };
 
-        let client = SummarizerClient::new(config).expect("SUMMARIZER_API_KEY must be set");
+        let client = SummarizerClient::new(config, None).expect("SUMMARIZER_API_KEY must be set");
 
         let messages = vec![
             json!({"role": "user", "content": "Help me write a function to calculate fibonacci numbers"}),

@@ -53,7 +53,7 @@ async fn ipc_switch_backend_and_status() {
     let debug_logger = Arc::new(DebugLogger::new(DebugLoggingConfig::default()));
     let observability = ObservabilityHub::new(10).with_plugins(vec![debug_logger.clone()]);
     let shutdown = Arc::new(ShutdownManager::new());
-    let transformer_registry = Arc::new(TransformerRegistry::new(config.thinking.clone()));
+    let transformer_registry = Arc::new(TransformerRegistry::new(config.thinking.clone(), Some(debug_logger.clone())));
     let (client, server) = IpcLayer::new();
 
     let server_task = tokio::spawn(server.run(

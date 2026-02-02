@@ -2,9 +2,11 @@
 
 use async_trait::async_trait;
 use serde_json::Value;
+use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::config::SummarizeConfig;
+use crate::metrics::DebugLogger;
 
 use super::context::{TransformContext, TransformResult, TransformStats};
 use super::error::TransformError;
@@ -32,8 +34,8 @@ pub struct SummarizeTransformer {
 
 impl SummarizeTransformer {
     /// Create a new SummarizeTransformer with the given configuration.
-    pub fn new(config: SummarizeConfig) -> Self {
-        let summarizer = SummarizerClient::new(config.clone());
+    pub fn new(config: SummarizeConfig, debug_logger: Option<Arc<DebugLogger>>) -> Self {
+        let summarizer = SummarizerClient::new(config.clone(), debug_logger);
 
         if summarizer.is_none() {
             tracing::warn!(
@@ -239,13 +241,13 @@ mod tests {
 
     #[tokio::test]
     async fn name_returns_summarize() {
-        let transformer = SummarizeTransformer::new(make_config());
+        let transformer = SummarizeTransformer::new(make_config(), None);
         assert_eq!(transformer.name(), "summarize");
     }
 
     #[tokio::test]
     async fn saves_messages_on_transform() {
-        let transformer = SummarizeTransformer::new(make_config());
+        let transformer = SummarizeTransformer::new(make_config(), None);
         let mut body = json!({
             "messages": [
                 {"role": "user", "content": "Hello"},
@@ -266,7 +268,7 @@ mod tests {
 
     #[tokio::test]
     async fn strips_thinking_blocks() {
-        let transformer = SummarizeTransformer::new(make_config());
+        let transformer = SummarizeTransformer::new(make_config(), None);
         let mut body = json!({
             "messages": [{
                 "role": "assistant",
@@ -298,7 +300,7 @@ mod tests {
             model: "test-model".to_string(),
             max_tokens: 100,
         };
-        let transformer = SummarizeTransformer::new(config);
+        let transformer = SummarizeTransformer::new(config, None);
 
         assert_eq!(transformer.config().model, "test-model");
         assert_eq!(transformer.config().max_tokens, 100);
@@ -393,7 +395,7 @@ mod tests {
 
     #[tokio::test]
     async fn pending_summary_is_prepended_and_cleared() {
-        let transformer = SummarizeTransformer::new(make_config());
+        let transformer = SummarizeTransformer::new(make_config(), None);
 
         // Set pending summary
         {
@@ -430,7 +432,7 @@ mod tests {
     async fn on_backend_switch_fails_without_summarizer() {
         // Config without API key - summarizer won't be created
         let config = make_config();
-        let transformer = SummarizeTransformer::new(config);
+        let transformer = SummarizeTransformer::new(config, None);
 
         // Simulate having messages saved
         {
@@ -454,7 +456,7 @@ mod tests {
             api_key: Some("test-key".to_string()),
             ..make_config()
         };
-        let transformer = SummarizeTransformer::new(config);
+        let transformer = SummarizeTransformer::new(config, None);
 
         // No messages saved - should skip without error
         let mut body = json!({});
@@ -473,7 +475,7 @@ mod tests {
     async fn is_summarization_available_reflects_api_key() {
         // Without API key
         let config = make_config();
-        let transformer = SummarizeTransformer::new(config);
+        let transformer = SummarizeTransformer::new(config, None);
         assert!(!transformer.is_summarization_available());
 
         // With API key
@@ -481,7 +483,7 @@ mod tests {
             api_key: Some("test-key".to_string()),
             ..make_config()
         };
-        let transformer_with_key = SummarizeTransformer::new(config_with_key);
+        let transformer_with_key = SummarizeTransformer::new(config_with_key, None);
         assert!(transformer_with_key.is_summarization_available());
     }
 }
