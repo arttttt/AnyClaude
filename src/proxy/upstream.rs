@@ -186,6 +186,7 @@ impl UpstreamClient {
                 let context = TransformContext::new(
                     backend.name.clone(),
                     span.request_id().to_string(),
+                    path_and_query,
                 );
 
                 // Get transformer and apply transformation

@@ -134,16 +134,15 @@ impl ThinkingTransformer for SummarizeTransformer {
     async fn transform_request(
         &self,
         body: &mut Value,
-        _context: &TransformContext,
+        context: &TransformContext,
     ) -> Result<TransformResult, TransformError> {
         let mut stats = TransformStats::default();
 
         // 1. Save messages for potential future summarization
-        // Only save for real chat completion requests (have "stream" field),
+        // Only save for real chat completion requests (/v1/messages endpoint),
         // not for count_tokens or other auxiliary requests that could overwrite
         // the real conversation with minimal/test messages.
-        let is_chat_completion = body.get("stream").is_some();
-        if is_chat_completion {
+        if context.is_chat_completion() {
             if let Some(messages) = body.get("messages").and_then(|m| m.as_array()) {
                 let mut last_messages = self.last_messages.write().await;
                 *last_messages = Some(messages.clone());
@@ -294,7 +293,7 @@ mod tests {
     use serde_json::json;
 
     fn make_context() -> TransformContext {
-        TransformContext::new("test-backend", "test-request-123")
+        TransformContext::new("test-backend", "test-request-123", "/v1/messages")
     }
 
     fn make_config() -> SummarizeConfig {

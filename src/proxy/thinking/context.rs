@@ -7,14 +7,28 @@ pub struct TransformContext {
     pub backend: String,
     /// Request ID for tracing
     pub request_id: String,
+    /// Request path (e.g., "/v1/messages")
+    pub request_path: String,
 }
 
 impl TransformContext {
-    pub fn new(backend: impl Into<String>, request_id: impl Into<String>) -> Self {
+    pub fn new(
+        backend: impl Into<String>,
+        request_id: impl Into<String>,
+        request_path: impl Into<String>,
+    ) -> Self {
         Self {
             backend: backend.into(),
             request_id: request_id.into(),
+            request_path: request_path.into(),
         }
+    }
+
+    /// Check if this is a chat completion request (not count_tokens, etc.)
+    pub fn is_chat_completion(&self) -> bool {
+        // Chat completion endpoint is /v1/messages without any suffix
+        self.request_path.ends_with("/messages")
+            || self.request_path.ends_with("/messages?beta=true")
     }
 }
 

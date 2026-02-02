@@ -100,7 +100,7 @@ mod tests {
     use serde_json::json;
 
     fn make_context() -> TransformContext {
-        TransformContext::new("test-backend", "test-request-123")
+        TransformContext::new("test-backend", "test-request-123", "/v1/messages")
     }
 
     #[tokio::test]
