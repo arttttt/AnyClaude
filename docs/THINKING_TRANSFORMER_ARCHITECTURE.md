@@ -591,37 +591,39 @@ src/proxy/thinking/
 - [x] 2.4.2: Интеграция в `transform_request` — берёт `pending_summary`, prepend, очищает
 - [x] 2.4.3: Тесты: string content, array с text, array без text, no user message, integration
 
-#### Phase 2.5: LLM клиент
-- [ ] 2.5.1: Добавить `reqwest::Client` в структуру `SummarizeTransformer`
-- [ ] 2.5.2: Метод `build_summarize_request(messages) -> Value`
-- [ ] 2.5.3: Метод `get_summarize_endpoint() -> String` (из конфига)
-- [ ] 2.5.4: Метод `call_summarize_llm(messages) -> Result<String, TransformError>`
-- [ ] 2.5.5: Парсинг ответа API (Anthropic формат)
-- [ ] 2.5.6: Mock тесты с wiremock
+#### Phase 2.5: LLM клиент ✅ DONE
+- [x] 2.5.1: Создать `SummarizerClient` в `src/proxy/thinking/summarizer.rs`
+- [x] 2.5.2: Обновить `SummarizeConfig`: убрать `prompt`/`backend`, добавить `base_url`/`api_key`
+- [x] 2.5.3: Default endpoint: `https://api.z.ai/api/anthropic` (Anthropic-compatible)
+- [x] 2.5.4: Hardcoded промпт в коде (MVP approach)
+- [x] 2.5.5: `SummarizeError` enum: NotConfigured, Network, ApiError, ParseError, EmptyResponse
+- [x] 2.5.6: Unit тесты + integration тест (requires SUMMARIZER_API_KEY)
+- [x] 2.5.7: Env var: `SUMMARIZER_API_KEY` (generic name, not vendor-specific)
 
-#### Phase 2.6: on_backend_switch
-- [ ] 2.6.1: Обновить сигнатуру trait — убрать `body` параметр
-- [ ] 2.6.2: Обновить `StripTransformer::on_backend_switch` (пустая реализация)
-- [ ] 2.6.3: Реализация `SummarizeTransformer::on_backend_switch`:
-  - Получить `last_messages`
-  - Вызвать `call_summarize_llm`
-  - Сохранить результат в `pending_summary`
-- [ ] 2.6.4: Тесты on_backend_switch
+#### Phase 2.6: MVI architecture + Summarization UI 🔄 IN PROGRESS
+- [x] 2.6.1: MVI infrastructure в `src/ui/mvi/`:
+  - `state.rs` — trait UiState
+  - `intent.rs` — trait Intent
+  - `reducer.rs` — trait Reducer
+- [x] 2.6.2: Summarization feature в `src/ui/summarization/`:
+  - `state.rs` — SummarizeDialogState (Hidden, Summarizing, Retrying, Failed, Success)
+  - `intent.rs` — SummarizeIntent (Start, AnimationTick, Error, Success, Retry/Cancel)
+  - `reducer.rs` — SummarizeReducer (state machine with 3 auto-retries)
+  - `dialog.rs` — render_summarize_dialog (spinner animation, inline buttons)
+- [ ] 2.6.3: Валидация на старте: crash если mode=summarize и нет API key
+- [ ] 2.6.4: Интеграция `SummarizerClient` в `SummarizeTransformer`
+- [ ] 2.6.5: Реализация `on_backend_switch` с retry логикой
 
-#### Phase 2.7: IPC интеграция
-- [ ] 2.7.1: Добавить `Arc<TransformerRegistry>` в IPC handler
-- [ ] 2.7.2: В `handle_switch_backend`:
-  - Проверить режим (Summarize?)
-  - Вызвать `transformer.on_backend_switch(from, to).await`
-  - Только потом переключить бэкенд
-- [ ] 2.7.3: Тесты IPC с mock transformer
+#### Phase 2.7: IPC + UI интеграция
+- [ ] 2.7.1: IPC события: SummarizationStarted, Progress, Error, Completed
+- [ ] 2.7.2: Интеграция диалога поверх BackendSwitch popup
+- [ ] 2.7.3: Input handling для Retry/Cancel кнопок
+- [ ] 2.7.4: Animation tick timer для спиннера
 
-#### Phase 2.8: UI события и диалог
-- [ ] 2.8.1: Добавить `UiEvent::ShowSummarizeProgress { from, to }`
-- [ ] 2.8.2: Добавить `UiEvent::HideSummarizeProgress`
-- [ ] 2.8.3: Отправка событий из IPC handler (до/после on_backend_switch)
-- [ ] 2.8.4: Обработка в TUI — показ/скрытие диалога прогресса
-- [ ] 2.8.5: Дизайн диалога (спиннер, текст "Summarizing session...")
+#### Phase 2.8: Polish
+- [ ] 2.8.1: Error recovery flow (user choice after max retries)
+- [ ] 2.8.2: Cancel подтверждение
+- [ ] 2.8.3: Success auto-close с delay
 
 ### Phase 3: Native Mode 📋 FUTURE
 
@@ -637,41 +639,61 @@ mode = "strip"  # "strip" | "summarize" | "native"
 
 # Настройки для summarize режима
 [thinking.summarize]
-# Модель для суммаризации:
-# - Конкретная модель: "claude-3-haiku-20240307", "gpt-4o-mini"
-# - "current" — использовать текущий бэкенд (до переключения)
-model = "claude-3-haiku-20240307"
+# Base URL для Anthropic-compatible API
+base_url = "https://api.z.ai/api/anthropic"
 
-# Бэкенд для суммаризации (если model != "current")
-# Опционально — если не указан, используется бэкенд с указанной моделью
-backend = "claude"
+# API ключ (опционально, можно через env var SUMMARIZER_API_KEY)
+api_key = "your-api-key"
+
+# Модель для суммаризации
+model = "glm-4.7"
 
 # Максимальное количество токенов в саммари
 max_tokens = 500
-
-# Кастомный промпт (опционально)
-prompt = "Summarize this coding session..."
 ```
+
+### SummarizeConfig structure
+
+```rust
+pub struct SummarizeConfig {
+    /// Base URL for Anthropic-compatible API
+    pub base_url: String,      // default: "https://api.z.ai/api/anthropic"
+
+    /// API key (or use SUMMARIZER_API_KEY env var)
+    pub api_key: Option<String>,
+
+    /// Model name
+    pub model: String,          // default: "glm-4.7"
+
+    /// Max tokens in summary
+    pub max_tokens: u32,        // default: 500
+}
+```
+
+Note: Prompt is hardcoded in code (MVP approach) for simplicity.
 
 ### Примеры конфигураций
 
-**Быстрая суммаризация через Haiku:**
+**Z.ai GLM (default):**
 ```toml
 [thinking]
 mode = "summarize"
 
 [thinking.summarize]
-model = "claude-3-haiku-20240307"
+# Uses defaults: base_url = "https://api.z.ai/api/anthropic", model = "glm-4.7"
+# API key from SUMMARIZER_API_KEY env var
 max_tokens = 300
 ```
 
-**Суммаризация через текущий бэкенд:**
+**Custom Anthropic-compatible endpoint:**
 ```toml
 [thinking]
 mode = "summarize"
 
 [thinking.summarize]
-model = "current"  # Использует бэкенд ДО переключения
+base_url = "https://your-endpoint.com/v1"
+api_key = "your-key"
+model = "custom-model"
 max_tokens = 500
 ```
 
