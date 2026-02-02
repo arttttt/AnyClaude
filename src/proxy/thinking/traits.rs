@@ -55,6 +55,19 @@ pub trait ThinkingTransformer: Send + Sync {
         Ok(())
     }
 
+    /// Called when a response is complete with the assistant's text content.
+    ///
+    /// This allows transformers to capture the assistant's response for
+    /// later use (e.g., summarization on backend switch).
+    ///
+    /// Default implementation does nothing.
+    ///
+    /// # Arguments
+    /// * `response_text` - The assistant's text response
+    async fn on_response_complete(&self, _response_text: String) {
+        // Default: do nothing
+    }
+
     /// Whether this transformer requires async operations.
     ///
     /// If false, the transformer can be used in sync contexts.

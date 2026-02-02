@@ -12,6 +12,9 @@ use super::redaction::redact_body_preview;
 use super::span::RequestSpan;
 use super::types::ResponseMeta;
 
+/// Callback type for response completion notification.
+pub type ResponseCompleteCallback = Box<dyn Fn(&[u8]) + Send + Sync>;
+
 /// Stream wrapper that adds observability and idle timeout to SSE streams.
 ///
 /// If no data is received within `idle_timeout`, the stream returns an error
@@ -23,6 +26,10 @@ pub struct ObservedStream<S> {
     idle_timeout: Duration,
     deadline: Pin<Box<Sleep>>,
     response_preview: Option<ResponsePreview>,
+    /// Optional callback to be called with full response bytes when stream completes.
+    on_complete: Option<ResponseCompleteCallback>,
+    /// Buffer to accumulate all response bytes for the callback.
+    response_buffer: Vec<u8>,
 }
 
 pub struct ResponsePreview {
@@ -72,10 +79,25 @@ impl<S> ObservedStream<S> {
             idle_timeout,
             deadline: Box::pin(tokio::time::sleep(idle_timeout)),
             response_preview,
+            on_complete: None,
+            response_buffer: Vec::new(),
         }
     }
 
+    /// Set a callback to be called with full response bytes when stream completes.
+    pub fn with_on_complete(mut self, callback: ResponseCompleteCallback) -> Self {
+        self.on_complete = Some(callback);
+        self
+    }
+
     fn finish(&mut self) {
+        // Call the completion callback with accumulated response bytes
+        if let Some(callback) = self.on_complete.take() {
+            if !self.response_buffer.is_empty() {
+                callback(&self.response_buffer);
+            }
+        }
+
         if let Some(mut span) = self.span.take() {
             if let Some(preview) = self.response_preview.take() {
                 let preview_value =
@@ -131,6 +153,10 @@ where
                 }
                 if let Some(preview) = &mut self.response_preview {
                     preview.push(&bytes);
+                }
+                // Accumulate bytes for completion callback
+                if self.on_complete.is_some() {
+                    self.response_buffer.extend_from_slice(&bytes);
                 }
                 Poll::Ready(Some(Ok(bytes)))
             }

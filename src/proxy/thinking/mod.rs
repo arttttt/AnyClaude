@@ -27,6 +27,7 @@
 
 mod context;
 mod error;
+mod sse_parser;
 mod strip;
 mod summarize;
 mod summarizer;
@@ -34,6 +35,7 @@ mod traits;
 
 pub use context::{TransformContext, TransformResult, TransformStats};
 pub use error::{SummarizeError, TransformError};
+pub use sse_parser::extract_assistant_text;
 pub use strip::StripTransformer;
 pub use summarize::SummarizeTransformer;
 pub use summarizer::SummarizerClient;
@@ -155,6 +157,17 @@ impl TransformerRegistry {
         transformer
             .on_backend_switch(from_backend, to_backend, &mut body)
             .await
+    }
+
+    /// Notify the transformer that a response is complete.
+    ///
+    /// This parses the SSE response bytes and extracts the assistant's text,
+    /// then forwards it to the transformer for potential storage.
+    pub async fn on_response_complete(&self, sse_bytes: &[u8]) {
+        if let Some(text) = extract_assistant_text(sse_bytes) {
+            let transformer = self.get().await;
+            transformer.on_response_complete(text).await;
+        }
     }
 }
 

@@ -367,13 +367,26 @@ impl UpstreamClient {
             } else {
                 None
             };
+
+            // Create callback to capture response for summarization
+            let registry = Arc::clone(&self.transformer_registry);
+            let on_complete: crate::metrics::ResponseCompleteCallback = Box::new(move |bytes| {
+                let registry = Arc::clone(&registry);
+                let bytes = bytes.to_vec();
+                tokio::spawn(async move {
+                    registry.on_response_complete(&bytes).await;
+                });
+            });
+
             let observed = ObservedStream::new(
                 stream,
                 span,
                 observability,
                 self.timeout_config.idle,
                 response_preview,
-            );
+            )
+            .with_on_complete(on_complete);
+
             Ok(response_builder.body(Body::from_stream(observed))?)
         } else {
             span.mark_first_byte();

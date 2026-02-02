@@ -18,12 +18,17 @@ use super::traits::ThinkingTransformer;
 ///
 /// This mode:
 /// - Saves messages from each request for potential summarization
+/// - Captures the assistant's response when streaming completes
 /// - When backend switch is triggered, calls LLM to summarize the session
 /// - Prepends the summary to the first user message after switch
 /// - Strips thinking blocks (they're captured in the summary)
 pub struct SummarizeTransformer {
     /// Last messages seen, for summarization when switching backends.
     last_messages: RwLock<Option<Vec<Value>>>,
+    /// Last assistant response (captured from streaming completion).
+    /// This ensures we include the response even if user switches backend
+    /// before making another request.
+    last_response: RwLock<Option<String>>,
     /// Summary waiting to be prepended to the next request.
     pending_summary: RwLock<Option<String>>,
     /// Configuration for summarization.
@@ -47,6 +52,7 @@ impl SummarizeTransformer {
 
         Self {
             last_messages: RwLock::new(None),
+            last_response: RwLock::new(None),
             pending_summary: RwLock::new(None),
             config,
             summarizer,
@@ -210,13 +216,31 @@ impl ThinkingTransformer for SummarizeTransformer {
             guard.clone()
         };
 
-        let messages = match messages {
+        let mut messages = match messages {
             Some(m) if !m.is_empty() => m,
             _ => {
                 tracing::info!("No messages to summarize, skipping");
                 return Ok(());
             }
         };
+
+        // Append the last assistant response if we have one
+        // This captures the response that was streamed but not yet included in a request
+        {
+            let last_response = self.last_response.read().await;
+            if let Some(response_text) = last_response.as_ref() {
+                if !response_text.is_empty() {
+                    messages.push(serde_json::json!({
+                        "role": "assistant",
+                        "content": response_text
+                    }));
+                    tracing::debug!(
+                        response_len = response_text.len(),
+                        "Appended last assistant response to messages for summarization"
+                    );
+                }
+            }
+        }
 
         tracing::debug!(
             message_count = messages.len(),
@@ -241,6 +265,20 @@ impl ThinkingTransformer for SummarizeTransformer {
         }
 
         Ok(())
+    }
+
+    async fn on_response_complete(&self, response_text: String) {
+        if response_text.is_empty() {
+            return;
+        }
+
+        tracing::debug!(
+            response_len = response_text.len(),
+            "Captured assistant response for potential summarization"
+        );
+
+        let mut last_response = self.last_response.write().await;
+        *last_response = Some(response_text);
     }
 }
 

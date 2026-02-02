@@ -205,10 +205,11 @@ impl SummarizerClient {
     }
 
     /// Extract text content from a message, handling both string and array formats.
+    /// Filters out `<system-reminder>` tags which are internal metadata.
     fn extract_message_content(&self, msg: &Value) -> String {
         let content = msg.get("content");
 
-        match content {
+        let raw = match content {
             Some(Value::String(s)) => s.clone(),
             Some(Value::Array(arr)) => {
                 arr.iter()
@@ -223,7 +224,10 @@ impl SummarizerClient {
                     .join("\n")
             }
             _ => String::new(),
-        }
+        };
+
+        // Filter out <system-reminder> tags - they're internal metadata, not conversation
+        strip_system_reminders(&raw)
     }
 
     /// Extract text content from the API response.
@@ -267,6 +271,40 @@ struct ContentBlock {
     #[serde(rename = "type")]
     content_type: String,
     text: Option<String>,
+}
+
+/// Strip `<system-reminder>...</system-reminder>` tags from text.
+///
+/// These tags contain internal Claude Code metadata that shouldn't be
+/// included in summarization as they add noise without relevant context.
+fn strip_system_reminders(text: &str) -> String {
+    let mut result = String::new();
+    let mut remaining = text;
+
+    while let Some(start_idx) = remaining.find("<system-reminder>") {
+        // Add text before the tag
+        result.push_str(&remaining[..start_idx]);
+
+        // Find the closing tag
+        if let Some(end_idx) = remaining[start_idx..].find("</system-reminder>") {
+            // Skip past the closing tag
+            let skip_to = start_idx + end_idx + "</system-reminder>".len();
+            remaining = &remaining[skip_to..];
+        } else {
+            // No closing tag found, keep the rest as-is
+            break;
+        }
+    }
+
+    // Add any remaining text
+    result.push_str(remaining);
+
+    // Clean up extra whitespace from removed tags
+    result
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[cfg(test)]
@@ -421,5 +459,35 @@ mod tests {
                 panic!("Summarization failed: {}", e);
             }
         }
+    }
+
+    #[test]
+    fn strip_system_reminders_removes_tags() {
+        let text = "Hello <system-reminder>internal stuff</system-reminder> world";
+        let result = strip_system_reminders(text);
+        assert_eq!(result, "Hello  world");
+    }
+
+    #[test]
+    fn strip_system_reminders_handles_multiple_tags() {
+        let text = "<system-reminder>tag1</system-reminder>Content<system-reminder>tag2</system-reminder>More";
+        let result = strip_system_reminders(text);
+        assert_eq!(result, "ContentMore");
+    }
+
+    #[test]
+    fn strip_system_reminders_preserves_text_without_tags() {
+        let text = "Normal text without any tags";
+        let result = strip_system_reminders(text);
+        assert_eq!(result, "Normal text without any tags");
+    }
+
+    #[test]
+    fn strip_system_reminders_handles_multiline() {
+        let text = "Line 1\n<system-reminder>\nInternal\nContent\n</system-reminder>\nLine 2";
+        let result = strip_system_reminders(text);
+        assert!(result.contains("Line 1"));
+        assert!(result.contains("Line 2"));
+        assert!(!result.contains("Internal"));
     }
 }
