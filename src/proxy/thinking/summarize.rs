@@ -84,7 +84,7 @@ pub fn prepend_summary_to_user_message(body: &mut Value, summary: &str) -> bool 
     };
 
     let context_block = format!(
-        "[CONTEXT FROM PREVIOUS SESSION]\n{}\n[/CONTEXT]\n\n",
+        "[CONTEXT FROM PREVIOUS SESSION]\n{}\n[/CONTEXT FROM PREVIOUS SESSION]\n\n",
         summary
     );
 
@@ -343,6 +343,7 @@ mod tests {
         let content = body["messages"][0]["content"].as_str().unwrap();
         assert!(content.starts_with("[CONTEXT FROM PREVIOUS SESSION]"));
         assert!(content.contains("Session summary here"));
+        assert!(content.contains("[/CONTEXT FROM PREVIOUS SESSION]"));
         assert!(content.ends_with("Hello"));
     }
 
