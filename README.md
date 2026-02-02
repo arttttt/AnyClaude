@@ -77,15 +77,14 @@ active = "anthropic"
 name = "anthropic"
 display_name = "Anthropic"
 base_url = "https://api.anthropic.com"
-auth_type = "api_key"
-api_key_env = "ANTHROPIC_API_KEY"
+auth_type = "passthrough"  # Forward Claude Code's auth headers
 
 [[backends]]
 name = "glm"
 display_name = "GLM (Z.ai)"
 base_url = "https://api.z.ai/api/anthropic"
 auth_type = "bearer"
-api_key_env = "ZAI_API_KEY"
+api_key = "your-glm-api-key"  # Or use passthrough if Claude Code handles auth
 ```
 
 ### Full Example
@@ -113,9 +112,9 @@ mode = "summarize"                # "strip" or "summarize"
 
 [thinking.summarize]
 base_url = "https://api.z.ai/api/anthropic"  # Anthropic-compatible API
+api_key = "your-summarizer-api-key"          # API key for summarization
 model = "glm-4.7"                             # Model for summarization
 max_tokens = 500                              # Max tokens in summary
-# api_key = "your-key"                        # Or use SUMMARIZER_API_KEY env var
 
 [debug_logging]
 enabled = true
@@ -126,15 +125,14 @@ path = "~/.config/claude-wrapper/debug.log"
 name = "anthropic"
 display_name = "Anthropic"
 base_url = "https://api.anthropic.com"
-auth_type = "api_key"
-api_key_env = "ANTHROPIC_API_KEY"
+auth_type = "passthrough"         # Forward Claude Code's auth headers
 
 [[backends]]
 name = "glm"
 display_name = "GLM (Z.ai)"
 base_url = "https://api.z.ai/api/anthropic"
 auth_type = "bearer"
-api_key_env = "ZAI_API_KEY"
+api_key = "your-glm-api-key"      # Direct API key
 
 [[backends]]
 name = "custom"
@@ -181,9 +179,9 @@ mode = "summarize"
 
 [thinking.summarize]
 base_url = "https://api.z.ai/api/anthropic"  # Anthropic-compatible API
+api_key = "your-summarizer-api-key"          # API key for summarization
 model = "glm-4.7"                             # Model for summarization
 max_tokens = 500                              # Max tokens in summary
-# api_key = "your-key"                        # Or use SUMMARIZER_API_KEY env var
 ```
 
 When you switch backends:
@@ -209,14 +207,6 @@ path = "~/.config/claude-wrapper/debug.log"
 | `basic` | Request timestamps, status codes, latency |
 | `verbose` | + Token counts, model info, cost estimates |
 | `full` | + Request/response body previews, headers |
-
-## Environment Variables
-
-| Variable | Description |
-|----------|-------------|
-| `ANTHROPIC_API_KEY` | API key for Anthropic backend |
-| `ZAI_API_KEY` | API key for Z.ai/GLM backend |
-| `SUMMARIZER_API_KEY` | API key for summarization (if not in config) |
 
 ## License
 

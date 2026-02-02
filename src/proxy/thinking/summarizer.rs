@@ -346,7 +346,7 @@ mod tests {
             api_key: None,
             ..make_test_config()
         };
-        // This will only succeed if ZAI_API_KEY is set in env
+        // This will only succeed if SUMMARIZER_API_KEY is set in env
         // For unit test, we can't guarantee the env var is unset
         // So we just verify the function doesn't panic
         let _ = SummarizerClient::new(config, None);

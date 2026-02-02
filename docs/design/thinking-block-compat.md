@@ -1,5 +1,11 @@
 # Thinking Block Compatibility Design
 
+> **⚠️ DEPRECATED**: This document describes the original v1 design with `drop_signature`, `convert_to_text`, and `convert_to_tags` modes. These modes have been replaced by a new architecture.
+>
+> **See instead:**
+> - [THINKING_MODES_DESIGN.md](../THINKING_MODES_DESIGN.md) — Current design with `strip` and `summarize` modes
+> - [THINKING_TRANSFORMER_ARCHITECTURE.md](../THINKING_TRANSFORMER_ARCHITECTURE.md) — Implementation architecture
+
 **Issue**: cl-db65p
 **Author**: polecat/quartz
 **Date**: 2026-01-31
