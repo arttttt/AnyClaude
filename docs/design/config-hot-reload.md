@@ -10,7 +10,7 @@ Automatic configuration reload when the config file changes, without requiring a
 
 ## Current State
 
-- `Config::load()` reads `~/.config/claude-wrapper/config.toml` once at startup
+- `Config::load()` reads `~/.config/anyclaude/config.toml` once at startup
 - Config struct is `Clone` and uses serde for TOML parsing
 - No file watching or hot-reload capability exists
 - Application uses synchronous `std::mpsc` event system (not tokio async)
@@ -269,6 +269,6 @@ notify-debouncer-mini = "0.4"
 
 ## Decision: Watch Parent Directory
 
-Watch the parent directory (`~/.config/claude-wrapper/`) and filter for `config.toml` changes. This handles:
+Watch the parent directory (`~/.config/anyclaude/`) and filter for `config.toml` changes. This handles:
 - File deleted and recreated (common with some editors)
 - Atomic writes (write to temp file, rename)

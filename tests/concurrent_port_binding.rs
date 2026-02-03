@@ -5,11 +5,11 @@
 
 mod common;
 
-use claudewrapper::config::{
+use anyclaude::config::{
     Backend, Config, ConfigStore, DebugLoggingConfig, Defaults, ProxyConfig, TerminalConfig,
     ThinkingConfig,
 };
-use claudewrapper::proxy::ProxyServer;
+use anyclaude::proxy::ProxyServer;
 use common::mock_backend::{MockBackend, MockResponse};
 use reqwest::Client;
 use std::collections::HashSet;

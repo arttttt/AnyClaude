@@ -5,13 +5,13 @@
 
 use std::process::Command;
 
-fn claudewrapper_cmd() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_claudewrapper"))
+fn anyclaude_cmd() -> Command {
+    Command::new(env!("CARGO_BIN_EXE_anyclaude"))
 }
 
 #[test]
 fn test_help_shows_backend_option() {
-    let output = claudewrapper_cmd()
+    let output = anyclaude_cmd()
         .arg("--help")
         .output()
         .expect("Failed to execute command");
@@ -23,7 +23,7 @@ fn test_help_shows_backend_option() {
 
 #[test]
 fn test_invalid_backend_exits_with_error() {
-    let output = claudewrapper_cmd()
+    let output = anyclaude_cmd()
         .arg("--backend")
         .arg("nonexistent_backend_xyz")
         .output()
@@ -38,7 +38,7 @@ fn test_invalid_backend_exits_with_error() {
 
 #[test]
 fn test_invalid_backend_shows_available_backends() {
-    let output = claudewrapper_cmd()
+    let output = anyclaude_cmd()
         .arg("--backend")
         .arg("nonexistent")
         .output()
@@ -55,7 +55,7 @@ fn test_invalid_backend_shows_available_backends() {
 
 #[test]
 fn test_missing_backend_value_shows_error() {
-    let output = claudewrapper_cmd()
+    let output = anyclaude_cmd()
         .arg("--backend")
         .output()
         .expect("Failed to execute command");

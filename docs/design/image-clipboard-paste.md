@@ -73,7 +73,7 @@ pub struct ClipboardHandler {
 impl ClipboardHandler {
     pub fn new() -> Result<Self, arboard::Error> {
         let clipboard = Clipboard::new()?;
-        let temp_dir = std::env::temp_dir().join("claudewrapper");
+        let temp_dir = std::env::temp_dir().join("anyclaude");
         std::fs::create_dir_all(&temp_dir).ok();
         Ok(Self { clipboard, temp_dir })
     }

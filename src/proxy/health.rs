@@ -19,7 +19,7 @@ impl HealthHandler {
     pub async fn handle(&self) -> Response {
         let health = HealthStatus {
             status: "healthy".to_string(),
-            service: "claudewrapper".to_string(),
+            service: "anyclaude".to_string(),
         };
 
         Json(health).into_response()

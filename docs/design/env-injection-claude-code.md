@@ -6,7 +6,7 @@
 
 ## Overview
 
-ClaudeWrapper launches Claude Code via PTY. To route Claude Code traffic through the
+AnyClaude launches Claude Code via PTY. To route Claude Code traffic through the
 local proxy without touching user config files, we inject environment variables at
 process start and enforce a session token on the proxy.
 

@@ -1,5 +1,5 @@
-use claudewrapper::proxy::shutdown::ShutdownManager;
-use claudewrapper::shutdown::{ShutdownCoordinator, ShutdownPhase};
+use anyclaude::proxy::shutdown::ShutdownManager;
+use anyclaude::shutdown::{ShutdownCoordinator, ShutdownPhase};
 use std::time::Duration;
 
 // Tests for ShutdownCoordinator

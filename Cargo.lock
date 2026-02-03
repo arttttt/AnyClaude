@@ -74,6 +74,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "anyclaude"
+version = "0.1.2"
+dependencies = [
+ "anyhow",
+ "arboard",
+ "async-trait",
+ "axum",
+ "base64",
+ "clap",
+ "crossterm",
+ "dirs",
+ "fs2",
+ "futures-core",
+ "http-body-util",
+ "image",
+ "libc",
+ "parking_lot",
+ "portable-pty",
+ "ratatui",
+ "reqwest",
+ "scopeguard",
+ "serde",
+ "serde_json",
+ "signal-hook 0.4.3",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "vt100",
+]
+
+[[package]]
 name = "anyhow"
 version = "1.0.100"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -361,42 +397,6 @@ name = "clap_lex"
 version = "0.7.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3e64b0cc0439b12df2fa678eae89a1c56a529fd067a9115f7827f1fffd22b32"
-
-[[package]]
-name = "claudewrapper"
-version = "0.1.2"
-dependencies = [
- "anyhow",
- "arboard",
- "async-trait",
- "axum",
- "base64",
- "clap",
- "crossterm",
- "dirs",
- "fs2",
- "futures-core",
- "http-body-util",
- "image",
- "libc",
- "parking_lot",
- "portable-pty",
- "ratatui",
- "reqwest",
- "scopeguard",
- "serde",
- "serde_json",
- "signal-hook 0.4.3",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "toml",
- "tower",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "vt100",
-]
 
 [[package]]
 name = "clipboard-win"

@@ -2,7 +2,7 @@
 
 ## Problem Statement
 
-The claudewrapper application needs comprehensive error handling across six components to:
+The anyclaude application needs comprehensive error handling across six components to:
 1. Gracefully handle failures without crashing
 2. Provide clear user feedback through UI indicators
 3. Attempt automatic recovery where possible

@@ -1,4 +1,4 @@
-//! Configuration management for claudewrapper.
+//! Configuration management for anyclaude.
 //!
 //! This module handles loading, parsing, and validating configuration
 //! from TOML files, as well as resolving API credentials from environment

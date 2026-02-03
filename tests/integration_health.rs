@@ -1,5 +1,5 @@
-use claudewrapper::config::{Config, ConfigStore};
-use claudewrapper::proxy::ProxyServer;
+use anyclaude::config::{Config, ConfigStore};
+use anyclaude::proxy::ProxyServer;
 use reqwest::Client;
 use std::path::PathBuf;
 
@@ -34,7 +34,7 @@ async fn test_health_integration() {
     let json: serde_json::Value = serde_json::from_str(&body).unwrap();
 
     assert_eq!(json["status"], "healthy");
-    assert_eq!(json["service"], "claudewrapper");
+    assert_eq!(json["service"], "anyclaude");
 }
 
 #[tokio::test]

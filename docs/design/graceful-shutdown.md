@@ -2,7 +2,7 @@
 
 ## Overview
 
-ClaudeWrapper needs a clean shutdown sequence that properly terminates all components without leaving orphan processes or losing state.
+AnyClaude needs a clean shutdown sequence that properly terminates all components without leaving orphan processes or losing state.
 
 ## Current State
 

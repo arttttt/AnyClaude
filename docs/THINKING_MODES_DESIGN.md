@@ -2,7 +2,7 @@
 
 ## Проблема
 
-При использовании ClaudeWrapper в режиме `convert_to_tags` thinking блоки конвертируются в обычный текст с тегами `<think>...</think>`. Это создаёт проблемы:
+При использовании AnyClaude в режиме `convert_to_tags` thinking блоки конвертируются в обычный текст с тегами `<think>...</think>`. Это создаёт проблемы:
 
 1. **Накопление контекста**: API Anthropic не распознаёт `<think>` как thinking блоки и не применяет автоматическое stripping/суммаризацию
 2. **Потеря суммаризации**: Anthropic использует отдельную модель для суммаризации thinking блоков — при конвертации в текст эта функция теряется
@@ -172,7 +172,7 @@ ThinkingMode::Strip => {
 
 **При переключении backend:**
 1. Пользователь запрашивает смену backend (например, Anthropic → GLM)
-2. ClaudeWrapper показывает UI: "Preparing switch..."
+2. AnyClaude показывает UI: "Preparing switch..."
 3. Для каждого assistant message в истории:
    - Thinking блоки → суммаризируются через summarizer модель
    - Tool_use + tool_result блоки → суммаризируются в список действий
@@ -275,7 +275,7 @@ ACTIONS:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                  ClaudeWrapper (summarize mode)                  │
+│                  AnyClaude (summarize mode)                  │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                  │
 │  [Обычная работа: thinking нативный, API сам его обрабатывает]  │
@@ -493,10 +493,10 @@ Thinking блоки сохраняются в нативном формате AP
 3. Переключение backends **заблокировано**
 
 **При попытке переключения backend:**
-1. ClaudeWrapper показывает предупреждение
+1. AnyClaude показывает предупреждение
 2. Пользователь подтверждает переключение
 3. Текущая сессия Claude получает запрос на создание handoff summary
-4. Summary сохраняется в память ClaudeWrapper
+4. Summary сохраняется в память AnyClaude
 5. Текущий процесс Claude завершается
 6. Новый процесс Claude запускается с новым backend
 7. Handoff summary инжектится в новую сессию
@@ -535,7 +535,7 @@ handoff_inject_method = "first_message"  # "first_message" | "system_prompt" | "
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                    ClaudeWrapper (native mode)                   │
+│                    AnyClaude (native mode)                   │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                  │
 │  User: "Switch to GLM"                                          │
@@ -711,7 +711,7 @@ handoff_inject_method = "first_message"
 
 # Сохранять handoff на диск
 persist_handoff = false
-handoff_path = "~/.cache/claudewrapper/handoffs/"
+handoff_path = "~/.cache/anyclaude/handoffs/"
 ```
 
 ### Миграция с текущего конфига

@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document defines the error handling strategy and timeout configuration for the ClaudeWrapper proxy server. The design ensures robust request handling, clear error propagation, and configurable timeout behavior.
+This document defines the error handling strategy and timeout configuration for the AnyClaude proxy server. The design ensures robust request handling, clear error propagation, and configurable timeout behavior.
 
 ## Current State Analysis
 

@@ -1,4 +1,4 @@
-use claudewrapper::metrics::request_parser::RequestParser;
+use anyclaude::metrics::request_parser::RequestParser;
 use serde_json::json;
 
 #[test]

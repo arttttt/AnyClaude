@@ -1,6 +1,6 @@
 #[tokio::test]
 async fn test_health_endpoint() {
-    use claudewrapper::proxy::health::HealthHandler;
+    use anyclaude::proxy::health::HealthHandler;
     use http_body_util::BodyExt;
 
     let handler = HealthHandler::new();
@@ -12,5 +12,5 @@ async fn test_health_endpoint() {
     let body_str = String::from_utf8_lossy(&body_bytes);
 
     assert!(body_str.contains("healthy"));
-    assert!(body_str.contains("claudewrapper"));
+    assert!(body_str.contains("anyclaude"));
 }

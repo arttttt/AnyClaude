@@ -203,7 +203,7 @@ fn default_scrollback_lines() -> usize {
 }
 
 fn default_debug_log_file_path() -> String {
-    "~/.config/claude-wrapper/debug.log".to_string()
+    "~/.config/anyclaude/debug.log".to_string()
 }
 
 fn default_debug_body_preview_bytes() -> usize {

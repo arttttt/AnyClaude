@@ -30,13 +30,13 @@ pub enum ConfigError {
 impl Config {
     /// Returns the path to the configuration file.
     ///
-    /// Uses `~/.config/claude-wrapper/config.toml` on Unix/macOS.
+    /// Uses `~/.config/anyclaude/config.toml` on Unix/macOS.
     /// Falls back to current directory if home is unavailable.
     pub fn config_path() -> PathBuf {
         let config_dir = dirs::home_dir()
             .map(|h| h.join(".config"))
             .unwrap_or_else(|| PathBuf::from("."));
-        config_dir.join("claude-wrapper").join("config.toml")
+        config_dir.join("anyclaude").join("config.toml")
     }
 
     /// Loads configuration from the default config file.

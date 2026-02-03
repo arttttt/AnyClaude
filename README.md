@@ -1,4 +1,4 @@
-# ClaudeWrapper
+# AnyClaude
 
 TUI wrapper for Claude Code with hot-swappable backend support and transparent API proxying.
 
@@ -8,9 +8,9 @@ TUI wrapper for Claude Code with hot-swappable backend support and transparent A
 
 ## Why?
 
-Claude Code is great, but sometimes you need a different provider — maybe Anthropic is down, rate-limited, or you want to use an Anthropic-compatible backend like GLM. Without ClaudeWrapper, switching means editing config files or environment variables every time.
+Claude Code is great, but sometimes you need a different provider — maybe Anthropic is down, rate-limited, or you want to use an Anthropic-compatible backend like GLM. Without AnyClaude, switching means editing config files or environment variables every time.
 
-ClaudeWrapper solves this:
+AnyClaude solves this:
 
 - Configure all backends once
 - Switch with `Ctrl+B` mid-session
@@ -30,7 +30,7 @@ ClaudeWrapper solves this:
 
 ```
 ┌─────────────────────────────┐
-│     ClaudeWrapper TUI       │
+│     AnyClaude TUI       │
 └──────────────┬──────────────┘
                │
         ┌──────▼──────┐
@@ -56,7 +56,7 @@ cargo build --release
 ## Usage
 
 ```bash
-./target/release/claudewrapper
+./target/release/anyclaude
 ```
 
 The wrapper automatically:
@@ -77,7 +77,7 @@ The wrapper automatically:
 
 ## Configuration
 
-Config location: `~/.config/claude-wrapper/config.toml`
+Config location: `~/.config/anyclaude/config.toml`
 
 ### Minimal Example
 
@@ -131,7 +131,7 @@ max_tokens = 500                              # Max tokens in summary
 [debug_logging]
 enabled = true
 level = "verbose"                 # "basic", "verbose", or "full"
-path = "~/.config/claude-wrapper/debug.log"
+path = "~/.config/anyclaude/debug.log"
 
 [[backends]]
 name = "anthropic"
@@ -209,7 +209,7 @@ Enable detailed request/response logging for debugging:
 [debug_logging]
 enabled = true
 level = "verbose"   # "basic" | "verbose" | "full"
-path = "~/.config/claude-wrapper/debug.log"
+path = "~/.config/anyclaude/debug.log"
 ```
 
 | Level | Content |

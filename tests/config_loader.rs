@@ -1,4 +1,4 @@
-use claudewrapper::config::{
+use anyclaude::config::{
     build_auth_header, AuthType, Backend, Config, ConfigError, CredentialStatus,
     DebugLoggingConfig, Defaults, ProxyConfig, SummarizeConfig, TerminalConfig, ThinkingConfig,
     ThinkingMode,
@@ -33,7 +33,7 @@ fn test_config_default_values() {
 #[test]
 fn test_config_path_ends_with_expected() {
     let path = Config::config_path();
-    assert!(path.ends_with("claude-wrapper/config.toml"));
+    assert!(path.ends_with("anyclaude/config.toml"));
 }
 
 /// Test validation passes for default config when api_key is set.

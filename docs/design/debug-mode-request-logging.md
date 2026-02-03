@@ -135,7 +135,7 @@ pub struct ResponseMeta {
 level = "off"          # off | basic | verbose | full
 format = "console"     # console | json
 destination = "stderr" # stderr | file | both
-file_path = "~/.config/claude-wrapper/debug.log"
+file_path = "~/.config/anyclaude/debug.log"
 body_preview_bytes = 1024
 header_preview = true
 

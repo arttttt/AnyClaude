@@ -1,4 +1,4 @@
-use claudewrapper::config::{Config, ConfigStore};
+use anyclaude::config::{Config, ConfigStore};
 use reqwest::Client;
 use std::path::PathBuf;
 
@@ -7,7 +7,7 @@ async fn test_non_streaming_response() {
     let config = Config::default();
     let config_store = ConfigStore::new(config, PathBuf::from("/tmp/test-config.toml"));
     let session_token = "test-session-token".to_string();
-    let mut server = claudewrapper::proxy::ProxyServer::new(config_store.clone())
+    let mut server = anyclaude::proxy::ProxyServer::new(config_store.clone())
         .expect("Failed to create proxy server");
 
     // Bind to port before spawning - this prevents race conditions

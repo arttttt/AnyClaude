@@ -2,10 +2,10 @@ use clap::Parser;
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use std::io::{self, IsTerminal};
 
-use claudewrapper::config::Config;
+use anyclaude::config::Config;
 
 #[derive(Parser)]
-#[command(name = "claudewrapper")]
+#[command(name = "anyclaude")]
 #[command(about = "TUI wrapper for Claude Code with multi-backend support")]
 struct Cli {
     /// Override default backend (see config for available backends)
@@ -60,5 +60,5 @@ fn run_main() -> io::Result<()> {
         }
     }
 
-    claudewrapper::ui::run(cli.backend, cli.args)
+    anyclaude::ui::run(cli.backend, cli.args)
 }
