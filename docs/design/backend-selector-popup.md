@@ -29,7 +29,7 @@ Example:
 ```
   1. Anthropic  [Active]  claude-3-5-sonnet
   2. OpenRouter [Ready]   gpt-4o-mini
-  3. GLM-4      [Missing] glm-4-plus
+  3. Provider B      [Missing] model-name
 
   Up/Down: Move  Enter: Select  Esc/Ctrl+B: Close
 ```

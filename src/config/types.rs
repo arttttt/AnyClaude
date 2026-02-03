@@ -237,9 +237,9 @@ fn default_summarize_max_tokens() -> u32 {
 /// Backend configuration for an API provider.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Backend {
-    /// Unique identifier (e.g., "claude", "glm", "openrouter").
+    /// Unique identifier (e.g., "claude", "provider-b", "openrouter").
     pub name: String,
-    /// Display name in UI (e.g., "Claude", "GLM-4").
+    /// Display name in UI (e.g., "Claude", "Provider B").
     pub display_name: String,
     /// Base URL for API (e.g., "https://api.anthropic.com").
     pub base_url: String,

@@ -454,7 +454,7 @@ impl UpstreamClient {
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│          Switching to GLM-4                                 │
+│          Switching to Provider B                                 │
 │                                                             │
 │     [████████████░░░░░░░░] Summarizing session...          │
 │                                                             │
@@ -464,7 +464,7 @@ impl UpstreamClient {
 ### Поток событий
 
 ```
-User clicks "Switch to GLM"
+User clicks "Switch to Provider B"
          ↓
 ┌────────────────────────────────────────────────────────────┐
 │ IPC Handler (backend_switch command)                       │

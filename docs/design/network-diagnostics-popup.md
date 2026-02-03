@@ -31,7 +31,7 @@ Field layout (monospaced, label-value pairs):
 
 ## Display Fields
 
-1. **Provider** - Backend display name (e.g., "Claude API", "GLM-4")
+1. **Provider** - Backend display name (e.g., "Claude API", "Provider B")
    - Source: `BackendInfo.display_name` for the active backend
 
 2. **Model** - Current model identifier

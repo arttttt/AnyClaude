@@ -8,7 +8,7 @@ TUI wrapper for Claude Code with hot-swappable backend support and transparent A
 
 ## Why?
 
-Claude Code is great, but sometimes you need a different provider — maybe Anthropic is down, rate-limited, or you want to use an Anthropic-compatible backend like GLM. Without AnyClaude, switching means editing config files or environment variables every time.
+Claude Code is great, but sometimes you need a different provider — maybe Anthropic is down, rate-limited, or you want to use another Anthropic-compatible backend. Without AnyClaude, switching means editing config files or environment variables every time.
 
 AnyClaude solves this:
 

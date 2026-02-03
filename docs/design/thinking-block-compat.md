@@ -12,7 +12,7 @@
 
 ## Overview
 
-Enable seamless backend switching (Anthropic <-> GLM) when conversation history
+Enable seamless backend switching (Anthropic <-> Provider B) when conversation history
 contains `thinking` blocks. Providers sign these blocks differently; switching
 backends can trigger "Invalid signature in thinking block" errors.
 

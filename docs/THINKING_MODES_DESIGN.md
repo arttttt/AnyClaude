@@ -171,7 +171,7 @@ ThinkingMode::Strip => {
 4. Нет дополнительных API вызовов
 
 **При переключении backend:**
-1. Пользователь запрашивает смену backend (например, Anthropic → GLM)
+1. Пользователь запрашивает смену backend (например, Anthropic → Provider B)
 2. AnyClaude показывает UI: "Preparing switch..."
 3. Для каждого assistant message в истории:
    - Thinking блоки → суммаризируются через summarizer модель
@@ -194,10 +194,10 @@ mode = "summarize"
 
 [thinking.summarizer]
 # Какой backend использовать для суммаризации
-backend = "glm"  # Имя из секции [[backends]]
+backend = "provider-b"  # Имя из секции [[backends]]
 
 # Опционально: конкретная модель (если backend поддерживает несколько)
-model = "glm-4-flash"
+model = "model-name"
 
 # Максимальное количество токенов в резюме
 max_tokens = 500
@@ -280,7 +280,7 @@ ACTIONS:
 │                                                                  │
 │  [Обычная работа: thinking нативный, API сам его обрабатывает]  │
 │                                                                  │
-│  User: "Switch to GLM"                                          │
+│  User: "Switch to Provider B"                                          │
 │           │                                                      │
 │           ▼                                                      │
 │  ┌─────────────────────────────────────────┐                    │
@@ -308,12 +308,12 @@ ACTIONS:
 │           │                                                      │
 │           ▼                                                      │
 │  ┌─────────────────────────────────────────┐                    │
-│  │ Переключить active backend → GLM        │                    │
+│  │ Переключить active backend → Provider B        │                    │
 │  │ Claude продолжает без перезапуска       │                    │
 │  └─────────────────────────────────────────┘                    │
 │           │                                                      │
 │           ▼                                                      │
-│  Пользователь продолжает работу с GLM backend                   │
+│  Пользователь продолжает работу с Provider B backend                   │
 │  (thinking резюме сохранены в истории как text)                 │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
@@ -538,7 +538,7 @@ handoff_inject_method = "first_message"  # "first_message" | "system_prompt" | "
 │                    AnyClaude (native mode)                   │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                  │
-│  User: "Switch to GLM"                                          │
+│  User: "Switch to Provider B"                                          │
 │           │                                                      │
 │           ▼                                                      │
 │  ┌─────────────────────────────────────────┐                    │
@@ -563,7 +563,7 @@ handoff_inject_method = "first_message"  # "first_message" | "system_prompt" | "
 │  ┌─────────────────────────────────────────┐                    │
 │  │ Store summary in memory                 │                    │
 │  │ Kill Claude process (anthropic)         │                    │
-│  │ Start Claude process (glm)              │                    │
+│  │ Start Claude process (provider-b)              │                    │
 │  └─────────────────────────────────────────┘                    │
 │           │                                                      │
 │           ▼                                                      │
@@ -573,7 +573,7 @@ handoff_inject_method = "first_message"  # "first_message" | "system_prompt" | "
 │  └─────────────────────────────────────────┘                    │
 │           │                                                      │
 │           ▼                                                      │
-│  New session continues with GLM backend                         │
+│  New session continues with Provider B backend                         │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -663,10 +663,10 @@ mode = "strip"
 # ============================================
 [thinking.summarizer]
 # Backend для суммаризации (из [[backends]])
-backend = "glm"
+backend = "provider-b"
 
 # Конкретная модель (опционально, если backend поддерживает)
-model = "glm-4-flash"
+model = "model-name"
 
 # Максимум токенов в резюме
 max_tokens = 500
