@@ -8,11 +8,13 @@ TUI wrapper for Claude Code with hot-swappable backend support and transparent A
 
 ## Why?
 
-Working with multiple LLM providers (Anthropic, OpenRouter, custom proxies) typically means editing config files or environment variables every time you want to switch. ClaudeWrapper eliminates this friction:
+Claude Code is great, but sometimes you need a different provider — maybe Anthropic is down, rate-limited, or you want to use an Anthropic-compatible backend like GLM. Without ClaudeWrapper, switching means editing config files or environment variables every time.
 
-- Define all your backends in one config file
-- Switch providers mid-session with `Ctrl+B`
-- Conversation context is preserved across switches (with summarize mode)
+ClaudeWrapper solves this:
+
+- Configure all backends once
+- Switch with `Ctrl+B` mid-session
+- No restarts, no config edits
 
 ## Features
 
