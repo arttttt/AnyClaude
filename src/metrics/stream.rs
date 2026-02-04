@@ -8,7 +8,7 @@ use futures_core::Stream;
 use tokio::time::{Instant, Sleep};
 
 use super::hub::ObservabilityHub;
-use super::redaction::redact_body_preview;
+use super::redaction::redact_body;
 use super::span::RequestSpan;
 use super::types::ResponseMeta;
 
@@ -33,9 +33,10 @@ pub struct ObservedStream<S> {
 }
 
 pub struct ResponsePreview {
-    pub limit: usize,
+    pub limit: Option<usize>,
     pub content_type: String,
     pub buffer: Vec<u8>,
+    pub pretty_print: bool,
 }
 
 impl ResponsePreview {
@@ -44,23 +45,40 @@ impl ResponsePreview {
             return None;
         }
         Some(Self {
-            limit,
+            limit: Some(limit),
             content_type,
             buffer: Vec::new(),
+            pretty_print: false,
         })
     }
 
-    fn push(&mut self, bytes: &[u8]) {
-        if self.buffer.len() >= self.limit {
-            return;
+    /// Create a ResponsePreview with full body capture (no limit).
+    pub fn full(content_type: String, pretty_print: bool) -> Self {
+        Self {
+            limit: None,
+            content_type,
+            buffer: Vec::new(),
+            pretty_print,
         }
-        let remaining = self.limit - self.buffer.len();
-        let slice = if bytes.len() > remaining {
-            &bytes[..remaining]
-        } else {
-            bytes
-        };
-        self.buffer.extend_from_slice(slice);
+    }
+
+    fn push(&mut self, bytes: &[u8]) {
+        match self.limit {
+            Some(limit) if self.buffer.len() >= limit => return,
+            Some(limit) => {
+                let remaining = limit - self.buffer.len();
+                let slice = if bytes.len() > remaining {
+                    &bytes[..remaining]
+                } else {
+                    bytes
+                };
+                self.buffer.extend_from_slice(slice);
+            }
+            None => {
+                // No limit - capture everything
+                self.buffer.extend_from_slice(bytes);
+            }
+        }
     }
 }
 
@@ -100,8 +118,12 @@ impl<S> ObservedStream<S> {
 
         if let Some(mut span) = self.span.take() {
             if let Some(preview) = self.response_preview.take() {
-                let preview_value =
-                    redact_body_preview(&preview.buffer, &preview.content_type, preview.limit);
+                let preview_value = redact_body(
+                    &preview.buffer,
+                    &preview.content_type,
+                    preview.limit,
+                    preview.pretty_print,
+                );
                 let meta = span
                     .record_mut()
                     .response_meta

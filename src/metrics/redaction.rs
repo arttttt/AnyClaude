@@ -18,25 +18,136 @@ pub fn redact_headers(headers: &HeaderMap) -> Vec<(String, String)> {
 }
 
 pub fn redact_body_preview(bytes: &[u8], content_type: &str, limit: usize) -> Option<String> {
-    if limit == 0 || bytes.is_empty() {
+    redact_body(bytes, content_type, Some(limit), false)
+}
+
+/// Redact and format body with configurable options.
+///
+/// - `limit`: Max bytes to include (None = unlimited)
+/// - `pretty`: Pretty-print JSON output
+pub fn redact_body(
+    bytes: &[u8],
+    content_type: &str,
+    limit: Option<usize>,
+    pretty: bool,
+) -> Option<String> {
+    if bytes.is_empty() {
         return None;
     }
 
-    let preview = if bytes.len() > limit {
-        &bytes[..limit]
-    } else {
-        bytes
-    };
-    if content_type.contains("application/json") {
-        let mut value = match serde_json::from_slice::<Value>(preview) {
-            Ok(val) => val,
-            Err(_) => return Some(mask_tokens(&String::from_utf8_lossy(preview))),
-        };
-        redact_json_value(&mut value);
-        return serde_json::to_string(&value).ok();
+    // Handle SSE streams specially
+    if content_type.contains("text/event-stream") {
+        return Some(summarize_sse_stream(bytes, pretty));
     }
 
-    Some(mask_tokens(&String::from_utf8_lossy(preview)))
+    // Apply limit if specified
+    let data = match limit {
+        Some(0) => return None,
+        Some(l) if bytes.len() > l => &bytes[..l],
+        _ => bytes,
+    };
+
+    if content_type.contains("application/json") {
+        // For full body, parse entire bytes even if we have a limit on display
+        let parse_bytes = if limit.is_none() { bytes } else { data };
+        let mut value = match serde_json::from_slice::<Value>(parse_bytes) {
+            Ok(val) => val,
+            Err(_) => return Some(mask_tokens(&String::from_utf8_lossy(data))),
+        };
+        redact_json_value(&mut value);
+
+        let result = if pretty {
+            serde_json::to_string_pretty(&value).ok()
+        } else {
+            serde_json::to_string(&value).ok()
+        };
+        return result;
+    }
+
+    Some(mask_tokens(&String::from_utf8_lossy(data)))
+}
+
+/// Parse SSE stream and return a structured summary instead of raw events.
+fn summarize_sse_stream(bytes: &[u8], pretty: bool) -> String {
+    let text = String::from_utf8_lossy(bytes);
+
+    let mut event_counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    let mut last_message_delta: Option<Value> = None;
+    let mut final_text = String::new();
+    let mut total_events = 0u32;
+    let mut error_event: Option<Value> = None;
+
+    // Parse SSE events
+    for line in text.lines() {
+        if let Some(data) = line.strip_prefix("data: ") {
+            if let Ok(json) = serde_json::from_str::<Value>(data) {
+                total_events += 1;
+
+                if let Some(event_type) = json.get("type").and_then(|t| t.as_str()) {
+                    *event_counts.entry(event_type.to_string()).or_insert(0) += 1;
+
+                    match event_type {
+                        "content_block_delta" => {
+                            // Extract text delta
+                            if let Some(text) = json
+                                .get("delta")
+                                .and_then(|d| d.get("text"))
+                                .and_then(|t| t.as_str())
+                            {
+                                final_text.push_str(text);
+                            }
+                        }
+                        "message_delta" => {
+                            last_message_delta = Some(json.clone());
+                        }
+                        "error" => {
+                            error_event = Some(json.clone());
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    // Build summary
+    let mut summary = serde_json::json!({
+        "sse_summary": {
+            "total_events": total_events,
+            "event_counts": event_counts,
+        }
+    });
+
+    // Add final text preview (truncated)
+    if !final_text.is_empty() {
+        let preview = if final_text.len() > 500 {
+            format!("{}...[truncated, total {} chars]", &final_text[..500], final_text.len())
+        } else {
+            final_text
+        };
+        summary["sse_summary"]["text_preview"] = Value::String(preview);
+    }
+
+    // Add usage info from message_delta
+    if let Some(delta) = last_message_delta {
+        if let Some(usage) = delta.get("usage") {
+            summary["sse_summary"]["usage"] = usage.clone();
+        }
+        if let Some(stop_reason) = delta.get("delta").and_then(|d| d.get("stop_reason")) {
+            summary["sse_summary"]["stop_reason"] = stop_reason.clone();
+        }
+    }
+
+    // Add error if present
+    if let Some(err) = error_event {
+        summary["sse_summary"]["error"] = err;
+    }
+
+    if pretty {
+        serde_json::to_string_pretty(&summary).unwrap_or_else(|_| format!("SSE stream: {} events", total_events))
+    } else {
+        serde_json::to_string(&summary).unwrap_or_else(|_| format!("SSE stream: {} events", total_events))
+    }
 }
 
 fn redact_json_value(value: &mut Value) {

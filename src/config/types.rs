@@ -110,6 +110,12 @@ pub struct DebugLoggingConfig {
     pub body_preview_bytes: usize,
     #[serde(default = "default_debug_header_preview")]
     pub header_preview: bool,
+    /// Log full request/response bodies (no size limit)
+    #[serde(default)]
+    pub full_body: bool,
+    /// Pretty-print JSON bodies for readability
+    #[serde(default = "default_true")]
+    pub pretty_print: bool,
     #[serde(default)]
     pub rotation: DebugLogRotation,
 }
@@ -211,6 +217,10 @@ fn default_debug_body_preview_bytes() -> usize {
 }
 
 fn default_debug_header_preview() -> bool {
+    true
+}
+
+fn default_true() -> bool {
     true
 }
 
@@ -353,6 +363,8 @@ impl Default for DebugLoggingConfig {
             file_path: default_debug_log_file_path(),
             body_preview_bytes: default_debug_body_preview_bytes(),
             header_preview: default_debug_header_preview(),
+            full_body: false,
+            pretty_print: true,
             rotation: DebugLogRotation::default(),
         }
     }
@@ -422,6 +434,14 @@ impl DebugLoggingConfig {
             if let Ok(parsed) = value.parse::<usize>() {
                 self.body_preview_bytes = parsed;
             }
+        }
+
+        if let Ok(value) = std::env::var("CLAUDE_WRAPPER_DEBUG_FULL_BODY") {
+            self.full_body = value == "1" || value.to_lowercase() == "true";
+        }
+
+        if let Ok(value) = std::env::var("CLAUDE_WRAPPER_DEBUG_PRETTY_PRINT") {
+            self.pretty_print = value == "1" || value.to_lowercase() == "true";
         }
     }
 }
