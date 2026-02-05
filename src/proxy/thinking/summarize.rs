@@ -192,10 +192,6 @@ impl ThinkingTransformer for SummarizeTransformer {
             }
         }
 
-        // Note: We do NOT strip thinking blocks here anymore.
-        // Thinking blocks are stripped lazily only when we get a 400 error
-        // with invalid signature, then retry with stripped body.
-
         Ok(TransformResult::with_stats(stats))
     }
 

@@ -35,9 +35,21 @@ impl IpcServer {
                     backend_id,
                     respond_to,
                 } => {
+                    let old_backend = backend_state.get_active_backend();
                     let result = backend_state
                         .switch_backend(&backend_id)
                         .map(|_| backend_state.get_active_backend());
+                    if result.is_ok() {
+                        if let Err(e) = transformer_registry
+                            .on_backend_switch(&old_backend, &backend_id)
+                            .await
+                        {
+                            tracing::warn!(
+                                error = %e,
+                                "on_backend_switch failed during SwitchBackend"
+                            );
+                        }
+                    }
                     if respond_to.send(result).is_err() {
                         tracing::trace!("IPC: SwitchBackend response dropped (receiver gone)");
                     }
