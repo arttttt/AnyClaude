@@ -196,11 +196,13 @@ impl UpstreamClient {
 
             if let Ok(mut json_body) = serde_json::from_slice::<serde_json::Value>(&body_bytes) {
                 // Convert adaptive thinking to standard format for non-Anthropic backends
+                let mut thinking_converted = false;
                 if needs_thinking_compat {
                     if let Some(changed) =
                         convert_adaptive_thinking(&mut json_body, backend.thinking_budget())
                     {
                         if changed {
+                            thinking_converted = true;
                             self.debug_logger.log_auxiliary(
                                 "thinking_compat",
                                 None,
@@ -227,17 +229,6 @@ impl UpstreamClient {
                         filtered_blocks = filtered,
                         "Filtered thinking blocks from other sessions"
                     );
-                    // Update body_bytes with filtered body
-                    match serde_json::to_vec(&json_body) {
-                        Ok(updated) => body_bytes = updated,
-                        Err(e) => {
-                            tracing::error!(
-                                error = %e,
-                                filtered_blocks = filtered,
-                                "Failed to serialize filtered request body, using original"
-                            );
-                        }
-                    }
                 }
 
                 let context = TransformContext::new(
@@ -247,27 +238,18 @@ impl UpstreamClient {
                 );
 
                 let transformer = self.transformer_registry.get().await;
+                let mut transformer_changed = false;
 
                 match transformer.transform_request(&mut json_body, &context).await {
                     Ok(result) => {
+                        transformer_changed = result.changed;
                         if result.changed {
-                            match serde_json::to_vec(&json_body) {
-                                Ok(updated) => {
-                                    body_bytes = updated;
-                                    tracing::info!(
-                                        backend = %backend.name,
-                                        transformer = transformer.name(),
-                                        summarized = result.stats.summarized_count,
-                                        "Applied transformer"
-                                    );
-                                }
-                                Err(e) => {
-                                    tracing::error!(
-                                        error = %e,
-                                        "Failed to serialize transformed request body"
-                                    );
-                                }
-                            }
+                            tracing::info!(
+                                backend = %backend.name,
+                                transformer = transformer.name(),
+                                summarized = result.stats.summarized_count,
+                                "Applied transformer"
+                            );
                         }
                     }
                     Err(e) => {
@@ -275,6 +257,34 @@ impl UpstreamClient {
                             error = %e,
                             "Failed to apply transformer"
                         );
+                    }
+                }
+
+                // Re-serialize body if any transformation occurred
+                if thinking_converted || filtered > 0 || transformer_changed {
+                    if thinking_converted {
+                        let thinking_json = json_body.get("thinking")
+                            .map(|t| t.to_string())
+                            .unwrap_or_else(|| "null".to_string());
+                        self.debug_logger.log_auxiliary(
+                            "thinking_compat",
+                            None,
+                            None,
+                            Some(&format!(
+                                "Final request thinking field: {}",
+                                thinking_json
+                            )),
+                            None,
+                        );
+                    }
+                    match serde_json::to_vec(&json_body) {
+                        Ok(updated) => body_bytes = updated,
+                        Err(e) => {
+                            tracing::error!(
+                                error = %e,
+                                "Failed to serialize transformed request body, using original"
+                            );
+                        }
                     }
                 }
             }
