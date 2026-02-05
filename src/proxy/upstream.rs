@@ -201,10 +201,19 @@ impl UpstreamClient {
                         convert_adaptive_thinking(&mut json_body, backend.thinking_budget())
                     {
                         if changed {
-                            tracing::info!(
-                                backend = %backend.name,
-                                budget = backend.thinking_budget(),
-                                "Converted adaptive thinking to enabled for compat"
+                            self.debug_logger.log_auxiliary(
+                                "thinking_compat",
+                                None,
+                                None,
+                                Some(&format!(
+                                    "Converted adaptive → enabled for backend '{}', budget={}",
+                                    backend.name,
+                                    json_body.get("thinking")
+                                        .and_then(|t| t.get("budget_tokens"))
+                                        .and_then(|b| b.as_u64())
+                                        .unwrap_or(0)
+                                )),
+                                None,
                             );
                         }
                     }
@@ -306,6 +315,18 @@ impl UpstreamClient {
                 {
                     if let Ok(val) = value.to_str() {
                         let patched = patch_anthropic_beta_header(val);
+                        if patched != val {
+                            self.debug_logger.log_auxiliary(
+                                "thinking_compat",
+                                None,
+                                None,
+                                Some(&format!(
+                                    "Patched anthropic-beta: '{}' → '{}'",
+                                    val, patched
+                                )),
+                                None,
+                            );
+                        }
                         builder = builder.header(name, &patched);
                         continue;
                     }
