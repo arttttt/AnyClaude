@@ -127,14 +127,6 @@ impl Backend {
         })
     }
 
-    /// Default budget tokens for thinking compat conversion.
-    const DEFAULT_THINKING_BUDGET: u32 = 10000;
-
-    /// Get the thinking budget tokens for adaptive → enabled conversion.
-    pub fn thinking_budget(&self) -> u32 {
-        self.thinking_budget_tokens
-            .unwrap_or(Self::DEFAULT_THINKING_BUDGET)
-    }
 }
 
 #[cfg(test)]

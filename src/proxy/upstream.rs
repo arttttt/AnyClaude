@@ -199,7 +199,7 @@ impl UpstreamClient {
                 let mut thinking_converted = false;
                 if needs_thinking_compat {
                     if let Some(changed) =
-                        convert_adaptive_thinking(&mut json_body, backend.thinking_budget())
+                        convert_adaptive_thinking(&mut json_body, backend.thinking_budget_tokens)
                     {
                         if changed {
                             thinking_converted = true;
@@ -576,12 +576,11 @@ fn compute_cost_usd(
 
 /// Convert `"thinking": {"type": "adaptive"}` to `"thinking": {"type": "enabled", "budget_tokens": N}`.
 ///
-/// Budget is derived from `max_tokens` in the request body (max_tokens - 1),
-/// falling back to the backend's configured default.
+/// Budget priority: explicit config (`thinking_budget_tokens`) > `max_tokens - 1` from request > default 10000.
 ///
 /// Returns `Some(true)` if converted, `Some(false)` if thinking exists but not adaptive,
 /// `None` if no thinking field present.
-fn convert_adaptive_thinking(body: &mut serde_json::Value, fallback_budget: u32) -> Option<bool> {
+fn convert_adaptive_thinking(body: &mut serde_json::Value, configured_budget: Option<u32>) -> Option<bool> {
     let is_adaptive = body
         .get("thinking")
         .and_then(|t| t.get("type"))
@@ -592,11 +591,12 @@ fn convert_adaptive_thinking(body: &mut serde_json::Value, fallback_budget: u32)
         return body.get("thinking").map(|_| false);
     }
 
-    let budget = body
-        .get("max_tokens")
-        .and_then(|v| v.as_u64())
-        .map(|mt| mt.saturating_sub(1) as u32)
-        .unwrap_or(fallback_budget);
+    let budget = configured_budget.unwrap_or_else(|| {
+        body.get("max_tokens")
+            .and_then(|v| v.as_u64())
+            .map(|mt| mt.saturating_sub(1) as u32)
+            .unwrap_or(10_000)
+    });
 
     body.as_object_mut()?.insert(
         "thinking".to_string(),
