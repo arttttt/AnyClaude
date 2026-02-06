@@ -7,6 +7,7 @@ use crate::pty::PtySession;
 use crate::shutdown::{ShutdownCoordinator, ShutdownPhase};
 use crate::ui::app::{App, UiCommand};
 use crate::ui::events::{mouse_scroll_direction, AppEvent, EventHandler};
+use crate::ui::history::HistoryEntry;
 use crate::ui::input::{handle_key, InputAction};
 use crate::ui::layout::body_rect;
 use crate::ui::render::draw;
@@ -14,6 +15,7 @@ use crate::ui::summarization::SummarizeIntent;
 use crate::ui::terminal_guard::setup_terminal;
 use ratatui::layout::Rect;
 use std::io;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::runtime::Builder;
 use tokio::sync::mpsc;
@@ -57,6 +59,7 @@ pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Re
     let (ui_command_tx, ui_command_rx) = mpsc::channel(UI_COMMAND_BUFFER);
     let mut app = App::new(tick_rate, config_store.clone());
     app.set_ipc_sender(ui_command_tx.clone());
+
     let mut proxy_server = ProxyServer::new(config_store.clone())
         .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
     
@@ -67,6 +70,23 @@ pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Re
     
     let proxy_handle = proxy_server.handle();
     let backend_state = proxy_server.backend_state();
+
+    // Wire history provider: converts SwitchLogEntry → HistoryEntry at the boundary
+    {
+        let bs = backend_state.clone();
+        let provider = Arc::new(move || {
+            bs.get_switch_log()
+                .into_iter()
+                .map(|e| HistoryEntry {
+                    timestamp: e.timestamp,
+                    from_backend: e.old_backend,
+                    to_backend: e.new_backend,
+                })
+                .collect()
+        });
+        app.set_history_provider(provider);
+    }
+
     let observability = proxy_server.observability();
     let debug_logger = proxy_server.debug_logger();
     let shutdown = proxy_server.shutdown_handle();

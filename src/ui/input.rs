@@ -1,5 +1,6 @@
 use crate::config::ThinkingMode;
 use crate::ui::app::{App, PopupKind};
+use crate::ui::history::HistoryIntent;
 use crate::ui::summarization::SummarizeDialogState;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
@@ -39,6 +40,32 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> InputAction {
             return handle_summarize_dialog_key(app, key);
         }
 
+        // Handle history dialog keys
+        if matches!(app.popup_kind(), Some(PopupKind::History)) {
+            match key.code {
+                KeyCode::Esc => {
+                    app.close_history_dialog();
+                    app.close_popup();
+                    return InputAction::None;
+                }
+                KeyCode::Up => {
+                    app.dispatch_history(HistoryIntent::ScrollUp);
+                    return InputAction::None;
+                }
+                KeyCode::Down => {
+                    app.dispatch_history(HistoryIntent::ScrollDown);
+                    return InputAction::None;
+                }
+                _ => {}
+            }
+            if is_ctrl_char(key, 'h') {
+                app.close_history_dialog();
+                app.close_popup();
+                return InputAction::None;
+            }
+            return InputAction::None;
+        }
+
         if matches!(key.code, KeyCode::Esc) {
             app.close_popup();
             return InputAction::None;
@@ -56,6 +83,10 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> InputAction {
                 app.request_status_refresh();
                 app.request_metrics_refresh(None);
             }
+            return InputAction::None;
+        }
+        if is_ctrl_char(key, 'h') {
+            app.close_popup();
             return InputAction::None;
         }
         if matches!(app.popup_kind(), Some(PopupKind::BackendSwitch)) {
@@ -99,6 +130,11 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> InputAction {
             app.request_status_refresh();
             app.request_metrics_refresh(None);
         }
+        return InputAction::None;
+    }
+    if is_ctrl_char(key, 'h') {
+        app.open_history_dialog();
+        app.toggle_popup(PopupKind::History);
         return InputAction::None;
     }
 

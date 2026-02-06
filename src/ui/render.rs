@@ -2,6 +2,7 @@ use crate::error::ErrorSeverity;
 use crate::ui::app::{App, PopupKind};
 use crate::ui::footer::Footer;
 use crate::ui::header::Header;
+use crate::ui::history::render_history_dialog;
 use crate::ui::layout::{centered_rect_by_size, layout_regions};
 use crate::ui::summarization::render_summarize_dialog;
 use crate::ui::terminal::TerminalBody;
@@ -44,6 +45,12 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
     frame.render_widget(footer_widget.widget(footer), footer);
 
     if let Some(kind) = app.popup_kind() {
+        // History dialog renders itself independently
+        if matches!(kind, PopupKind::History) {
+            render_history_dialog(frame, app.history_dialog());
+            return;
+        }
+
         let (title, lines) = match kind {
             PopupKind::Status => {
                 let mut lines = Vec::new();
@@ -289,6 +296,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
 
                 ("Select Backend", lines)
             }
+            PopupKind::History => unreachable!("handled above"),
         };
 
         let content_width = lines.iter().map(Line::width).max().unwrap_or(0) as u16;

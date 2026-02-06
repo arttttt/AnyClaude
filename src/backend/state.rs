@@ -95,9 +95,13 @@ impl BackendState {
         };
 
         let inner = BackendStateInner {
-            active_backend,
+            active_backend: active_backend.clone(),
             config,
-            switch_log: Vec::new(),
+            switch_log: vec![SwitchLogEntry {
+                timestamp: SystemTime::now(),
+                old_backend: None,
+                new_backend: active_backend,
+            }],
         };
 
         Ok(Self {
@@ -372,8 +376,8 @@ mod tests {
 
         state.switch_backend("backend1").unwrap();
         assert_eq!(state.get_active_backend(), "backend1");
-        // Should not create a log entry for no-op switch
-        assert!(state.get_switch_log().is_empty());
+        // Should not create a log entry for no-op switch (only initial entry)
+        assert_eq!(state.get_switch_log().len(), 1);
     }
 
     #[test]
@@ -385,11 +389,13 @@ mod tests {
         state.switch_backend("backend1").unwrap();
 
         let log = state.get_switch_log();
-        assert_eq!(log.len(), 2);
-        assert_eq!(log[0].old_backend, Some("backend1".to_string()));
-        assert_eq!(log[0].new_backend, "backend2".to_string());
-        assert_eq!(log[1].old_backend, Some("backend2".to_string()));
-        assert_eq!(log[1].new_backend, "backend1".to_string());
+        assert_eq!(log.len(), 3); // initial + 2 switches
+        assert_eq!(log[0].old_backend, None);
+        assert_eq!(log[0].new_backend, "backend1".to_string());
+        assert_eq!(log[1].old_backend, Some("backend1".to_string()));
+        assert_eq!(log[1].new_backend, "backend2".to_string());
+        assert_eq!(log[2].old_backend, Some("backend2".to_string()));
+        assert_eq!(log[2].new_backend, "backend1".to_string());
     }
 
     #[test]

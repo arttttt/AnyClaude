@@ -2,6 +2,7 @@ pub mod app;
 pub mod events;
 pub mod footer;
 pub mod header;
+pub mod history;
 pub mod input;
 pub mod layout;
 pub mod mvi;

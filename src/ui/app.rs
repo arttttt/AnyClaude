@@ -3,6 +3,7 @@ use crate::error::ErrorRegistry;
 use crate::ipc::{BackendInfo, ProxyStatus};
 use crate::metrics::MetricsSnapshot;
 use crate::pty::PtyHandle;
+use crate::ui::history::{HistoryDialogState, HistoryEntry, HistoryIntent, HistoryReducer};
 use crate::ui::mvi::Reducer;
 use crate::ui::pty_state::PtyState;
 use crate::ui::summarization::{SummarizeDialogState, SummarizeIntent, SummarizeReducer};
@@ -16,6 +17,7 @@ use tokio::sync::mpsc;
 pub enum PopupKind {
     BackendSwitch,
     Status,
+    History,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -61,6 +63,10 @@ pub struct App {
     last_backends_refresh: Instant,
     /// State of the summarization dialog (MVI pattern).
     summarize_dialog: SummarizeDialogState,
+    /// State of the history dialog (MVI pattern).
+    history_dialog: HistoryDialogState,
+    /// Provider closure that fetches history entries from backend state.
+    history_provider: Option<Arc<dyn Fn() -> Vec<HistoryEntry> + Send + Sync>>,
     /// Backend ID pending switch (waiting for summarization).
     pending_backend_switch: Option<String>,
     /// Selected button in failed state (0 = Retry, 1 = Cancel).
@@ -94,6 +100,8 @@ impl App {
             last_metrics_refresh: now,
             last_backends_refresh: now,
             summarize_dialog: SummarizeDialogState::default(),
+            history_dialog: HistoryDialogState::default(),
+            history_provider: None,
             pending_backend_switch: None,
             summarize_button_selection: 0,
             last_animation_tick: now,
@@ -492,6 +500,46 @@ impl App {
         self.scheduled_retry_at.map(|scheduled| {
             scheduled.saturating_duration_since(Instant::now()).as_secs()
         })
+    }
+
+    // ========================================================================
+    // History dialog methods (MVI pattern)
+    // ========================================================================
+
+    /// Set the history provider closure (called from runtime).
+    pub fn set_history_provider(
+        &mut self,
+        provider: Arc<dyn Fn() -> Vec<HistoryEntry> + Send + Sync>,
+    ) {
+        self.history_provider = Some(provider);
+    }
+
+    /// Get the current history dialog state.
+    pub fn history_dialog(&self) -> &HistoryDialogState {
+        &self.history_dialog
+    }
+
+    /// Dispatch an intent to the history dialog reducer.
+    pub fn dispatch_history(&mut self, intent: HistoryIntent) {
+        self.history_dialog = HistoryReducer::reduce(
+            std::mem::take(&mut self.history_dialog),
+            intent,
+        );
+    }
+
+    /// Open the history dialog by loading entries from the provider.
+    pub fn open_history_dialog(&mut self) {
+        let entries = self
+            .history_provider
+            .as_ref()
+            .map(|p| p())
+            .unwrap_or_default();
+        self.dispatch_history(HistoryIntent::Load { entries });
+    }
+
+    /// Close the history dialog.
+    pub fn close_history_dialog(&mut self) {
+        self.dispatch_history(HistoryIntent::Close);
     }
 
     fn send_command(&mut self, command: UiCommand) -> bool {
