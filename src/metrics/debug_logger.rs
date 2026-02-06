@@ -2,7 +2,6 @@ use std::cmp::min;
 use std::fs::File;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -64,14 +63,12 @@ pub struct AuxiliaryLogEvent {
 }
 
 pub struct DebugLogger {
-    level: AtomicU8,
     config: Arc<RwLock<DebugLoggingConfig>>,
     sender: SyncSender<LogEvent>,
 }
 
 impl DebugLogger {
     pub fn new(config: DebugLoggingConfig) -> Self {
-        let level = AtomicU8::new(level_to_u8(config.level));
         let config = Arc::new(RwLock::new(config));
         let (sender, receiver) = sync_channel(LOG_CHANNEL_SIZE);
         let config_clone = config.clone();
@@ -80,15 +77,11 @@ impl DebugLogger {
             .spawn(move || writer_loop(receiver, config_clone))
             .ok();
 
-        Self {
-            level,
-            config,
-            sender,
-        }
+        Self { config, sender }
     }
 
     pub fn level(&self) -> DebugLogLevel {
-        level_from_u8(self.level.load(Ordering::Relaxed))
+        self.config.read().level
     }
 
     pub fn config(&self) -> DebugLoggingConfig {
@@ -96,8 +89,6 @@ impl DebugLogger {
     }
 
     pub fn set_config(&self, config: DebugLoggingConfig) {
-        self.level
-            .store(level_to_u8(config.level), Ordering::Relaxed);
         *self.config.write() = config;
     }
 
@@ -502,24 +493,6 @@ fn tokens_summary(event: &DebugLogEvent) -> (String, String, String, String) {
 fn format_timestamp(timestamp: SystemTime) -> String {
     let duration = timestamp.duration_since(UNIX_EPOCH).unwrap_or_default();
     format!("{}.{}", duration.as_secs(), duration.subsec_millis())
-}
-
-fn level_to_u8(level: DebugLogLevel) -> u8 {
-    match level {
-        DebugLogLevel::Off => 0,
-        DebugLogLevel::Basic => 1,
-        DebugLogLevel::Verbose => 2,
-        DebugLogLevel::Full => 3,
-    }
-}
-
-fn level_from_u8(value: u8) -> DebugLogLevel {
-    match value {
-        1 => DebugLogLevel::Basic,
-        2 => DebugLogLevel::Verbose,
-        3 => DebugLogLevel::Full,
-        _ => DebugLogLevel::Off,
-    }
 }
 
 struct RotatingFile {

@@ -85,7 +85,7 @@ mod request_structure_tests {
                 "signature": "sig1"
             }]
         });
-        registry.register_from_response(&serde_json::to_vec(&response).unwrap());
+        registry.register_from_response(&serde_json::to_vec(&response).unwrap(), registry.current_session());
 
         // Request with multiple assistant messages
         let mut request = json!({
@@ -208,7 +208,7 @@ mod request_structure_tests {
                 "signature": "sig"
             }]
         });
-        registry.register_from_response(&serde_json::to_vec(&response).unwrap());
+        registry.register_from_response(&serde_json::to_vec(&response).unwrap(), registry.current_session());
 
         // Request with same long content
         let mut request = json!({
@@ -241,7 +241,7 @@ mod request_structure_tests {
                 "signature": "sig"
             }]
         });
-        registry.register_from_response(&serde_json::to_vec(&response).unwrap());
+        registry.register_from_response(&serde_json::to_vec(&response).unwrap(), registry.current_session());
 
         // Request with same content
         let mut request = json!({

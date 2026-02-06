@@ -13,6 +13,12 @@ use super::error::TransformError;
 use super::summarizer::SummarizerClient;
 use super::traits::ThinkingTransformer;
 
+/// Last messages and response, kept together under one lock for atomicity.
+struct LastContext {
+    messages: Option<Vec<Value>>,
+    response: Option<String>,
+}
+
 /// Transformer that summarizes session history when switching backends.
 ///
 /// This mode:
@@ -22,12 +28,9 @@ use super::traits::ThinkingTransformer;
 /// - Prepends the summary to the first user message after switch
 /// - Strips thinking blocks (they're captured in the summary)
 pub struct SummarizeTransformer {
-    /// Last messages seen, for summarization when switching backends.
-    last_messages: RwLock<Option<Vec<Value>>>,
-    /// Last assistant response (captured from streaming completion).
-    /// This ensures we include the response even if user switches backend
-    /// before making another request.
-    last_response: RwLock<Option<String>>,
+    /// Last messages and response, protected by a single lock to ensure
+    /// on_backend_switch reads a consistent pair.
+    last_context: RwLock<LastContext>,
     /// Summary waiting to be prepended to the next request.
     pending_summary: RwLock<Option<String>>,
     /// Configuration for summarization.
@@ -50,8 +53,10 @@ impl SummarizeTransformer {
         }
 
         Self {
-            last_messages: RwLock::new(None),
-            last_response: RwLock::new(None),
+            last_context: RwLock::new(LastContext {
+                messages: None,
+                response: None,
+            }),
             pending_summary: RwLock::new(None),
             config,
             summarizer,
@@ -145,11 +150,11 @@ impl ThinkingTransformer for SummarizeTransformer {
         // maximum context (internal requests like title generation have fewer messages).
         if context.is_chat_completion() {
             if let Some(messages) = body.get("messages").and_then(|m| m.as_array()) {
-                let mut last_messages = self.last_messages.write().await;
-                let current_count = last_messages.as_ref().map(|m| m.len()).unwrap_or(0);
+                let mut ctx = self.last_context.write().await;
+                let current_count = ctx.messages.as_ref().map(|m| m.len()).unwrap_or(0);
 
                 if messages.len() >= current_count {
-                    *last_messages = Some(messages.clone());
+                    ctx.messages = Some(messages.clone());
                     tracing::trace!(
                         message_count = messages.len(),
                         "Saved messages for potential summarization"
@@ -218,10 +223,10 @@ impl ThinkingTransformer for SummarizeTransformer {
             }
         };
 
-        // Get the messages to summarize
-        let messages = {
-            let guard = self.last_messages.read().await;
-            guard.clone()
+        // Get the messages and response atomically under a single lock
+        let (messages, last_response) = {
+            let ctx = self.last_context.read().await;
+            (ctx.messages.clone(), ctx.response.clone())
         };
 
         let mut messages = match messages {
@@ -234,19 +239,16 @@ impl ThinkingTransformer for SummarizeTransformer {
 
         // Append the last assistant response if we have one
         // This captures the response that was streamed but not yet included in a request
-        {
-            let last_response = self.last_response.read().await;
-            if let Some(response_text) = last_response.as_ref() {
-                if !response_text.is_empty() {
-                    messages.push(serde_json::json!({
-                        "role": "assistant",
-                        "content": response_text
-                    }));
-                    tracing::debug!(
-                        response_len = response_text.len(),
-                        "Appended last assistant response to messages for summarization"
-                    );
-                }
+        if let Some(response_text) = last_response.as_ref() {
+            if !response_text.is_empty() {
+                messages.push(serde_json::json!({
+                    "role": "assistant",
+                    "content": response_text
+                }));
+                tracing::debug!(
+                    response_len = response_text.len(),
+                    "Appended last assistant response to messages for summarization"
+                );
             }
         }
 
@@ -285,8 +287,8 @@ impl ThinkingTransformer for SummarizeTransformer {
             "Captured assistant response for potential summarization"
         );
 
-        let mut last_response = self.last_response.write().await;
-        *last_response = Some(response_text);
+        let mut ctx = self.last_context.write().await;
+        ctx.response = Some(response_text);
     }
 }
 
@@ -325,9 +327,9 @@ mod tests {
             .unwrap();
 
         // Verify messages were saved
-        let saved = transformer.last_messages.read().await;
-        assert!(saved.is_some());
-        assert_eq!(saved.as_ref().unwrap().len(), 2);
+        let ctx = transformer.last_context.read().await;
+        assert!(ctx.messages.is_some());
+        assert_eq!(ctx.messages.as_ref().unwrap().len(), 2);
     }
 
     #[tokio::test]
@@ -505,8 +507,8 @@ mod tests {
 
         // Simulate having messages saved
         {
-            let mut messages = transformer.last_messages.write().await;
-            *messages = Some(vec![json!({"role": "user", "content": "Hello"})]);
+            let mut ctx = transformer.last_context.write().await;
+            ctx.messages = Some(vec![json!({"role": "user", "content": "Hello"})]);
         }
 
         let mut body = json!({});

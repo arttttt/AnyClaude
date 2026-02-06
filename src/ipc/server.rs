@@ -114,8 +114,7 @@ impl IpcServer {
                     }
                 }
                 IpcCommand::ListBackends { respond_to } => {
-                    let config = backend_state.get_config();
-                    let active_backend = backend_state.get_active_backend();
+                    let (config, active_backend) = backend_state.get_config_and_active_backend();
                     let mut backends = Vec::with_capacity(config.backends.len());
                     for backend in config.backends {
                         backends.push(BackendInfo {

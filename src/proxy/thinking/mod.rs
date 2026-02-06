@@ -119,27 +119,36 @@ impl TransformerRegistry {
 
     /// Update the thinking mode (hot-swap transformer).
     pub async fn update_mode(&self, mode: ThinkingMode) {
-        // Check and update mode with sync lock, then drop it before async work
-        let new_config = {
-            let mut current_config = self.config.write().expect("config lock poisoned");
-            if current_config.mode != mode {
-                tracing::info!(
-                    old_mode = ?current_config.mode,
-                    new_mode = ?mode,
-                    "Switching thinking transformer"
-                );
-                current_config.mode = mode;
-                Some(current_config.clone())
-            } else {
-                None
+        // Quick check: bail early if mode hasn't changed
+        {
+            let current_config = self.config.read().expect("config lock poisoned");
+            if current_config.mode == mode {
+                return;
             }
-        }; // sync lock dropped here
-
-        // Now do async work without holding the sync lock
-        if let Some(config) = new_config {
-            let transformer = Self::create_transformer(&config, self.debug_logger.clone());
-            *self.current.write().await = transformer;
         }
+
+        // Prepare new config and transformer outside any lock
+        let new_config = {
+            let current_config = self.config.read().expect("config lock poisoned");
+            let mut c = current_config.clone();
+            c.mode = mode;
+            c
+        };
+        tracing::info!(
+            old_mode = ?self.config.read().expect("config lock poisoned").mode,
+            new_mode = ?new_config.mode,
+            "Switching thinking transformer"
+        );
+        let transformer = Self::create_transformer(&new_config, self.debug_logger.clone());
+
+        // Atomically update both: hold async write lock, update sync config inside.
+        // This ensures get() and current_mode() always see consistent state.
+        let mut current = self.current.write().await;
+        {
+            let mut cfg = self.config.write().expect("config lock poisoned");
+            *cfg = new_config;
+        }
+        *current = transformer;
     }
 
     /// Get the current mode.
@@ -194,18 +203,22 @@ impl TransformerRegistry {
 
     /// Register thinking blocks from a response body.
     ///
-    /// Extracts thinking blocks and records them with the current session.
-    pub fn register_thinking_from_response(&self, response_body: &[u8]) {
+    /// Extracts thinking blocks and records them with the given session ID.
+    /// The session_id should be captured at request time to avoid races
+    /// with concurrent backend switches.
+    pub fn register_thinking_from_response(&self, response_body: &[u8], session_id: u64) {
         let mut registry = self.thinking_registry.lock();
-        registry.register_from_response(response_body);
+        registry.register_from_response(response_body, session_id);
     }
 
     /// Register thinking blocks from pre-parsed SSE events.
     ///
     /// Accumulates thinking deltas and registers complete thinking blocks.
-    pub fn register_thinking_from_sse_stream(&self, events: &[crate::sse::SseEvent]) {
+    /// The session_id should be captured at request time to avoid races
+    /// with concurrent backend switches.
+    pub fn register_thinking_from_sse_stream(&self, events: &[crate::sse::SseEvent], session_id: u64) {
         let mut registry = self.thinking_registry.lock();
-        registry.register_from_sse_stream(events);
+        registry.register_from_sse_stream(events, session_id);
     }
 
     /// Filter thinking blocks in a request body.

@@ -105,8 +105,9 @@ impl ThinkingRegistry {
     /// Register thinking blocks from a response.
     ///
     /// Extracts thinking blocks from the response and records their hashes
-    /// with the current session ID.
-    pub fn register_from_response(&mut self, response_body: &[u8]) {
+    /// with the given session ID. The session_id should be captured at request
+    /// time to avoid races with concurrent backend switches.
+    pub fn register_from_response(&mut self, response_body: &[u8], session_id: u64) {
         let Ok(json) = serde_json::from_slice::<Value>(response_body) else {
             return;
         };
@@ -114,7 +115,7 @@ impl ThinkingRegistry {
         if let Some(content) = json.get("content").and_then(|c| c.as_array()) {
             for item in content {
                 if let Some(thinking) = extract_thinking_content(item) {
-                    self.register_block(&thinking);
+                    self.register_block(&thinking, session_id);
                 }
             }
         }
@@ -131,7 +132,10 @@ impl ThinkingRegistry {
     /// 3. `content_block_stop` → register complete block
     ///
     /// Redacted thinking blocks are complete in `content_block_start` and registered immediately.
-    pub fn register_from_sse_stream(&mut self, events: &[crate::sse::SseEvent]) {
+    ///
+    /// The session_id should be captured at request time to avoid races with
+    /// concurrent backend switches.
+    pub fn register_from_sse_stream(&mut self, events: &[crate::sse::SseEvent], session_id: u64) {
         let mut accumulators: HashMap<u64, String> = HashMap::new();
 
         for event in events {
@@ -153,7 +157,7 @@ impl ThinkingRegistry {
                         }
                         Some("redacted_thinking") => {
                             if let Some(data) = block.get("data").and_then(|d| d.as_str()) {
-                                self.register_block(data);
+                                self.register_block(data, session_id);
                             }
                         }
                         _ => {}
@@ -183,7 +187,7 @@ impl ThinkingRegistry {
                                     content_len = accumulated.len(),
                                     "SSE: registering complete thinking block"
                                 );
-                                self.register_block(&accumulated);
+                                self.register_block(&accumulated, session_id);
                             }
                         }
                     }
@@ -200,22 +204,22 @@ impl ThinkingRegistry {
                     content_len = accumulated.len(),
                     "SSE: registering thinking block without content_block_stop"
                 );
-                self.register_block(&accumulated);
+                self.register_block(&accumulated, session_id);
             }
         }
     }
 
-    /// Register a single thinking block.
-    fn register_block(&mut self, content: &str) {
+    /// Register a single thinking block under the given session ID.
+    fn register_block(&mut self, content: &str, session_id: u64) {
         let hash = fast_hash(content);
         let now = Instant::now();
 
         // Check if already registered
         if let Some(existing) = self.blocks.get(&hash) {
-            if existing.session == self.current_session {
+            if existing.session == session_id {
                 tracing::trace!(
                     hash = hash,
-                    session = self.current_session,
+                    session = session_id,
                     already_confirmed = existing.confirmed,
                     "Block already registered in current session, skipping"
                 );
@@ -226,7 +230,7 @@ impl ThinkingRegistry {
         self.blocks.insert(
             hash,
             BlockInfo {
-                session: self.current_session,
+                session: session_id,
                 confirmed: false,
                 registered_at: now,
             },
@@ -234,7 +238,7 @@ impl ThinkingRegistry {
 
         tracing::debug!(
             hash = hash,
-            session = self.current_session,
+            session = session_id,
             content_preview = %truncate(content, 50),
             cache_size = self.blocks.len(),
             "Registered new thinking block"
@@ -731,7 +735,7 @@ mod tests {
         registry.on_backend_switch("anthropic");
 
         let response = make_response_with_thinking(&["Thought A", "Thought B"]);
-        registry.register_from_response(&response);
+        registry.register_from_response(&response, registry.current_session());
 
         assert_eq!(registry.block_count(), 2);
 
@@ -752,7 +756,7 @@ data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinki
 data: {\"type\":\"content_block_stop\",\"index\":0}\n";
 
         let events = crate::sse::parse_sse_events(sse_stream);
-        registry.register_from_sse_stream(&events);
+        registry.register_from_sse_stream(&events, registry.current_session());
         assert_eq!(registry.block_count(), 1);
 
         // Verify the registered block matches the full accumulated text
@@ -770,7 +774,7 @@ data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":
 data: {\"type\":\"content_block_stop\",\"index\":0}\n";
 
         let events = crate::sse::parse_sse_events(sse_stream);
-        registry.register_from_sse_stream(&events);
+        registry.register_from_sse_stream(&events, registry.current_session());
         assert_eq!(registry.block_count(), 1);
     }
 
@@ -791,7 +795,7 @@ data: {\"type\":\"content_block_stop\",\"index\":1}\n\
 data: {\"type\":\"content_block_stop\",\"index\":2}\n";
 
         let events = crate::sse::parse_sse_events(sse_stream);
-        registry.register_from_sse_stream(&events);
+        registry.register_from_sse_stream(&events, registry.current_session());
         assert_eq!(registry.block_count(), 2, "should register 2 thinking blocks");
     }
 
@@ -806,7 +810,7 @@ data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinki
 data: {\"type\":\"content_block_stop\",\"index\":0}\n";
 
         let events = crate::sse::parse_sse_events(sse_stream);
-        registry.register_from_sse_stream(&events);
+        registry.register_from_sse_stream(&events, registry.current_session());
 
         // Now filter a request containing the same thinking text
         let mut request = make_request_with_thinking(&["Let me analyze"]);
@@ -820,9 +824,9 @@ data: {\"type\":\"content_block_stop\",\"index\":0}\n";
         registry.on_backend_switch("anthropic");
 
         let response = make_response_with_thinking(&["Same thought"]);
-        registry.register_from_response(&response);
-        registry.register_from_response(&response);
-        registry.register_from_response(&response);
+        registry.register_from_response(&response, registry.current_session());
+        registry.register_from_response(&response, registry.current_session());
+        registry.register_from_response(&response, registry.current_session());
 
         // Should only have one entry
         assert_eq!(registry.block_count(), 1);
@@ -839,7 +843,7 @@ data: {\"type\":\"content_block_stop\",\"index\":0}\n";
 
         // Register block
         let response = make_response_with_thinking(&["Thought A"]);
-        registry.register_from_response(&response);
+        registry.register_from_response(&response, registry.current_session());
         assert_eq!(registry.cache_stats().unconfirmed, 1);
 
         // Send request with the block - should confirm it
@@ -857,7 +861,7 @@ data: {\"type\":\"content_block_stop\",\"index\":0}\n";
 
         // Register block in session 1
         let response = make_response_with_thinking(&["Thought A"]);
-        registry.register_from_response(&response);
+        registry.register_from_response(&response, registry.current_session());
 
         // Switch to session 2
         registry.on_backend_switch("glm");
@@ -883,7 +887,7 @@ data: {\"type\":\"content_block_stop\",\"index\":0}\n";
 
         // Register blocks in session 1
         let response = make_response_with_thinking(&["Old thought"]);
-        registry.register_from_response(&response);
+        registry.register_from_response(&response, registry.current_session());
         assert_eq!(registry.block_count(), 1);
 
         // Switch to session 2
@@ -903,7 +907,7 @@ data: {\"type\":\"content_block_stop\",\"index\":0}\n";
 
         // Register block in session 1
         let response = make_response_with_thinking(&["Thought A"]);
-        registry.register_from_response(&response);
+        registry.register_from_response(&response, registry.current_session());
 
         // Switch to session 2
         registry.on_backend_switch("glm");
@@ -929,7 +933,7 @@ data: {\"type\":\"content_block_stop\",\"index\":0}\n";
 
         // Register and confirm blocks A and B
         let response = make_response_with_thinking(&["Thought A", "Thought B"]);
-        registry.register_from_response(&response);
+        registry.register_from_response(&response, registry.current_session());
 
         let mut request = make_request_with_thinking(&["Thought A", "Thought B"]);
         registry.filter_request(&mut request);
@@ -951,7 +955,7 @@ data: {\"type\":\"content_block_stop\",\"index\":0}\n";
 
         // Register and confirm block
         let response = make_response_with_thinking(&["Thought A"]);
-        registry.register_from_response(&response);
+        registry.register_from_response(&response, registry.current_session());
 
         // Multiple requests with same block
         for _ in 0..5 {
@@ -976,7 +980,7 @@ data: {\"type\":\"content_block_stop\",\"index\":0}\n";
 
         // Register block (not confirmed yet)
         let response = make_response_with_thinking(&["Thought A"]);
-        registry.register_from_response(&response);
+        registry.register_from_response(&response, registry.current_session());
 
         // Request without the block (simulating empty first request)
         let mut request = json!({"messages": []});
@@ -995,7 +999,7 @@ data: {\"type\":\"content_block_stop\",\"index\":0}\n";
 
         // Register block
         let response = make_response_with_thinking(&["Thought A"]);
-        registry.register_from_response(&response);
+        registry.register_from_response(&response, registry.current_session());
 
         // Request with history but without the block - should remove as orphan (threshold=0)
         let mut request = json!({"messages": [
@@ -1035,7 +1039,7 @@ data: {\"type\":\"content_block_stop\",\"index\":0}\n";
 
         // Register block
         let response = make_response_with_thinking(&["Known thought"]);
-        registry.register_from_response(&response);
+        registry.register_from_response(&response, registry.current_session());
 
         // Request with that block
         let mut request = make_request_with_thinking(&["Known thought"]);
@@ -1061,7 +1065,7 @@ data: {\"type\":\"content_block_stop\",\"index\":0}\n";
             }]
         }))
         .unwrap();
-        registry.register_from_response(&response);
+        registry.register_from_response(&response, registry.current_session());
 
         // Request with same redacted thinking
         let mut request = json!({
@@ -1085,7 +1089,7 @@ data: {\"type\":\"content_block_stop\",\"index\":0}\n";
 
         // Register only one thought
         let response = make_response_with_thinking(&["Known"]);
-        registry.register_from_response(&response);
+        registry.register_from_response(&response, registry.current_session());
 
         // Request with multiple messages, some known some unknown
         let mut request = json!({
@@ -1133,7 +1137,7 @@ data: {\"type\":\"content_block_stop\",\"index\":0}\n";
 
         // Turn 1: Response with thinking
         let response1 = make_response_with_thinking(&["Analyzing the problem..."]);
-        registry.register_from_response(&response1);
+        registry.register_from_response(&response1, registry.current_session());
         assert_eq!(registry.block_count(), 1);
 
         // Turn 2: Request includes previous thinking
@@ -1144,7 +1148,7 @@ data: {\"type\":\"content_block_stop\",\"index\":0}\n";
 
         // Turn 2: Response with new thinking
         let response2 = make_response_with_thinking(&["Let me elaborate..."]);
-        registry.register_from_response(&response2);
+        registry.register_from_response(&response2, registry.current_session());
         assert_eq!(registry.block_count(), 2);
 
         // Turn 3: Request includes both thoughts
@@ -1163,7 +1167,7 @@ data: {\"type\":\"content_block_stop\",\"index\":0}\n";
         // Build up several thoughts
         for i in 1..=5 {
             let response = make_response_with_thinking(&[&format!("Thought {}", i)]);
-            registry.register_from_response(&response);
+            registry.register_from_response(&response, registry.current_session());
 
             let thoughts: Vec<String> = (1..=i).map(|j| format!("Thought {}", j)).collect();
             let thought_refs: Vec<&str> = thoughts.iter().map(|s| s.as_str()).collect();
@@ -1189,7 +1193,7 @@ data: {\"type\":\"content_block_stop\",\"index\":0}\n";
         // Session 1: anthropic
         registry.on_backend_switch("anthropic");
         let response1 = make_response_with_thinking(&["Anthropic thought"]);
-        registry.register_from_response(&response1);
+        registry.register_from_response(&response1, registry.current_session());
 
         let mut request1 = make_request_with_thinking(&["Anthropic thought"]);
         registry.filter_request(&mut request1);
@@ -1206,7 +1210,7 @@ data: {\"type\":\"content_block_stop\",\"index\":0}\n";
 
         // GLM response with new thought
         let response2 = make_response_with_thinking(&["GLM thought"]);
-        registry.register_from_response(&response2);
+        registry.register_from_response(&response2, registry.current_session());
 
         // Request with new thought
         let mut request3 = make_request_with_thinking(&["GLM thought"]);
@@ -1229,7 +1233,7 @@ data: {\"type\":\"content_block_stop\",\"index\":0}\n";
 
         // Register and use a block
         let response = make_response_with_thinking(&["New thought"]);
-        registry.register_from_response(&response);
+        registry.register_from_response(&response, registry.current_session());
 
         let mut request = make_request_with_thinking(&["New thought"]);
         let removed = registry.filter_request(&mut request);
@@ -1246,7 +1250,7 @@ data: {\"type\":\"content_block_stop\",\"index\":0}\n";
         registry.on_backend_switch("anthropic");
 
         let response = make_response_with_thinking(&["Thought"]);
-        registry.register_from_response(&response);
+        registry.register_from_response(&response, registry.current_session());
 
         let mut request = json!({"messages": []});
         let removed = registry.filter_request(&mut request);
@@ -1325,9 +1329,9 @@ data: {\"type\":\"content_block_stop\",\"index\":0}\n";
         let mut registry = ThinkingRegistry::new();
         registry.on_backend_switch("anthropic");
 
-        registry.register_from_response(b"");
-        registry.register_from_response(b"{}");
-        registry.register_from_response(b"{\"content\": []}");
+        registry.register_from_response(b"", registry.current_session());
+        registry.register_from_response(b"{}", registry.current_session());
+        registry.register_from_response(b"{\"content\": []}", registry.current_session());
 
         assert_eq!(registry.block_count(), 0);
     }
@@ -1337,9 +1341,9 @@ data: {\"type\":\"content_block_stop\",\"index\":0}\n";
         let mut registry = ThinkingRegistry::new();
         registry.on_backend_switch("anthropic");
 
-        registry.register_from_response(b"not json");
+        registry.register_from_response(b"not json", registry.current_session());
         let events = crate::sse::parse_sse_events(b"data: not json\n");
-        registry.register_from_sse_stream(&events);
+        registry.register_from_sse_stream(&events, registry.current_session());
 
         assert_eq!(registry.block_count(), 0);
     }
@@ -1443,7 +1447,7 @@ data: {\"type\":\"content_block_stop\",\"index\":0}\n";
 
         // Register some blocks
         let response = make_response_with_thinking(&["A", "B", "C"]);
-        registry.register_from_response(&response);
+        registry.register_from_response(&response, registry.current_session());
 
         let stats = registry.cache_stats();
         assert_eq!(stats.total, 3);

@@ -152,6 +152,12 @@ impl BackendState {
         self.inner.read().config.clone()
     }
 
+    /// Get config and active backend atomically under a single lock.
+    pub fn get_config_and_active_backend(&self) -> (Config, String) {
+        let state = self.inner.read();
+        (state.config.clone(), state.active_backend.clone())
+    }
+
     /// Switch to a different backend.
     ///
     /// # Arguments

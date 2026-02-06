@@ -193,6 +193,9 @@ impl UpstreamClient {
         // Notify thinking registry about current backend (increments session on switch)
         self.transformer_registry
             .notify_backend_for_thinking(&backend.name);
+        // Capture session ID now — the on_complete callback may fire after a subsequent
+        // request has already incremented the session via notify_backend_for_thinking.
+        let thinking_session_id = self.transformer_registry.current_thinking_session();
 
         if request_content_type.contains("application/json") {
             self.transformer_registry
@@ -503,7 +506,7 @@ impl UpstreamClient {
                 // Register thinking blocks synchronously to avoid race condition:
                 // next request's filter must see these blocks in the registry.
                 let before = registry.thinking_cache_stats();
-                registry.register_thinking_from_sse_stream(&events);
+                registry.register_thinking_from_sse_stream(&events, thinking_session_id);
                 let after = registry.thinking_cache_stats();
                 let registered = after.total.saturating_sub(before.total);
                 cb_debug_logger.log_auxiliary(
@@ -548,7 +551,7 @@ impl UpstreamClient {
 
             // Register thinking blocks from non-streaming response
             self.transformer_registry
-                .register_thinking_from_response(&body_bytes);
+                .register_thinking_from_response(&body_bytes, thinking_session_id);
 
             if debug_level >= DebugLogLevel::Verbose {
                 let mut analysis = self.response_parser.parse_response(&body_bytes);
