@@ -198,13 +198,12 @@ impl TransformerRegistry {
         registry.register_from_response(response_body);
     }
 
-    /// Register thinking blocks from a complete SSE stream.
+    /// Register thinking blocks from pre-parsed SSE events.
     ///
-    /// Parses the full SSE byte stream, accumulates thinking deltas,
-    /// and registers complete thinking blocks.
-    pub fn register_thinking_from_sse_stream(&self, sse_bytes: &[u8]) {
+    /// Accumulates thinking deltas and registers complete thinking blocks.
+    pub fn register_thinking_from_sse_stream(&self, events: &[crate::sse::SseEvent]) {
         let mut registry = self.thinking_registry.lock();
-        registry.register_from_sse_stream(sse_bytes);
+        registry.register_from_sse_stream(events);
     }
 
     /// Filter thinking blocks in a request body.

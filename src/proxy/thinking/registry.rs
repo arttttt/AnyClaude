@@ -131,11 +131,10 @@ impl ThinkingRegistry {
     /// 3. `content_block_stop` → register complete block
     ///
     /// Redacted thinking blocks are complete in `content_block_start` and registered immediately.
-    pub fn register_from_sse_stream(&mut self, sse_bytes: &[u8]) {
-        let events = crate::sse::parse_sse_events(sse_bytes);
+    pub fn register_from_sse_stream(&mut self, events: &[crate::sse::SseEvent]) {
         let mut accumulators: HashMap<u64, String> = HashMap::new();
 
-        for event in &events {
+        for event in events {
             match event.event_type.as_str() {
                 "content_block_start" => {
                     let Some(block) = event.data.get("content_block") else {
@@ -752,7 +751,8 @@ data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinki
 data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"world\"}}\n\
 data: {\"type\":\"content_block_stop\",\"index\":0}\n";
 
-        registry.register_from_sse_stream(sse_stream);
+        let events = crate::sse::parse_sse_events(sse_stream);
+        registry.register_from_sse_stream(&events);
         assert_eq!(registry.block_count(), 1);
 
         // Verify the registered block matches the full accumulated text
@@ -769,7 +769,8 @@ data: {\"type\":\"content_block_stop\",\"index\":0}\n";
 data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"redacted_thinking\",\"data\":\"encrypted-data-abc\"}}\n\
 data: {\"type\":\"content_block_stop\",\"index\":0}\n";
 
-        registry.register_from_sse_stream(sse_stream);
+        let events = crate::sse::parse_sse_events(sse_stream);
+        registry.register_from_sse_stream(&events);
         assert_eq!(registry.block_count(), 1);
     }
 
@@ -789,7 +790,8 @@ data: {\"type\":\"content_block_stop\",\"index\":0}\n\
 data: {\"type\":\"content_block_stop\",\"index\":1}\n\
 data: {\"type\":\"content_block_stop\",\"index\":2}\n";
 
-        registry.register_from_sse_stream(sse_stream);
+        let events = crate::sse::parse_sse_events(sse_stream);
+        registry.register_from_sse_stream(&events);
         assert_eq!(registry.block_count(), 2, "should register 2 thinking blocks");
     }
 
@@ -803,7 +805,8 @@ data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":
 data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"Let me analyze\"}}\n\
 data: {\"type\":\"content_block_stop\",\"index\":0}\n";
 
-        registry.register_from_sse_stream(sse_stream);
+        let events = crate::sse::parse_sse_events(sse_stream);
+        registry.register_from_sse_stream(&events);
 
         // Now filter a request containing the same thinking text
         let mut request = make_request_with_thinking(&["Let me analyze"]);
@@ -1335,7 +1338,8 @@ data: {\"type\":\"content_block_stop\",\"index\":0}\n";
         registry.on_backend_switch("anthropic");
 
         registry.register_from_response(b"not json");
-        registry.register_from_sse_stream(b"data: not json\n");
+        let events = crate::sse::parse_sse_events(b"data: not json\n");
+        registry.register_from_sse_stream(&events);
 
         assert_eq!(registry.block_count(), 0);
     }

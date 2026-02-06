@@ -13,6 +13,40 @@ pub struct SseEvent {
     pub data: Value,
 }
 
+impl SseEvent {
+    /// Returns true if this event is a thinking-related SSE event
+    /// (content_block_start with thinking/redacted_thinking, or thinking_delta).
+    pub fn is_thinking_event(&self) -> bool {
+        match self.event_type.as_str() {
+            "content_block_start" => {
+                let block_type = self
+                    .data
+                    .get("content_block")
+                    .and_then(|b| b.get("type"))
+                    .and_then(|t| t.as_str());
+                matches!(block_type, Some("thinking" | "redacted_thinking"))
+            }
+            "content_block_delta" => {
+                let delta_type = self
+                    .data
+                    .get("delta")
+                    .and_then(|d| d.get("type"))
+                    .and_then(|t| t.as_str());
+                matches!(delta_type, Some("thinking_delta"))
+            }
+            _ => false,
+        }
+    }
+}
+
+/// Count thinking-related SSE events in a byte stream.
+pub fn count_thinking_events(bytes: &[u8]) -> usize {
+    parse_sse_events(bytes)
+        .iter()
+        .filter(|e| e.is_thinking_event())
+        .count()
+}
+
 /// Parse SSE stream bytes into structured events.
 ///
 /// Handles:
@@ -100,5 +134,50 @@ mod tests {
     fn empty_stream() {
         let events = parse_sse_events(b"");
         assert!(events.is_empty());
+    }
+
+    #[test]
+    fn is_thinking_event_content_block_start() {
+        let sse = b"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\",\"signature\":\"\"}}\n";
+        let events = parse_sse_events(sse);
+        assert!(events[0].is_thinking_event());
+    }
+
+    #[test]
+    fn is_thinking_event_redacted() {
+        let sse = b"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"redacted_thinking\",\"data\":\"abc\"}}\n";
+        let events = parse_sse_events(sse);
+        assert!(events[0].is_thinking_event());
+    }
+
+    #[test]
+    fn is_thinking_event_delta() {
+        let sse = b"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"hello\"}}\n";
+        let events = parse_sse_events(sse);
+        assert!(events[0].is_thinking_event());
+    }
+
+    #[test]
+    fn is_not_thinking_event_text_delta() {
+        let sse = b"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"thinking about thinking_compat\"}}\n";
+        let events = parse_sse_events(sse);
+        assert!(!events[0].is_thinking_event());
+    }
+
+    #[test]
+    fn is_not_thinking_event_text_block() {
+        let sse = b"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n";
+        let events = parse_sse_events(sse);
+        assert!(!events[0].is_thinking_event());
+    }
+
+    #[test]
+    fn count_thinking_events_mixed_stream() {
+        let sse = b"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\
+                     data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"hi\"}}\n\
+                     data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"thinking about thinking\"}}\n\
+                     data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\
+                     data: {\"type\":\"message_start\",\"message\":{}}\n";
+        assert_eq!(count_thinking_events(sse), 2);
     }
 }

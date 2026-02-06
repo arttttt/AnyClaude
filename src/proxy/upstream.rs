@@ -469,22 +469,24 @@ impl UpstreamClient {
             let registry = Arc::clone(&self.transformer_registry);
             let cb_debug_logger = Arc::clone(&self.debug_logger);
             let on_complete: crate::metrics::ResponseCompleteCallback = Box::new(move |bytes| {
-                // Diagnostic: log SSE buffer stats
+                // Parse SSE events once, reuse for diagnostics and registration
                 let text = String::from_utf8_lossy(bytes);
-                let thinking_events = text.lines()
-                    .filter(|l| l.contains("thinking"))
-                    .count();
-                // Sample first 5 lines containing "thinking" (any format) to diagnose SSE structure
-                let thinking_samples: Vec<String> = text.lines()
-                    .filter(|l| l.contains("thinking"))
+                let events = crate::sse::parse_sse_events(bytes);
+                let thinking_events = events.iter().filter(|e| e.is_thinking_event()).count();
+                // Sample first 5 thinking-related SSE events for diagnostics
+                let thinking_samples: Vec<String> = events.iter()
+                    .filter(|e| e.is_thinking_event())
                     .take(5)
-                    .map(|l| if l.len() > 200 { format!("{}...", &l[..200]) } else { l.to_string() })
+                    .map(|e| {
+                        let s = e.data.to_string();
+                        if s.len() > 200 { format!("{}...", &s[..200]) } else { s }
+                    })
                     .collect();
                 cb_debug_logger.log_auxiliary(
                     "sse_callback",
                     None, None,
                     Some(&format!(
-                        "SSE callback: {} bytes, {} lines, {} thinking-related lines\nSamples: {:?}",
+                        "SSE callback: {} bytes, {} lines, {} thinking events\nSamples: {:?}",
                         bytes.len(),
                         text.lines().count(),
                         thinking_events,
@@ -496,7 +498,7 @@ impl UpstreamClient {
                 // Register thinking blocks synchronously to avoid race condition:
                 // next request's filter must see these blocks in the registry.
                 let before = registry.thinking_cache_stats();
-                registry.register_thinking_from_sse_stream(bytes);
+                registry.register_thinking_from_sse_stream(&events);
                 let after = registry.thinking_cache_stats();
                 let registered = after.total.saturating_sub(before.total);
                 cb_debug_logger.log_auxiliary(
