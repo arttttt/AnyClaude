@@ -46,7 +46,7 @@ impl UpstreamClient {
             pool_config,
             transformer_registry,
             debug_logger,
-            request_parser: RequestParser::new(true),
+            request_parser: RequestParser::new(),
             response_parser: ResponseParser::new(),
         }
     }
@@ -317,8 +317,8 @@ impl UpstreamClient {
                 }
                 // Strip auth headers when backend uses its own credentials (bearer/api_key)
                 // Passthrough mode forwards all headers unchanged
-                if strip_auth_headers {
-                    if name == AUTHORIZATION || name.as_str().eq_ignore_ascii_case("x-api-key") {
+                if strip_auth_headers
+                    && (name == AUTHORIZATION || name.as_str().eq_ignore_ascii_case("x-api-key")) {
                         tracing::debug!(
                             header = %name,
                             backend = %backend.name,
@@ -327,7 +327,6 @@ impl UpstreamClient {
                         );
                         continue;
                     }
-                }
                 // Rewrite anthropic-beta header for non-Anthropic backends
                 if needs_thinking_compat
                     && name.as_str().eq_ignore_ascii_case("anthropic-beta")
@@ -428,7 +427,7 @@ impl UpstreamClient {
 
         let is_streaming = content_type
             .as_deref()
-            .map_or(false, |ct| ct.contains("text/event-stream"));
+            .is_some_and(|ct| ct.contains("text/event-stream"));
 
         let status = upstream_resp.status();
         let response_headers = upstream_resp.headers().clone();
@@ -439,7 +438,7 @@ impl UpstreamClient {
             let meta = span
                 .record_mut()
                 .response_meta
-                .get_or_insert_with(|| ResponseMeta {
+                .get_or_insert(ResponseMeta {
                     headers: None,
                     body_preview: None,
                 });
@@ -559,7 +558,7 @@ impl UpstreamClient {
                 let meta = span
                     .record_mut()
                     .response_meta
-                    .get_or_insert_with(|| ResponseMeta {
+                    .get_or_insert(ResponseMeta {
                         headers: None,
                         body_preview: None,
                     });
@@ -666,6 +665,19 @@ fn patch_anthropic_beta_header(value: &str) -> String {
     parts.join(",")
 }
 
+impl Default for UpstreamClient {
+    fn default() -> Self {
+        let registry = Arc::new(TransformerRegistry::new());
+        let debug_logger = Arc::new(DebugLogger::new(Default::default()));
+        Self::new(
+            TimeoutConfig::default(),
+            PoolConfig::default(),
+            registry,
+            debug_logger,
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -763,17 +775,3 @@ mod tests {
         assert_eq!(patched, "interleaved-thinking-2025-05-14");
     }
 }
-
-impl Default for UpstreamClient {
-    fn default() -> Self {
-        let registry = Arc::new(TransformerRegistry::new());
-        let debug_logger = Arc::new(DebugLogger::new(Default::default()));
-        Self::new(
-            TimeoutConfig::default(),
-            PoolConfig::default(),
-            registry,
-            debug_logger,
-        )
-    }
-}
-

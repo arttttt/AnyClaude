@@ -49,22 +49,22 @@ pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Re
     let async_runtime = Builder::new_multi_thread()
         .enable_all()
         .build()
-        .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
+        .map_err(|err| io::Error::other(err.to_string()))?;
 
     // Config file watching removed to avoid race conditions with CLI overrides.
     // Config is loaded once at startup and remains static for the session.
 
     let (ui_command_tx, ui_command_rx) = mpsc::channel(UI_COMMAND_BUFFER);
-    let mut app = App::new(tick_rate, config_store.clone());
+    let mut app = App::new(config_store.clone());
     app.set_ipc_sender(ui_command_tx.clone());
 
     let mut proxy_server = ProxyServer::new(config_store.clone())
-        .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
+        .map_err(|err| io::Error::other(err.to_string()))?;
     
     // Try to bind and get the actual port, updating the base URL
     let (_actual_addr, actual_base_url) = async_runtime.block_on(async {
         proxy_server.try_bind(&config_store).await
-    }).map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
+    }).map_err(|err| io::Error::other(err.to_string()))?;
     
     let proxy_handle = proxy_server.handle();
     let backend_state = proxy_server.backend_state();
@@ -91,7 +91,7 @@ pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Re
     let transformer_registry = proxy_server.transformer_registry();
     let started_at = std::time::Instant::now();
 
-    let (ipc_client, ipc_server) = IpcLayer::new();
+    let (ipc_client, ipc_server) = IpcLayer::create();
     async_runtime.spawn(async move {
         if let Err(err) = proxy_server.run().await {
             tracing::error!(error = %err, "Proxy server exited");
@@ -137,7 +137,7 @@ pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Re
     ];
     let scrollback_lines = config_store.get().terminal.scrollback_lines;
     let mut pty_session = PtySession::spawn(command, args, env, scrollback_lines, events.sender())
-        .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
+        .map_err(|err| io::Error::other(err.to_string()))?;
 
     app.attach_pty(pty_session.handle());
     if let Ok((cols, rows)) = crossterm::terminal::size() {

@@ -86,7 +86,9 @@ pub struct DebugLoggingConfig {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum DebugLogLevel {
+    #[default]
     Off,
     Basic,
     Verbose,
@@ -95,14 +97,18 @@ pub enum DebugLogLevel {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum DebugLogFormat {
+    #[default]
     Console,
     Json,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum DebugLogDestination {
+    #[default]
     Stderr,
     File,
     Both,
@@ -120,7 +126,9 @@ pub struct DebugLogRotation {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum DebugLogRotationMode {
+    #[default]
     None,
     Size,
     Daily,
@@ -306,29 +314,9 @@ impl Default for DebugLogRotation {
     }
 }
 
-impl Default for DebugLogLevel {
-    fn default() -> Self {
-        DebugLogLevel::Off
-    }
-}
 
-impl Default for DebugLogFormat {
-    fn default() -> Self {
-        DebugLogFormat::Console
-    }
-}
 
-impl Default for DebugLogDestination {
-    fn default() -> Self {
-        DebugLogDestination::Stderr
-    }
-}
 
-impl Default for DebugLogRotationMode {
-    fn default() -> Self {
-        DebugLogRotationMode::None
-    }
-}
 
 impl DebugLoggingConfig {
     pub fn apply_env_overrides(&mut self) {

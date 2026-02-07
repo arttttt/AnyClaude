@@ -40,7 +40,6 @@ impl ProxyServer {
             .with_plugins(vec![debug_logger.clone()]);
         let transformer_registry = Arc::new(TransformerRegistry::new());
         let router = RouterEngine::new(
-            config,
             timeout_config,
             pool_config,
             backend_state.clone(),

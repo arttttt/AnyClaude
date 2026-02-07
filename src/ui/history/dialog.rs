@@ -91,7 +91,7 @@ fn chrono_local_offset_secs() -> i64 {
             let now = libc::time(std::ptr::null_mut());
             let mut tm = MaybeUninit::<libc::tm>::uninit();
             libc::localtime_r(&now, tm.as_mut_ptr());
-            (*tm.as_ptr()).tm_gmtoff as i64
+            (*tm.as_ptr()).tm_gmtoff
         }
     }
     #[cfg(not(unix))]

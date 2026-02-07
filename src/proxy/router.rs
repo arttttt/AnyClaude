@@ -8,7 +8,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::backend::BackendState;
-use crate::config::{ConfigStore, DebugLogLevel};
+use crate::config::DebugLogLevel;
 use crate::proxy::error::ErrorResponse;
 use crate::metrics::{BackendOverride, DebugLogger, ObservabilityHub, RequestMeta, RoutingDecision};
 use crate::proxy::health::HealthHandler;
@@ -21,17 +21,13 @@ use crate::proxy::upstream::UpstreamClient;
 pub struct RouterEngine {
     health: Arc<HealthHandler>,
     upstream: Arc<UpstreamClient>,
-    #[allow(dead_code)]
-    config: ConfigStore,
     backend_state: BackendState,
     observability: ObservabilityHub,
-    #[allow(dead_code)]
     debug_logger: Arc<DebugLogger>,
 }
 
 impl RouterEngine {
     pub fn new(
-        config: ConfigStore,
         timeout_config: TimeoutConfig,
         pool_config: PoolConfig,
         backend_state: BackendState,
@@ -47,7 +43,6 @@ impl RouterEngine {
                 transformer_registry,
                 debug_logger.clone(),
             )),
-            config,
             backend_state,
             observability,
             debug_logger,

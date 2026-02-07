@@ -3,7 +3,7 @@
 //! These tests verify that filtering doesn't break request structure
 
 #[cfg(test)]
-mod request_structure_tests {
+mod tests {
     use crate::proxy::thinking::ThinkingRegistry;
     use serde_json::json;
 

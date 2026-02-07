@@ -46,10 +46,7 @@ macro_rules! dispatch_mvi {
 
 pub struct App {
     should_quit: bool,
-    tick_rate: Duration,
-    last_tick: Instant,
     focus: Focus,
-    status_message: Option<String>,
     size: Option<(u16, u16)>,
     /// PTY lifecycle state (MVI pattern).
     pty_lifecycle: PtyLifecycleState,
@@ -73,14 +70,11 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(tick_rate: Duration, config: ConfigStore) -> Self {
+    pub fn new(config: ConfigStore) -> Self {
         let now = Instant::now();
         Self {
             should_quit: false,
-            tick_rate,
-            last_tick: Instant::now(),
             focus: Focus::Terminal,
-            status_message: None,
             size: None,
             pty_lifecycle: PtyLifecycleState::default(),
             pty_handle: None,
@@ -146,7 +140,6 @@ impl App {
     }
 
     pub fn on_tick(&mut self) {
-        self.last_tick = Instant::now();
     }
 
     pub fn on_key(&mut self, key: KeyEvent) {
@@ -239,21 +232,6 @@ impl App {
     /// Get current scrollback offset.
     pub fn scrollback(&self) -> usize {
         self.pty_handle.as_ref().map(|pty| pty.scrollback()).unwrap_or(0)
-    }
-
-    #[allow(dead_code)]
-    pub fn tick_rate(&self) -> Duration {
-        self.tick_rate
-    }
-
-    #[allow(dead_code)]
-    pub fn last_tick(&self) -> Instant {
-        self.last_tick
-    }
-
-    #[allow(dead_code)]
-    pub fn status_message(&self) -> Option<&str> {
-        self.status_message.as_deref()
     }
 
     pub fn set_ipc_sender(&mut self, sender: UiCommandSender) {
@@ -388,12 +366,6 @@ impl App {
         let _config = self.config.get();
     }
 
-    /// Get access to the config store for reading current config.
-    #[allow(dead_code)]
-    pub fn config(&self) -> &ConfigStore {
-        &self.config
-    }
-
     // ========================================================================
     // PTY lifecycle methods (MVI pattern)
     // ========================================================================
@@ -444,7 +416,6 @@ impl App {
 
     fn send_command(&mut self, command: UiCommand) -> bool {
         let Some(sender) = &self.ipc_sender else {
-            self.status_message = Some("IPC not initialized".to_string());
             return false;
         };
 

@@ -63,6 +63,12 @@ pub struct RequestTiming {
     pub(crate) completed_instant: Option<Instant>,
 }
 
+impl Default for RequestTiming {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RequestTiming {
     pub fn new() -> Self {
         Self {

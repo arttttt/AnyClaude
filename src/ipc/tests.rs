@@ -57,7 +57,7 @@ async fn ipc_switch_backend_and_status() {
     let observability = ObservabilityHub::new(10).with_plugins(vec![debug_logger.clone()]);
     let shutdown = Arc::new(ShutdownManager::new());
     let transformer_registry = Arc::new(TransformerRegistry::new());
-    let (client, server) = IpcLayer::new();
+    let (client, server) = IpcLayer::create();
 
     let server_task = tokio::spawn(server.run(
         backend_state.clone(),
@@ -94,7 +94,7 @@ async fn ipc_switch_backend_and_status() {
 
 #[tokio::test]
 async fn ipc_disconnect_returns_error() {
-    let (client, server) = IpcLayer::new();
+    let (client, server) = IpcLayer::create();
     drop(server);
     let result = client.get_status().await;
     assert!(matches!(result, Err(IpcError::Disconnected)));
@@ -102,7 +102,7 @@ async fn ipc_disconnect_returns_error() {
 
 #[tokio::test]
 async fn ipc_timeout_returns_error() {
-    let (client, mut server) = IpcLayer::new();
+    let (client, mut server) = IpcLayer::create();
 
     // Spawn a "slow" server that receives but never responds
     let server_task = tokio::spawn(async move {

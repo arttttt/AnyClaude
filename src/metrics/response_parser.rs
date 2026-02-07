@@ -4,6 +4,12 @@ use super::types::ResponseAnalysis;
 
 pub struct ResponseParser;
 
+impl Default for ResponseParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ResponseParser {
     pub fn new() -> Self {
         Self

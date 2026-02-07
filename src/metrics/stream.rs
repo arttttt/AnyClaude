@@ -64,7 +64,7 @@ impl ResponsePreview {
 
     fn push(&mut self, bytes: &[u8]) {
         match self.limit {
-            Some(limit) if self.buffer.len() >= limit => return,
+            Some(limit) if self.buffer.len() >= limit => (),
             Some(limit) => {
                 let remaining = limit - self.buffer.len();
                 let slice = if bytes.len() > remaining {
@@ -127,7 +127,7 @@ impl<S> ObservedStream<S> {
                 let meta = span
                     .record_mut()
                     .response_meta
-                    .get_or_insert_with(|| ResponseMeta {
+                    .get_or_insert(ResponseMeta {
                         headers: None,
                         body_preview: None,
                     });

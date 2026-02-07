@@ -8,6 +8,12 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub struct Footer;
 
+impl Default for Footer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Footer {
     pub fn new() -> Self {
         Self

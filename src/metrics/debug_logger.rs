@@ -24,7 +24,7 @@ const LOG_CHANNEL_SIZE: usize = 512;
 #[derive(Debug, Clone)]
 pub enum LogEvent {
     /// Standard proxy request/response event.
-    Request(DebugLogEvent),
+    Request(Box<DebugLogEvent>),
     /// Auxiliary event (internal operations).
     Auxiliary(AuxiliaryLogEvent),
 }
@@ -101,20 +101,6 @@ impl DebugLogger {
         message: Option<&str>,
         error: Option<&str>,
     ) {
-        self.log_auxiliary_full(operation, status, latency_ms, message, error, None, None);
-    }
-
-    /// Log an auxiliary event with request/response bodies (for verbose debugging).
-    pub fn log_auxiliary_full(
-        &self,
-        operation: &str,
-        status: Option<u16>,
-        latency_ms: Option<u64>,
-        message: Option<&str>,
-        error: Option<&str>,
-        request_body: Option<&str>,
-        response_body: Option<&str>,
-    ) {
         if self.level() == DebugLogLevel::Off {
             return;
         }
@@ -126,8 +112,8 @@ impl DebugLogger {
             latency_ms,
             message: message.map(|s| s.to_string()),
             error: error.map(|s| s.to_string()),
-            request_body: request_body.map(|s| s.to_string()),
-            response_body: response_body.map(|s| s.to_string()),
+            request_body: None,
+            response_body: None,
         };
         let _ = self.sender.try_send(LogEvent::Auxiliary(event));
     }
@@ -141,7 +127,7 @@ impl ObservabilityPlugin for DebugLogger {
         }
 
         let event = DebugLogEvent::from_record(ctx.record, level);
-        let _ = self.sender.try_send(LogEvent::Request(event));
+        let _ = self.sender.try_send(LogEvent::Request(Box::new(event)));
     }
 }
 

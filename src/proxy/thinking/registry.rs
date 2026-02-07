@@ -278,7 +278,7 @@ impl ThinkingRegistry {
         let has_history = body
             .get("messages")
             .and_then(|v| v.as_array())
-            .map_or(false, |msgs| {
+            .is_some_and(|msgs| {
                 msgs.iter().any(|m| m.get("role").and_then(|r| r.as_str()) == Some("assistant"))
             });
         let cleanup_stats = if has_history {

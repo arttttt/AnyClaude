@@ -161,10 +161,10 @@ fn redact_json_value(value: &mut Value) {
 }
 
 fn is_sensitive_header(name: &str) -> bool {
-    match name.to_ascii_lowercase().as_str() {
-        "authorization" | "proxy-authorization" | "x-api-key" | "cookie" | "set-cookie" => true,
-        _ => false,
-    }
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "authorization" | "proxy-authorization" | "x-api-key" | "cookie" | "set-cookie"
+    )
 }
 
 fn is_sensitive_key(key: &str) -> bool {

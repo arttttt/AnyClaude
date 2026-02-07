@@ -34,8 +34,8 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
             let screen = parser_guard.screen();
             if !screen.hide_cursor() {
                 let cursor = screen.cursor_position();
-                let x = body.x + (cursor.1 as u16).min(body.width.saturating_sub(1));
-                let y = body.y + (cursor.0 as u16).min(body.height.saturating_sub(1));
+                let x = body.x + cursor.1.min(body.width.saturating_sub(1));
+                let y = body.y + cursor.0.min(body.height.saturating_sub(1));
                 frame.set_cursor_position((x, y));
             }
         }
