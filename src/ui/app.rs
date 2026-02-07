@@ -582,11 +582,13 @@ impl App {
             .map(|p| p())
             .unwrap_or_default();
         self.dispatch_history(HistoryIntent::Load { entries });
+        self.focus = Focus::Popup(PopupKind::History);
     }
 
     /// Close the history dialog.
     pub fn close_history_dialog(&mut self) {
         self.dispatch_history(HistoryIntent::Close);
+        self.focus = Focus::Terminal;
     }
 
     fn send_command(&mut self, command: UiCommand) -> bool {

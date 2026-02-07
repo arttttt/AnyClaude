@@ -41,7 +41,6 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> InputAction {
             match key.code {
                 KeyCode::Esc => {
                     app.close_history_dialog();
-                    app.close_popup();
                     return InputAction::None;
                 }
                 KeyCode::Up => {
@@ -56,7 +55,6 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> InputAction {
             }
             if is_ctrl_char(key, 'h') {
                 app.close_history_dialog();
-                app.close_popup();
                 return InputAction::None;
             }
             return InputAction::None;
@@ -130,7 +128,6 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> InputAction {
     }
     if is_ctrl_char(key, 'h') {
         app.open_history_dialog();
-        app.toggle_popup(PopupKind::History);
         return InputAction::None;
     }
 
