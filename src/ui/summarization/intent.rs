@@ -12,10 +12,7 @@ pub enum SummarizeIntent {
     AnimationTick,
 
     /// Summarization completed successfully.
-    Success {
-        /// Preview of the generated summary.
-        summary_preview: String,
-    },
+    Success,
 
     /// An error occurred during summarization.
     Error {
@@ -23,13 +20,7 @@ pub enum SummarizeIntent {
         message: String,
     },
 
-    /// User clicked the Retry button.
-    RetryClicked,
-
-    /// User clicked the Cancel button.
-    CancelClicked,
-
-    /// Hide the dialog (after success or cancel).
+    /// Hide the dialog (after cancel).
     Hide,
 }
 

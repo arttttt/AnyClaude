@@ -178,9 +178,6 @@ pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Re
                             app.request_summarize_and_switch(backend_id);
                         }
                     }
-                    InputAction::CancelSummarization => {
-                        // Already handled in input handler
-                    }
                 }
             }
             Ok(AppEvent::Mouse(mouse)) => {
@@ -278,16 +275,12 @@ pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Re
                 );
                 app.request_quit();
             }
-            Ok(AppEvent::SummarizeSuccess { summary_preview }) => {
+            Ok(AppEvent::SummarizeSuccess { .. }) => {
                 app.clear_scheduled_retry();
-                app.dispatch_summarize(SummarizeIntent::Success { summary_preview });
-                // Complete the switch - dialog will auto-close
-                if let Some(_backend_id) = app.complete_summarization() {
-                    app.close_popup();
-                    // Backend was already switched by IPC handler
-                    app.request_backends_refresh();
-                    app.request_status_refresh();
-                }
+                app.complete_summarization();
+                app.close_popup();
+                app.request_backends_refresh();
+                app.request_status_refresh();
             }
             Ok(AppEvent::SummarizeError { message }) => {
                 app.dispatch_summarize(SummarizeIntent::Error { message: message.clone() });

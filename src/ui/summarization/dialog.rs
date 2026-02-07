@@ -25,7 +25,6 @@ fn dialog_height(state: &SummarizeDialogState) -> u16 {
         SummarizeDialogState::Summarizing { .. } => 5,
         SummarizeDialogState::Retrying { .. } => 6,
         SummarizeDialogState::Failed { .. } => 8,
-        SummarizeDialogState::Success { .. } => 5,
     }
 }
 
@@ -75,10 +74,6 @@ pub fn render_summarize_dialog(
 
         SummarizeDialogState::Failed { error } => {
             render_failed(frame, inner, error, selected_button);
-        }
-
-        SummarizeDialogState::Success { summary_preview } => {
-            render_success(frame, inner, summary_preview);
         }
     }
 }
@@ -149,23 +144,6 @@ fn render_failed(frame: &mut Frame, area: Rect, error: &str, selected_button: u8
         ]),
         Line::from(""),
         render_buttons(selected_button),
-    ];
-
-    let paragraph = Paragraph::new(lines);
-    frame.render_widget(paragraph, area);
-}
-
-/// Render the success state.
-fn render_success(frame: &mut Frame, area: Rect, _summary_preview: &str) {
-    let lines = vec![
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("  ✓ ", Style::default().fg(STATUS_OK)),
-            Span::styled(
-                "Session summarized successfully",
-                Style::default().fg(HEADER_TEXT),
-            ),
-        ]),
     ];
 
     let paragraph = Paragraph::new(lines);

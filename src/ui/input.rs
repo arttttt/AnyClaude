@@ -13,8 +13,6 @@ pub enum InputAction {
     ImagePaste,
     /// Retry summarization (used when in Failed state).
     RetrySummarization,
-    /// Cancel summarization.
-    CancelSummarization,
 }
 
 pub fn handle_key(app: &mut App, key: KeyEvent) -> InputAction {
@@ -227,7 +225,7 @@ fn handle_summarize_dialog_key(app: &mut App, key: KeyEvent) -> InputAction {
         SummarizeDialogState::Summarizing { .. } | SummarizeDialogState::Retrying { .. } => {
             if matches!(key.code, KeyCode::Esc) {
                 app.cancel_summarization();
-                return InputAction::CancelSummarization;
+                return InputAction::None;
             }
         }
 
@@ -243,12 +241,12 @@ fn handle_summarize_dialog_key(app: &mut App, key: KeyEvent) -> InputAction {
                         return InputAction::RetrySummarization;
                     } else {
                         app.cancel_summarization();
-                        return InputAction::CancelSummarization;
+                        return InputAction::None;
                     }
                 }
                 KeyCode::Esc => {
                     app.cancel_summarization();
-                    return InputAction::CancelSummarization;
+                    return InputAction::None;
                 }
                 KeyCode::Char('r') | KeyCode::Char('R') => {
                     app.reset_summarize_button();
@@ -256,13 +254,13 @@ fn handle_summarize_dialog_key(app: &mut App, key: KeyEvent) -> InputAction {
                 }
                 KeyCode::Char('c') | KeyCode::Char('C') => {
                     app.cancel_summarization();
-                    return InputAction::CancelSummarization;
+                    return InputAction::None;
                 }
                 _ => {}
             }
         }
 
-        SummarizeDialogState::Success { .. } | SummarizeDialogState::Hidden => {}
+        SummarizeDialogState::Hidden => {}
     }
 
     InputAction::None

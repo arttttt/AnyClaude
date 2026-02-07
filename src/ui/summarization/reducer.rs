@@ -34,9 +34,7 @@ impl Reducer for SummarizeReducer {
                 other => other,
             },
 
-            SummarizeIntent::Success { summary_preview } => {
-                SummarizeDialogState::Success { summary_preview }
-            }
+            SummarizeIntent::Success => SummarizeDialogState::Hidden,
 
             SummarizeIntent::Error { message } => {
                 // Determine current attempt number
@@ -59,14 +57,7 @@ impl Reducer for SummarizeReducer {
                 }
             }
 
-            SummarizeIntent::RetryClicked => {
-                // User chose to retry, reset to summarizing state
-                SummarizeDialogState::Summarizing { animation_tick: 0 }
-            }
-
-            SummarizeIntent::CancelClicked | SummarizeIntent::Hide => {
-                SummarizeDialogState::Hidden
-            }
+            SummarizeIntent::Hide => SummarizeDialogState::Hidden,
         }
     }
 }
@@ -139,41 +130,9 @@ mod tests {
     }
 
     #[test]
-    fn retry_clicked_restarts_summarizing() {
-        let state = SummarizeDialogState::Failed {
-            error: "error".into(),
-        };
-        let new_state = SummarizeReducer::reduce(state, SummarizeIntent::RetryClicked);
-        assert!(matches!(
-            new_state,
-            SummarizeDialogState::Summarizing { animation_tick: 0 }
-        ));
-    }
-
-    #[test]
-    fn cancel_hides_dialog() {
-        let state = SummarizeDialogState::Failed {
-            error: "error".into(),
-        };
-        let new_state = SummarizeReducer::reduce(state, SummarizeIntent::CancelClicked);
-        assert_eq!(new_state, SummarizeDialogState::Hidden);
-    }
-
-    #[test]
-    fn success_stores_preview() {
+    fn success_transitions_to_hidden() {
         let state = SummarizeDialogState::Summarizing { animation_tick: 0 };
-        let new_state = SummarizeReducer::reduce(
-            state,
-            SummarizeIntent::Success {
-                summary_preview: "Summary text".into(),
-            },
-        );
-
-        match new_state {
-            SummarizeDialogState::Success { summary_preview } => {
-                assert_eq!(summary_preview, "Summary text");
-            }
-            _ => panic!("Expected Success state"),
-        }
+        let new_state = SummarizeReducer::reduce(state, SummarizeIntent::Success);
+        assert_eq!(new_state, SummarizeDialogState::Hidden);
     }
 }

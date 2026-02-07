@@ -33,12 +33,6 @@ pub enum SummarizeDialogState {
         /// Error message from the last attempt.
         error: String,
     },
-
-    /// Summarization completed successfully.
-    Success {
-        /// The generated summary (for logging/debug).
-        summary_preview: String,
-    },
 }
 
 impl UiState for SummarizeDialogState {}
