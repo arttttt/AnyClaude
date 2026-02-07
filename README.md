@@ -78,7 +78,6 @@ The wrapper automatically:
 | `Ctrl+B` | Backend switcher popup |
 | `Ctrl+S` | Status/metrics popup |
 | `Ctrl+H` | Backend switch history |
-| `Ctrl+V` | Paste image from clipboard |
 | `Ctrl+Q` | Quit |
 | `1-9` | Quick-select backend (in switcher) |
 
