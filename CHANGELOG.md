@@ -2,7 +2,7 @@
 
 All notable changes to AnyClaude are documented in this file.
 
-## [Unreleased]
+## [0.3.0] - 2026-02-07
 
 ### Bug Fixes
 
@@ -23,11 +23,14 @@ All notable changes to AnyClaude are documented in this file.
 
 ### Chore
 
+- Add justfile with release and check commands
 - Add git-cliff config and generate CHANGELOG
 - Add .DS_Store to gitignore
 
 ### Documentation
 
+- Fix README config errors, add installation and development sections
+- Add verification instructions to AGENTS.md
 - Update README to reflect current architecture
 - Document side-effect pattern in cancel/complete_summarization
 - Add terminal emulator crate comparison analysis
