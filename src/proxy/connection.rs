@@ -68,6 +68,7 @@ pub struct ConnectionGuard<S> {
 
 impl<S: Clone> Clone for ConnectionGuard<S> {
     fn clone(&self) -> Self {
+        self.shutdown.increment_connections();
         Self {
             inner: self.inner.clone(),
             shutdown: self.shutdown.clone(),

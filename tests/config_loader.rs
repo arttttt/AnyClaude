@@ -1,7 +1,6 @@
 use anyclaude::config::{
     build_auth_header, AuthType, Backend, Config, ConfigError, CredentialStatus,
-    DebugLoggingConfig, Defaults, ProxyConfig, SummarizeConfig, TerminalConfig, ThinkingConfig,
-    ThinkingMode,
+    DebugLoggingConfig, Defaults, ProxyConfig, TerminalConfig,
 };
 
 /// Test that Config::default() produces the expected values per spec.
@@ -51,7 +50,6 @@ fn test_validation_fails_empty_backends() {
     let config = Config {
         defaults: Defaults::default(),
         proxy: ProxyConfig::default(),
-        thinking: ThinkingConfig::default(),
         terminal: TerminalConfig::default(),
         debug_logging: DebugLoggingConfig::default(),
         backends: vec![],
@@ -83,7 +81,6 @@ fn test_validation_fails_missing_active_backend() {
             retry_backoff_base_ms: 100,
         },
         proxy: ProxyConfig::default(),
-        thinking: ThinkingConfig::default(),
         terminal: TerminalConfig::default(),
         debug_logging: DebugLoggingConfig::default(),
         backends: vec![Backend::default()],
@@ -163,6 +160,8 @@ fn test_backend_is_configured_with_api_key() {
         auth_type_str: "api_key".to_string(),
         api_key: Some("test-key-value".to_string()),
         pricing: None,
+        thinking_compat: None,
+        thinking_budget_tokens: None,
     };
 
     assert!(backend.is_configured());
@@ -178,6 +177,8 @@ fn test_backend_not_configured_without_api_key() {
         auth_type_str: "api_key".to_string(),
         api_key: None,
         pricing: None,
+        thinking_compat: None,
+        thinking_budget_tokens: None,
     };
 
     assert!(!backend.is_configured());
@@ -193,6 +194,8 @@ fn test_backend_passthrough_always_configured() {
         auth_type_str: "passthrough".to_string(),
         api_key: None,
         pricing: None,
+        thinking_compat: None,
+        thinking_budget_tokens: None,
     };
 
     assert!(backend.is_configured());
@@ -212,6 +215,8 @@ fn test_build_auth_header_api_key() {
         auth_type_str: "api_key".to_string(),
         api_key: Some("my-secret-key".to_string()),
         pricing: None,
+        thinking_compat: None,
+        thinking_budget_tokens: None,
     };
 
     let header = build_auth_header(&backend);
@@ -232,6 +237,8 @@ fn test_build_auth_header_bearer() {
         auth_type_str: "bearer".to_string(),
         api_key: Some("my-bearer-token".to_string()),
         pricing: None,
+        thinking_compat: None,
+        thinking_budget_tokens: None,
     };
 
     let header = build_auth_header(&backend);
@@ -257,7 +264,6 @@ fn test_validation_fails_unconfigured_active_backend() {
             retry_backoff_base_ms: 100,
         },
         proxy: ProxyConfig::default(),
-        thinking: ThinkingConfig::default(),
         terminal: TerminalConfig::default(),
         debug_logging: DebugLoggingConfig::default(),
         backends: vec![Backend {
@@ -267,6 +273,8 @@ fn test_validation_fails_unconfigured_active_backend() {
             auth_type_str: "api_key".to_string(),
             api_key: None,
             pricing: None,
+            thinking_compat: None,
+            thinking_budget_tokens: None,
         }],
     };
 
@@ -297,7 +305,6 @@ fn test_configured_backends_filters_correctly() {
             retry_backoff_base_ms: 100,
         },
         proxy: ProxyConfig::default(),
-        thinking: ThinkingConfig::default(),
         terminal: TerminalConfig::default(),
         debug_logging: DebugLoggingConfig::default(),
         backends: vec![
@@ -308,6 +315,8 @@ fn test_configured_backends_filters_correctly() {
                 auth_type_str: "api_key".to_string(),
                 api_key: Some("test-key".to_string()),
                 pricing: None,
+                thinking_compat: None,
+                thinking_budget_tokens: None,
             },
             Backend {
                 name: "unconfigured".to_string(),
@@ -316,6 +325,8 @@ fn test_configured_backends_filters_correctly() {
                 auth_type_str: "api_key".to_string(),
                 api_key: None,
                 pricing: None,
+                thinking_compat: None,
+                thinking_budget_tokens: None,
             },
             Backend {
                 name: "passthrough".to_string(),
@@ -324,6 +335,8 @@ fn test_configured_backends_filters_correctly() {
                 auth_type_str: "passthrough".to_string(),
                 api_key: None,
                 pricing: None,
+                thinking_compat: None,
+                thinking_budget_tokens: None,
             },
         ],
     };
@@ -337,140 +350,3 @@ fn test_configured_backends_filters_correctly() {
     assert!(!configured.iter().any(|b| b.name == "unconfigured"));
 }
 
-// ============================================================================
-// Thinking / Summarize Config Tests
-// ============================================================================
-
-/// Test parsing TOML with [thinking.summarize] section.
-#[test]
-fn test_parse_thinking_summarize_config() {
-    let toml_content = r#"
-[defaults]
-active = "claude"
-timeout_seconds = 30
-
-[thinking]
-mode = "summarize"
-
-[thinking.summarize]
-base_url = "https://api.example.com/v1/messages"
-api_key = "test-summarizer-key"
-model = "test-model"
-max_tokens = 300
-
-[[backends]]
-name = "claude"
-display_name = "Claude"
-base_url = "https://api.anthropic.com"
-auth_type = "api_key"
-api_key = "test-key"
-"#;
-
-    let config: Config = toml::from_str(toml_content).expect("Should parse valid TOML");
-
-    assert_eq!(config.thinking.mode, ThinkingMode::Summarize);
-    assert_eq!(config.thinking.summarize.base_url, "https://api.example.com/v1/messages");
-    assert_eq!(config.thinking.summarize.api_key, Some("test-summarizer-key".to_string()));
-    assert_eq!(config.thinking.summarize.model, "test-model");
-    assert_eq!(config.thinking.summarize.max_tokens, 300);
-}
-
-/// Test that [thinking.summarize] uses defaults when not specified.
-#[test]
-fn test_thinking_summarize_defaults() {
-    let toml_content = r#"
-[defaults]
-active = "claude"
-timeout_seconds = 30
-
-[thinking]
-mode = "summarize"
-
-[[backends]]
-name = "claude"
-display_name = "Claude"
-base_url = "https://api.anthropic.com"
-auth_type = "api_key"
-api_key = "test-key"
-"#;
-
-    let config: Config = toml::from_str(toml_content).expect("Should parse valid TOML");
-
-    assert_eq!(config.thinking.mode, ThinkingMode::Summarize);
-    // Fields are empty by default (no hardcoded values)
-    assert_eq!(config.thinking.summarize.base_url, "");
-    assert_eq!(config.thinking.summarize.api_key, None);
-    assert_eq!(config.thinking.summarize.model, "");
-    assert_eq!(config.thinking.summarize.max_tokens, 500); // Only max_tokens has default
-}
-
-/// Test SummarizeConfig default values.
-#[test]
-fn test_summarize_config_default() {
-    let config = SummarizeConfig::default();
-
-    // All fields empty by default except max_tokens
-    assert_eq!(config.base_url, "");
-    assert_eq!(config.api_key, None);
-    assert_eq!(config.model, "");
-    assert_eq!(config.max_tokens, 500);
-}
-
-/// Test that summarize mode without required fields fails validation.
-#[test]
-fn test_summarize_mode_requires_all_fields() {
-    let toml_content = r#"
-[defaults]
-active = "claude"
-timeout_seconds = 30
-
-[thinking]
-mode = "summarize"
-
-# Note: missing base_url, api_key, model in [thinking.summarize]
-
-[[backends]]
-name = "claude"
-display_name = "Claude"
-base_url = "https://api.anthropic.com"
-auth_type = "api_key"
-api_key = "test-key"
-"#;
-
-    let config: Config = toml::from_str(toml_content).expect("Should parse valid TOML");
-    let result = config.validate();
-
-    assert!(result.is_err());
-    let error = result.unwrap_err().to_string();
-    assert!(error.contains("Summarize mode requires"));
-}
-
-/// Test that summarize mode with all required fields passes validation.
-#[test]
-fn test_summarize_mode_with_all_fields_passes() {
-    let toml_content = r#"
-[defaults]
-active = "claude"
-timeout_seconds = 30
-
-[thinking]
-mode = "summarize"
-
-[thinking.summarize]
-base_url = "https://api.example.com"
-api_key = "test-summarizer-key"
-model = "test-model"
-
-[[backends]]
-name = "claude"
-display_name = "Claude"
-base_url = "https://api.anthropic.com"
-auth_type = "api_key"
-api_key = "test-key"
-"#;
-
-    let config: Config = toml::from_str(toml_content).expect("Should parse valid TOML");
-    let result = config.validate();
-
-    assert!(result.is_ok());
-}

@@ -1,0 +1,48 @@
+[changelog]
+header = """
+# Changelog
+
+All notable changes to AnyClaude are documented in this file.
+"""
+body = """
+{% if version -%}
+## [{{ version | trim_start_matches(pat="v") }}] - {{ timestamp | date(format="%Y-%m-%d") }}
+{% else -%}
+## [Unreleased]
+{% endif -%}
+
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | striptags | trim }}
+{% for commit in commits %}
+- {% if commit.scope %}**{{ commit.scope }}:** {% endif %}\
+{{ commit.message | upper_first }}\
+{% endfor %}
+{% endfor %}
+"""
+footer = ""
+trim = false
+postprocessors = [
+  { pattern = "\\n{3,}", replace = "\n\n" },
+]
+
+[git]
+conventional_commits = true
+filter_unconventional = true
+split_commits = false
+commit_parsers = [
+  { message = "^[Ff]eat", group = "Features" },
+  { message = "^[Ff]ix", group = "Bug Fixes" },
+  { message = "^[Rr]efactor", group = "Refactor" },
+  { message = "^[Dd]ocs", group = "Documentation" },
+  { message = "^[Tt]est", group = "Testing" },
+  { message = "^[Cc]hore", group = "Chore" },
+  { message = "^[Pp]erf", group = "Performance" },
+  { message = "^README", group = "Documentation" },
+  { message = "^[Rr]ebrand", group = "Chore" },
+  { message = "^Bump", group = "Chore" },
+  { message = "^Initial", skip = true },
+  { message = "^Update Cargo", skip = true },
+]
+filter_commits = false
+tag_pattern = "v[0-9].*"
+sort_commits = "newest"

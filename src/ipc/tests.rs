@@ -1,7 +1,7 @@
 use super::*;
 use crate::backend::BackendState;
 use crate::config::{
-    Backend, Config, DebugLoggingConfig, Defaults, ProxyConfig, TerminalConfig, ThinkingConfig,
+    Backend, Config, DebugLoggingConfig, Defaults, ProxyConfig, TerminalConfig,
 };
 use crate::metrics::{DebugLogger, ObservabilityHub};
 use crate::proxy::shutdown::ShutdownManager;
@@ -22,7 +22,6 @@ fn test_config() -> Config {
             retry_backoff_base_ms: 100,
         },
         proxy: ProxyConfig::default(),
-        thinking: ThinkingConfig::default(),
         terminal: TerminalConfig::default(),
         debug_logging: DebugLoggingConfig::default(),
         backends: vec![
@@ -33,6 +32,8 @@ fn test_config() -> Config {
                 auth_type_str: "none".to_string(),
                 api_key: None,
                 pricing: None,
+                thinking_compat: None,
+                thinking_budget_tokens: None,
             },
             Backend {
                 name: "beta".to_string(),
@@ -41,6 +42,8 @@ fn test_config() -> Config {
                 auth_type_str: "none".to_string(),
                 api_key: None,
                 pricing: None,
+                thinking_compat: None,
+                thinking_budget_tokens: None,
             },
         ],
     }
@@ -53,8 +56,8 @@ async fn ipc_switch_backend_and_status() {
     let debug_logger = Arc::new(DebugLogger::new(DebugLoggingConfig::default()));
     let observability = ObservabilityHub::new(10).with_plugins(vec![debug_logger.clone()]);
     let shutdown = Arc::new(ShutdownManager::new());
-    let transformer_registry = Arc::new(TransformerRegistry::new(config.thinking.clone(), Some(debug_logger.clone())));
-    let (client, server) = IpcLayer::new();
+    let transformer_registry = Arc::new(TransformerRegistry::new());
+    let (client, server) = IpcLayer::create();
 
     let server_task = tokio::spawn(server.run(
         backend_state.clone(),
@@ -91,7 +94,7 @@ async fn ipc_switch_backend_and_status() {
 
 #[tokio::test]
 async fn ipc_disconnect_returns_error() {
-    let (client, server) = IpcLayer::new();
+    let (client, server) = IpcLayer::create();
     drop(server);
     let result = client.get_status().await;
     assert!(matches!(result, Err(IpcError::Disconnected)));
@@ -99,7 +102,7 @@ async fn ipc_disconnect_returns_error() {
 
 #[tokio::test]
 async fn ipc_timeout_returns_error() {
-    let (client, mut server) = IpcLayer::new();
+    let (client, mut server) = IpcLayer::create();
 
     // Spawn a "slow" server that receives but never responds
     let server_task = tokio::spawn(async move {

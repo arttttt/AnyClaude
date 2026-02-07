@@ -2,8 +2,8 @@ use crate::error::ErrorSeverity;
 use crate::ui::app::{App, PopupKind};
 use crate::ui::footer::Footer;
 use crate::ui::header::Header;
+use crate::ui::history::render_history_dialog;
 use crate::ui::layout::{centered_rect_by_size, layout_regions};
-use crate::ui::summarization::render_summarize_dialog;
 use crate::ui::terminal::TerminalBody;
 use crate::ui::theme::{
     ACTIVE_HIGHLIGHT, CLAUDE_ORANGE, HEADER_TEXT, POPUP_BORDER, STATUS_ERROR, STATUS_OK,
@@ -34,8 +34,8 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
             let screen = parser_guard.screen();
             if !screen.hide_cursor() {
                 let cursor = screen.cursor_position();
-                let x = body.x + (cursor.1 as u16).min(body.width.saturating_sub(1));
-                let y = body.y + (cursor.0 as u16).min(body.height.saturating_sub(1));
+                let x = body.x + cursor.1.min(body.width.saturating_sub(1));
+                let y = body.y + cursor.0.min(body.height.saturating_sub(1));
                 frame.set_cursor_position((x, y));
             }
         }
@@ -44,6 +44,12 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
     frame.render_widget(footer_widget.widget(footer), footer);
 
     if let Some(kind) = app.popup_kind() {
+        // History dialog renders itself independently
+        if matches!(kind, PopupKind::History) {
+            render_history_dialog(frame, app.history_dialog());
+            return;
+        }
+
         let (title, lines) = match kind {
             PopupKind::Status => {
                 let mut lines = Vec::new();
@@ -130,6 +136,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
                         Span::styled("  Tokens:    ", Style::default().fg(HEADER_TEXT)),
                         Span::styled(tokens_str, Style::default().fg(HEADER_TEXT)),
                     ]));
+
                 } else {
                     lines.push(Line::from("  No backend configured"));
                 }
@@ -281,6 +288,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
 
                 ("Select Backend", lines)
             }
+            PopupKind::History => unreachable!("handled above"),
         };
 
         let content_width = lines.iter().map(Line::width).max().unwrap_or(0) as u16;
@@ -300,15 +308,6 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
         let widget = Paragraph::new(lines).block(popup);
         frame.render_widget(widget, area);
 
-        // Render summarization dialog on top of backend switch popup
-        if matches!(kind, PopupKind::BackendSwitch) && app.is_summarize_dialog_visible() {
-            render_summarize_dialog(
-                frame,
-                app.summarize_dialog(),
-                app.summarize_button_selection(),
-                app.retry_countdown_secs(),
-            );
-        }
     }
 }
 

@@ -3,7 +3,7 @@ use serde_json::json;
 
 #[test]
 fn test_parse_model_info() {
-    let parser = RequestParser::new(true);
+    let parser = RequestParser::new();
     let body = json!({
         "model": "claude-3-opus-20240229",
         "max_tokens": 4096,
@@ -20,7 +20,7 @@ fn test_parse_model_info() {
 
 #[test]
 fn test_parse_messages() {
-    let parser = RequestParser::new(true);
+    let parser = RequestParser::new();
     let body = json!({
         "model": "claude-3-opus-20240229",
         "messages": [
@@ -38,7 +38,7 @@ fn test_parse_messages() {
 
 #[test]
 fn test_detect_images() {
-    let parser = RequestParser::new(true);
+    let parser = RequestParser::new();
     let body = json!({
         "model": "claude-3-opus-20240229",
         "messages": [
@@ -68,7 +68,7 @@ fn test_detect_images() {
 
 #[test]
 fn test_detect_tools() {
-    let parser = RequestParser::new(true);
+    let parser = RequestParser::new();
     let body = json!({
         "model": "claude-3-opus-20240229",
         "tools": [
@@ -86,7 +86,7 @@ fn test_detect_tools() {
 
 #[test]
 fn test_detect_thinking() {
-    let parser = RequestParser::new(true);
+    let parser = RequestParser::new();
     let body = json!({
         "model": "claude-3-opus-20240229",
         "thinking": {
@@ -104,7 +104,7 @@ fn test_detect_thinking() {
 
 #[test]
 fn test_estimate_tokens() {
-    let parser = RequestParser::new(true);
+    let parser = RequestParser::new();
     let body = json!({
         "model": "claude-3-opus-20240229",
         "messages": [
@@ -121,7 +121,7 @@ fn test_estimate_tokens() {
 
 #[test]
 fn test_invalid_json_returns_default() {
-    let parser = RequestParser::new(true);
+    let parser = RequestParser::new();
     let body = "{invalid json}";
 
     let analysis = parser.parse_request(body.as_bytes());
@@ -134,7 +134,7 @@ fn test_invalid_json_returns_default() {
 
 #[test]
 fn test_complex_request_with_all_fields() {
-    let parser = RequestParser::new(true);
+    let parser = RequestParser::new();
     let body = json!({
         "model": "claude-3-opus-20240229",
         "max_tokens": 4096,
@@ -180,7 +180,7 @@ fn test_complex_request_with_all_fields() {
 
 #[test]
 fn test_multiple_images() {
-    let parser = RequestParser::new(true);
+    let parser = RequestParser::new();
     let body = json!({
         "model": "claude-3-opus-20240229",
         "messages": [

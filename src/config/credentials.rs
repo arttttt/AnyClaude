@@ -19,7 +19,7 @@ pub enum AuthType {
 impl AuthType {
     /// Parse auth type from string.
     /// Defaults to `Passthrough` for unknown values (safe default for Anthropic OAuth).
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "api_key" => AuthType::ApiKey,
             "bearer" => AuthType::Bearer,
@@ -86,7 +86,7 @@ pub enum CredentialStatus {
 impl Backend {
     /// Parse the auth_type field to AuthType enum.
     pub fn auth_type(&self) -> AuthType {
-        AuthType::from_str(&self.auth_type_str)
+        AuthType::parse(&self.auth_type_str)
     }
 
     /// Resolve the API key from environment variable.
@@ -116,6 +116,14 @@ impl Backend {
             CredentialStatus::Configured(_) | CredentialStatus::NoAuth
         )
     }
+
+    /// Whether to convert adaptive thinking to standard "enabled" format.
+    ///
+    /// Only enabled when explicitly set to `true` in config. Default: false.
+    pub fn needs_thinking_compat(&self) -> bool {
+        self.thinking_compat.unwrap_or(false)
+    }
+
 }
 
 #[cfg(test)]
@@ -124,15 +132,15 @@ mod tests {
 
     #[test]
     fn test_auth_type_parsing() {
-        assert_eq!(AuthType::from_str("api_key"), AuthType::ApiKey);
-        assert_eq!(AuthType::from_str("API_KEY"), AuthType::ApiKey);
-        assert_eq!(AuthType::from_str("bearer"), AuthType::Bearer);
-        assert_eq!(AuthType::from_str("Bearer"), AuthType::Bearer);
-        assert_eq!(AuthType::from_str("passthrough"), AuthType::Passthrough);
-        assert_eq!(AuthType::from_str("PASSTHROUGH"), AuthType::Passthrough);
+        assert_eq!(AuthType::parse("api_key"), AuthType::ApiKey);
+        assert_eq!(AuthType::parse("API_KEY"), AuthType::ApiKey);
+        assert_eq!(AuthType::parse("bearer"), AuthType::Bearer);
+        assert_eq!(AuthType::parse("Bearer"), AuthType::Bearer);
+        assert_eq!(AuthType::parse("passthrough"), AuthType::Passthrough);
+        assert_eq!(AuthType::parse("PASSTHROUGH"), AuthType::Passthrough);
         // Unknown values default to Passthrough (safe for OAuth)
-        assert_eq!(AuthType::from_str("unknown"), AuthType::Passthrough);
-        assert_eq!(AuthType::from_str(""), AuthType::Passthrough);
+        assert_eq!(AuthType::parse("unknown"), AuthType::Passthrough);
+        assert_eq!(AuthType::parse(""), AuthType::Passthrough);
     }
 
     #[test]
@@ -172,6 +180,8 @@ mod tests {
             auth_type_str: "passthrough".to_string(),
             api_key: None,
             pricing: None,
+            thinking_compat: None,
+            thinking_budget_tokens: None,
         };
 
         assert!(matches!(

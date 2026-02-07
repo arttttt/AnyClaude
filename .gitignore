@@ -4,3 +4,4 @@
 .logs/
 target/
 **/*.rs.bk
+.DS_Store

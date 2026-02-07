@@ -119,14 +119,16 @@ impl ObservabilityHub {
         let aggregates = self.inner.aggregates.read().clone();
 
         for (backend, acc) in aggregates {
-            let mut metrics = BackendMetrics::default();
-            metrics.total = acc.total;
-            metrics.success_2xx = acc.success_2xx;
-            metrics.client_error_4xx = acc.client_error_4xx;
-            metrics.server_error_5xx = acc.server_error_5xx;
-            metrics.timeouts = acc.timeouts;
-            metrics.avg_latency_ms = acc.avg_latency_ms();
-            metrics.avg_ttfb_ms = acc.avg_ttfb_ms();
+            let metrics = BackendMetrics {
+                total: acc.total,
+                success_2xx: acc.success_2xx,
+                client_error_4xx: acc.client_error_4xx,
+                server_error_5xx: acc.server_error_5xx,
+                timeouts: acc.timeouts,
+                avg_latency_ms: acc.avg_latency_ms(),
+                avg_ttfb_ms: acc.avg_ttfb_ms(),
+                ..Default::default()
+            };
             per_backend.insert(backend, metrics);
         }
 
@@ -144,7 +146,7 @@ impl ObservabilityHub {
 
         let entry = aggregates
             .entry(record.backend.clone())
-            .or_insert_with(BackendAccumulator::default);
+            .or_default();
         entry.update(record);
     }
 }

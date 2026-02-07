@@ -2,7 +2,6 @@ use std::cmp::min;
 use std::fs::File;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -25,8 +24,8 @@ const LOG_CHANNEL_SIZE: usize = 512;
 #[derive(Debug, Clone)]
 pub enum LogEvent {
     /// Standard proxy request/response event.
-    Request(DebugLogEvent),
-    /// Auxiliary event (summarizer, internal operations).
+    Request(Box<DebugLogEvent>),
+    /// Auxiliary event (internal operations).
     Auxiliary(AuxiliaryLogEvent),
 }
 
@@ -48,7 +47,7 @@ pub struct DebugLogEvent {
     pub response_meta: Option<ResponseMeta>,
 }
 
-/// Auxiliary log event for internal operations (summarizer, etc).
+/// Auxiliary log event for internal operations.
 #[derive(Debug, Clone)]
 pub struct AuxiliaryLogEvent {
     pub timestamp: SystemTime,
@@ -64,14 +63,12 @@ pub struct AuxiliaryLogEvent {
 }
 
 pub struct DebugLogger {
-    level: AtomicU8,
     config: Arc<RwLock<DebugLoggingConfig>>,
     sender: SyncSender<LogEvent>,
 }
 
 impl DebugLogger {
     pub fn new(config: DebugLoggingConfig) -> Self {
-        let level = AtomicU8::new(level_to_u8(config.level));
         let config = Arc::new(RwLock::new(config));
         let (sender, receiver) = sync_channel(LOG_CHANNEL_SIZE);
         let config_clone = config.clone();
@@ -80,15 +77,11 @@ impl DebugLogger {
             .spawn(move || writer_loop(receiver, config_clone))
             .ok();
 
-        Self {
-            level,
-            config,
-            sender,
-        }
+        Self { config, sender }
     }
 
     pub fn level(&self) -> DebugLogLevel {
-        level_from_u8(self.level.load(Ordering::Relaxed))
+        self.config.read().level
     }
 
     pub fn config(&self) -> DebugLoggingConfig {
@@ -96,12 +89,10 @@ impl DebugLogger {
     }
 
     pub fn set_config(&self, config: DebugLoggingConfig) {
-        self.level
-            .store(level_to_u8(config.level), Ordering::Relaxed);
         *self.config.write() = config;
     }
 
-    /// Log an auxiliary event (summarizer, internal operations).
+    /// Log an auxiliary event (internal operations).
     pub fn log_auxiliary(
         &self,
         operation: &str,
@@ -109,20 +100,6 @@ impl DebugLogger {
         latency_ms: Option<u64>,
         message: Option<&str>,
         error: Option<&str>,
-    ) {
-        self.log_auxiliary_full(operation, status, latency_ms, message, error, None, None);
-    }
-
-    /// Log an auxiliary event with request/response bodies (for verbose debugging).
-    pub fn log_auxiliary_full(
-        &self,
-        operation: &str,
-        status: Option<u16>,
-        latency_ms: Option<u64>,
-        message: Option<&str>,
-        error: Option<&str>,
-        request_body: Option<&str>,
-        response_body: Option<&str>,
     ) {
         if self.level() == DebugLogLevel::Off {
             return;
@@ -135,8 +112,8 @@ impl DebugLogger {
             latency_ms,
             message: message.map(|s| s.to_string()),
             error: error.map(|s| s.to_string()),
-            request_body: request_body.map(|s| s.to_string()),
-            response_body: response_body.map(|s| s.to_string()),
+            request_body: None,
+            response_body: None,
         };
         let _ = self.sender.try_send(LogEvent::Auxiliary(event));
     }
@@ -150,7 +127,7 @@ impl ObservabilityPlugin for DebugLogger {
         }
 
         let event = DebugLogEvent::from_record(ctx.record, level);
-        let _ = self.sender.try_send(LogEvent::Request(event));
+        let _ = self.sender.try_send(LogEvent::Request(Box::new(event)));
     }
 }
 
@@ -502,24 +479,6 @@ fn tokens_summary(event: &DebugLogEvent) -> (String, String, String, String) {
 fn format_timestamp(timestamp: SystemTime) -> String {
     let duration = timestamp.duration_since(UNIX_EPOCH).unwrap_or_default();
     format!("{}.{}", duration.as_secs(), duration.subsec_millis())
-}
-
-fn level_to_u8(level: DebugLogLevel) -> u8 {
-    match level {
-        DebugLogLevel::Off => 0,
-        DebugLogLevel::Basic => 1,
-        DebugLogLevel::Verbose => 2,
-        DebugLogLevel::Full => 3,
-    }
-}
-
-fn level_from_u8(value: u8) -> DebugLogLevel {
-    match value {
-        1 => DebugLogLevel::Basic,
-        2 => DebugLogLevel::Verbose,
-        3 => DebugLogLevel::Full,
-        _ => DebugLogLevel::Off,
-    }
 }
 
 struct RotatingFile {

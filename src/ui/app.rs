@@ -3,11 +3,12 @@ use crate::error::ErrorRegistry;
 use crate::ipc::{BackendInfo, ProxyStatus};
 use crate::metrics::MetricsSnapshot;
 use crate::pty::PtyHandle;
+use crate::ui::history::{HistoryDialogState, HistoryEntry, HistoryIntent, HistoryReducer};
 use crate::ui::mvi::Reducer;
-use crate::ui::pty_state::PtyState;
-use crate::ui::summarization::{SummarizeDialogState, SummarizeIntent, SummarizeReducer};
+use crate::ui::pty::{PtyIntent, PtyLifecycleState, PtyReducer};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use parking_lot::Mutex;
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -16,6 +17,7 @@ use tokio::sync::mpsc;
 pub enum PopupKind {
     BackendSwitch,
     Status,
+    History,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -27,11 +29,6 @@ pub enum Focus {
 #[derive(Debug)]
 pub enum UiCommand {
     SwitchBackend { backend_id: String },
-    /// Summarize session and then switch backend.
-    SummarizeAndSwitchBackend {
-        from_backend: String,
-        to_backend: String,
-    },
     RefreshStatus,
     RefreshMetrics { backend_id: Option<String> },
     RefreshBackends,
@@ -40,14 +37,21 @@ pub enum UiCommand {
 
 pub type UiCommandSender = mpsc::Sender<UiCommand>;
 
+/// Generic MVI dispatch: takes current state, runs reducer, stores result.
+macro_rules! dispatch_mvi {
+    ($self:expr, $field:ident, $reducer:ty, $intent:expr) => {
+        $self.$field = <$reducer>::reduce(std::mem::take(&mut $self.$field), $intent);
+    };
+}
+
 pub struct App {
     should_quit: bool,
-    tick_rate: Duration,
-    last_tick: Instant,
     focus: Focus,
-    status_message: Option<String>,
     size: Option<(u16, u16)>,
-    pty_state: PtyState,
+    /// PTY lifecycle state (MVI pattern).
+    pty_lifecycle: PtyLifecycleState,
+    /// PTY handle (resource, managed outside MVI).
+    pty_handle: Option<PtyHandle>,
     config: ConfigStore,
     error_registry: ErrorRegistry,
     ipc_sender: Option<UiCommandSender>,
@@ -59,29 +63,21 @@ pub struct App {
     last_status_refresh: Instant,
     last_metrics_refresh: Instant,
     last_backends_refresh: Instant,
-    /// State of the summarization dialog (MVI pattern).
-    summarize_dialog: SummarizeDialogState,
-    /// Backend ID pending switch (waiting for summarization).
-    pending_backend_switch: Option<String>,
-    /// Selected button in failed state (0 = Retry, 1 = Cancel).
-    summarize_button_selection: u8,
-    /// Last animation tick for spinner.
-    last_animation_tick: Instant,
-    /// Scheduled time for next auto-retry (exponential backoff).
-    scheduled_retry_at: Option<Instant>,
+    /// State of the history dialog (MVI pattern).
+    history_dialog: HistoryDialogState,
+    /// Provider closure that fetches history entries from backend state.
+    history_provider: Option<Arc<dyn Fn() -> Vec<HistoryEntry> + Send + Sync>>,
 }
 
 impl App {
-    pub fn new(tick_rate: Duration, config: ConfigStore) -> Self {
+    pub fn new(config: ConfigStore) -> Self {
         let now = Instant::now();
         Self {
             should_quit: false,
-            tick_rate,
-            last_tick: Instant::now(),
             focus: Focus::Terminal,
-            status_message: None,
             size: None,
-            pty_state: PtyState::default(),
+            pty_lifecycle: PtyLifecycleState::default(),
+            pty_handle: None,
             config,
             error_registry: ErrorRegistry::new(100),
             ipc_sender: None,
@@ -93,11 +89,8 @@ impl App {
             last_status_refresh: now,
             last_metrics_refresh: now,
             last_backends_refresh: now,
-            summarize_dialog: SummarizeDialogState::default(),
-            pending_backend_switch: None,
-            summarize_button_selection: 0,
-            last_animation_tick: now,
-            scheduled_retry_at: None,
+            history_dialog: HistoryDialogState::default(),
+            history_provider: None,
         }
     }
 
@@ -147,7 +140,6 @@ impl App {
     }
 
     pub fn on_tick(&mut self) {
-        self.last_tick = Instant::now();
     }
 
     pub fn on_key(&mut self, key: KeyEvent) {
@@ -159,7 +151,15 @@ impl App {
 
     /// Send input to PTY or buffer if not ready.
     fn send_input(&mut self, bytes: &[u8]) {
-        self.pty_state.send_input(bytes);
+        if self.pty_lifecycle.is_ready() {
+            if let Some(pty) = &self.pty_handle {
+                let _ = pty.send_input(bytes);
+            }
+        } else {
+            self.dispatch_pty(PtyIntent::BufferInput {
+                bytes: bytes.to_vec(),
+            });
+        }
     }
 
     pub fn on_paste(&mut self, text: &str) {
@@ -177,64 +177,61 @@ impl App {
 
     pub fn on_resize(&mut self, cols: u16, rows: u16) {
         self.size = Some((cols, rows));
-        if let Some(pty) = self.pty_state.pty_handle() {
+        if let Some(pty) = &self.pty_handle {
             let _ = pty.resize(cols, rows);
         }
     }
 
-    /// Attach PTY handle. Transitions from Pending to Attached state.
+    /// Attach PTY handle. Stores the resource and transitions state.
     pub fn attach_pty(&mut self, pty: PtyHandle) {
-        self.pty_state.attach(pty);
+        self.pty_handle = Some(pty);
+        self.dispatch_pty(PtyIntent::Attach);
     }
 
-    /// Called when PTY produces output. Transitions to Ready and flushes buffer.
+    /// Called when PTY produces output. Flushes buffer and transitions to Ready.
     pub fn on_pty_output(&mut self) {
-        self.pty_state.on_output();
+        // Extract buffer before state transition (side effect)
+        let buffer = match &mut self.pty_lifecycle {
+            PtyLifecycleState::Attached { buffer } => std::mem::take(buffer),
+            _ => VecDeque::new(),
+        };
+        self.dispatch_pty(PtyIntent::GotOutput);
+        // Flush buffered input now that Claude Code is ready
+        if let Some(pty) = &self.pty_handle {
+            for bytes in buffer {
+                let _ = pty.send_input(&bytes);
+            }
+        }
     }
 
     pub fn parser(&self) -> Option<Arc<Mutex<vt100::Parser>>> {
-        self.pty_state.pty_handle().map(|pty| pty.parser())
+        self.pty_handle.as_ref().map(|pty| pty.parser())
     }
 
     /// Scroll up (view older content).
     pub fn scroll_up(&mut self, lines: usize) {
-        if let Some(pty) = self.pty_state.pty_handle() {
+        if let Some(pty) = &self.pty_handle {
             pty.scroll_up(lines);
         }
     }
 
     /// Scroll down (view newer content).
     pub fn scroll_down(&mut self, lines: usize) {
-        if let Some(pty) = self.pty_state.pty_handle() {
+        if let Some(pty) = &self.pty_handle {
             pty.scroll_down(lines);
         }
     }
 
     /// Reset scrollback to live view.
     pub fn reset_scrollback(&mut self) {
-        if let Some(pty) = self.pty_state.pty_handle() {
+        if let Some(pty) = &self.pty_handle {
             pty.reset_scrollback();
         }
     }
 
     /// Get current scrollback offset.
     pub fn scrollback(&self) -> usize {
-        self.pty_state.pty_handle().map(|pty| pty.scrollback()).unwrap_or(0)
-    }
-
-    #[allow(dead_code)]
-    pub fn tick_rate(&self) -> Duration {
-        self.tick_rate
-    }
-
-    #[allow(dead_code)]
-    pub fn last_tick(&self) -> Instant {
-        self.last_tick
-    }
-
-    #[allow(dead_code)]
-    pub fn status_message(&self) -> Option<&str> {
-        self.status_message.as_deref()
+        self.pty_handle.as_ref().map(|pty| pty.scrollback()).unwrap_or(0)
     }
 
     pub fn set_ipc_sender(&mut self, sender: UiCommandSender) {
@@ -312,24 +309,6 @@ impl App {
         })
     }
 
-    /// Request summarization and backend switch.
-    ///
-    /// Returns the target backend_id if command was sent successfully.
-    pub fn request_summarize_and_switch(&mut self, to_backend_id: String) -> Option<String> {
-        let from_backend = self.proxy_status.as_ref()
-            .map(|s| s.active_backend.clone())
-            .unwrap_or_default();
-
-        if self.send_command(UiCommand::SummarizeAndSwitchBackend {
-            from_backend,
-            to_backend: to_backend_id.clone(),
-        }) {
-            Some(to_backend_id)
-        } else {
-            None
-        }
-    }
-
     pub fn move_backend_selection(&mut self, direction: i32) {
         if self.backends.is_empty() {
             self.backend_selection = 0;
@@ -387,116 +366,56 @@ impl App {
         let _config = self.config.get();
     }
 
-    /// Get access to the config store for reading current config.
-    #[allow(dead_code)]
-    pub fn config(&self) -> &ConfigStore {
-        &self.config
+    // ========================================================================
+    // PTY lifecycle methods (MVI pattern)
+    // ========================================================================
+
+    /// Dispatch an intent to the PTY lifecycle reducer.
+    fn dispatch_pty(&mut self, intent: PtyIntent) {
+        dispatch_mvi!(self, pty_lifecycle, PtyReducer, intent);
     }
 
     // ========================================================================
-    // Summarization dialog methods (MVI pattern)
+    // History dialog methods (MVI pattern)
     // ========================================================================
 
-    /// Get the current summarization dialog state.
-    pub fn summarize_dialog(&self) -> &SummarizeDialogState {
-        &self.summarize_dialog
+    /// Set the history provider closure (called from runtime).
+    pub fn set_history_provider(
+        &mut self,
+        provider: Arc<dyn Fn() -> Vec<HistoryEntry> + Send + Sync>,
+    ) {
+        self.history_provider = Some(provider);
     }
 
-    /// Check if summarization dialog is visible.
-    pub fn is_summarize_dialog_visible(&self) -> bool {
-        !matches!(self.summarize_dialog, SummarizeDialogState::Hidden)
+    /// Get the current history dialog state.
+    pub fn history_dialog(&self) -> &HistoryDialogState {
+        &self.history_dialog
     }
 
-    /// Dispatch an intent to the summarization dialog reducer.
-    pub fn dispatch_summarize(&mut self, intent: SummarizeIntent) {
-        self.summarize_dialog = SummarizeReducer::reduce(
-            std::mem::take(&mut self.summarize_dialog),
-            intent,
-        );
+    /// Dispatch an intent to the history dialog reducer.
+    pub fn dispatch_history(&mut self, intent: HistoryIntent) {
+        dispatch_mvi!(self, history_dialog, HistoryReducer, intent);
     }
 
-    /// Start summarization for a backend switch.
-    pub fn start_summarization_for_switch(&mut self, backend_id: String) {
-        self.pending_backend_switch = Some(backend_id);
-        self.dispatch_summarize(SummarizeIntent::Start);
-        self.last_animation_tick = Instant::now();
+    /// Open the history dialog by loading entries from the provider.
+    pub fn open_history_dialog(&mut self) {
+        let entries = self
+            .history_provider
+            .as_ref()
+            .map(|p| p())
+            .unwrap_or_default();
+        self.dispatch_history(HistoryIntent::Load { entries });
+        self.focus = Focus::Popup(PopupKind::History);
     }
 
-    /// Get the backend ID waiting for summarization.
-    pub fn pending_backend_switch(&self) -> Option<&str> {
-        self.pending_backend_switch.as_deref()
-    }
-
-    /// Complete the pending backend switch after successful summarization.
-    pub fn complete_summarization(&mut self) -> Option<String> {
-        self.dispatch_summarize(SummarizeIntent::Hide);
-        self.pending_backend_switch.take()
-    }
-
-    /// Cancel the pending backend switch.
-    pub fn cancel_summarization(&mut self) {
-        self.dispatch_summarize(SummarizeIntent::Hide);
-        self.pending_backend_switch = None;
-        self.scheduled_retry_at = None;
-    }
-
-    /// Get the currently selected button (0 = Retry, 1 = Cancel).
-    pub fn summarize_button_selection(&self) -> u8 {
-        self.summarize_button_selection
-    }
-
-    /// Toggle button selection.
-    pub fn toggle_summarize_button(&mut self) {
-        self.summarize_button_selection = if self.summarize_button_selection == 0 { 1 } else { 0 };
-    }
-
-    /// Reset button selection to default (Retry).
-    pub fn reset_summarize_button(&mut self) {
-        self.summarize_button_selection = 0;
-    }
-
-    /// Check and update animation tick. Returns true if tick should be sent.
-    pub fn should_animate(&mut self, interval: Duration) -> bool {
-        if self.is_summarize_dialog_visible() && self.last_animation_tick.elapsed() >= interval {
-            self.last_animation_tick = Instant::now();
-            return true;
-        }
-        false
-    }
-
-    /// Schedule a retry with exponential backoff.
-    /// Delay: 1s for attempt 1, 2s for attempt 2, 4s for attempt 3.
-    pub fn schedule_retry(&mut self, attempt: u8) {
-        let delay_secs = 1u64 << (attempt.saturating_sub(1).min(4)); // 1, 2, 4, 8, 16 max
-        self.scheduled_retry_at = Some(Instant::now() + Duration::from_secs(delay_secs));
-    }
-
-    /// Clear any scheduled retry.
-    pub fn clear_scheduled_retry(&mut self) {
-        self.scheduled_retry_at = None;
-    }
-
-    /// Check if a scheduled retry is due. Returns true and clears if due.
-    pub fn is_retry_due(&mut self) -> bool {
-        if let Some(scheduled) = self.scheduled_retry_at {
-            if Instant::now() >= scheduled {
-                self.scheduled_retry_at = None;
-                return true;
-            }
-        }
-        false
-    }
-
-    /// Get seconds remaining until scheduled retry (for UI display).
-    pub fn retry_countdown_secs(&self) -> Option<u64> {
-        self.scheduled_retry_at.map(|scheduled| {
-            scheduled.saturating_duration_since(Instant::now()).as_secs()
-        })
+    /// Close the history dialog.
+    pub fn close_history_dialog(&mut self) {
+        self.dispatch_history(HistoryIntent::Close);
+        self.focus = Focus::Terminal;
     }
 
     fn send_command(&mut self, command: UiCommand) -> bool {
         let Some(sender) = &self.ipc_sender else {
-            self.status_message = Some("IPC not initialized".to_string());
             return false;
         };
 

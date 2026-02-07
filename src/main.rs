@@ -41,8 +41,16 @@ fn main() -> io::Result<()> {
 fn run_main() -> io::Result<()> {
     let cli = Cli::parse();
 
-    // Load config to validate backend
-    let config = Config::load().unwrap_or_default();
+    // Load config — fail fast on invalid config
+    let config = match Config::load() {
+        Ok(config) => config,
+        Err(e) => {
+            let _ = disable_raw_mode();
+            eprintln!("Error: Failed to load config: {}", e);
+            eprintln!("Config file: {}", Config::config_path().display());
+            std::process::exit(1);
+        }
+    };
 
     if let Some(ref backend_name) = cli.backend {
         let exists = config.backends.iter().any(|b| &b.name == backend_name);

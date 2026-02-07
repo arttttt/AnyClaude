@@ -38,39 +38,11 @@ impl IpcServer {
                     let result = backend_state
                         .switch_backend(&backend_id)
                         .map(|_| backend_state.get_active_backend());
+                    if result.is_ok() {
+                        transformer_registry.notify_backend_for_thinking(&backend_id);
+                    }
                     if respond_to.send(result).is_err() {
                         tracing::trace!("IPC: SwitchBackend response dropped (receiver gone)");
-                    }
-                }
-                IpcCommand::SummarizeAndSwitchBackend {
-                    from_backend,
-                    to_backend,
-                    respond_to,
-                } => {
-                    // 1. Call transformer to summarize
-                    let summarize_result = transformer_registry
-                        .on_backend_switch(&from_backend, &to_backend)
-                        .await;
-
-                    let result = match summarize_result {
-                        Ok(()) => {
-                            // 2. Switch backend
-                            if let Err(e) = backend_state.switch_backend(&to_backend) {
-                                Err(crate::proxy::thinking::TransformError::Config(
-                                    e.to_string(),
-                                ))
-                            } else {
-                                // Return a preview of success
-                                Ok("Session summarized".to_string())
-                            }
-                        }
-                        Err(e) => Err(e),
-                    };
-
-                    if respond_to.send(result).is_err() {
-                        tracing::trace!(
-                            "IPC: SummarizeAndSwitchBackend response dropped (receiver gone)"
-                        );
                     }
                 }
                 IpcCommand::GetStatus { respond_to } => {
@@ -101,8 +73,7 @@ impl IpcServer {
                     }
                 }
                 IpcCommand::ListBackends { respond_to } => {
-                    let config = backend_state.get_config();
-                    let active_backend = backend_state.get_active_backend();
+                    let (config, active_backend) = backend_state.get_config_and_active_backend();
                     let mut backends = Vec::with_capacity(config.backends.len());
                     for backend in config.backends {
                         backends.push(BackendInfo {

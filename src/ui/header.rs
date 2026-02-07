@@ -7,6 +7,12 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 
 pub struct Header;
 
+impl Default for Header {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Header {
     pub fn new() -> Self {
         Self

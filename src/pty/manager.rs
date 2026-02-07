@@ -12,6 +12,12 @@ pub struct PtyManager {
     parser: Arc<Mutex<vt100::Parser>>,
 }
 
+impl Default for PtyManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PtyManager {
     pub fn new() -> Self {
         let (cols, rows) = terminal_size().unwrap_or((80, 24));

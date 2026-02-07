@@ -7,13 +7,14 @@ use crate::pty::PtySession;
 use crate::shutdown::{ShutdownCoordinator, ShutdownPhase};
 use crate::ui::app::{App, UiCommand};
 use crate::ui::events::{mouse_scroll_direction, AppEvent, EventHandler};
+use crate::ui::history::HistoryEntry;
 use crate::ui::input::{handle_key, InputAction};
 use crate::ui::layout::body_rect;
 use crate::ui::render::draw;
-use crate::ui::summarization::SummarizeIntent;
 use crate::ui::terminal_guard::setup_terminal;
 use ratatui::layout::Rect;
 use std::io;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::runtime::Builder;
 use tokio::sync::mpsc;
@@ -22,7 +23,6 @@ const UI_COMMAND_BUFFER: usize = 32;
 const STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const METRICS_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 const BACKENDS_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
-const ANIMATION_TICK_INTERVAL: Duration = Duration::from_millis(100);
 
 pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Result<()> {
     // Initialize tracing (file logging if CLAUDE_WRAPPER_LOG is set)
@@ -32,7 +32,9 @@ pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Re
     let tick_rate = Duration::from_millis(250);
 
     // Load initial config and apply backend override
-    let mut config = Config::load().unwrap_or_default();
+    let mut config = Config::load().map_err(|e| {
+        io::Error::new(io::ErrorKind::InvalidData, format!("Failed to load config: {}", e))
+    })?;
     if let Some(backend_name) = backend_override {
         config.defaults.active = backend_name;
     }
@@ -47,31 +49,49 @@ pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Re
     let async_runtime = Builder::new_multi_thread()
         .enable_all()
         .build()
-        .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
+        .map_err(|err| io::Error::other(err.to_string()))?;
 
     // Config file watching removed to avoid race conditions with CLI overrides.
     // Config is loaded once at startup and remains static for the session.
 
     let (ui_command_tx, ui_command_rx) = mpsc::channel(UI_COMMAND_BUFFER);
-    let mut app = App::new(tick_rate, config_store.clone());
+    let mut app = App::new(config_store.clone());
     app.set_ipc_sender(ui_command_tx.clone());
+
     let mut proxy_server = ProxyServer::new(config_store.clone())
-        .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
+        .map_err(|err| io::Error::other(err.to_string()))?;
     
     // Try to bind and get the actual port, updating the base URL
     let (_actual_addr, actual_base_url) = async_runtime.block_on(async {
         proxy_server.try_bind(&config_store).await
-    }).map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
+    }).map_err(|err| io::Error::other(err.to_string()))?;
     
     let proxy_handle = proxy_server.handle();
     let backend_state = proxy_server.backend_state();
+
+    // Wire history provider: converts SwitchLogEntry → HistoryEntry at the boundary
+    {
+        let bs = backend_state.clone();
+        let provider = Arc::new(move || {
+            bs.get_switch_log()
+                .into_iter()
+                .map(|e| HistoryEntry {
+                    timestamp: e.timestamp,
+                    from_backend: e.old_backend,
+                    to_backend: e.new_backend,
+                })
+                .collect()
+        });
+        app.set_history_provider(provider);
+    }
+
     let observability = proxy_server.observability();
     let debug_logger = proxy_server.debug_logger();
     let shutdown = proxy_server.shutdown_handle();
     let transformer_registry = proxy_server.transformer_registry();
     let started_at = std::time::Instant::now();
 
-    let (ipc_client, ipc_server) = IpcLayer::new();
+    let (ipc_client, ipc_server) = IpcLayer::create();
     async_runtime.spawn(async move {
         if let Err(err) = proxy_server.run().await {
             tracing::error!(error = %err, "Proxy server exited");
@@ -117,7 +137,7 @@ pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Re
     ];
     let scrollback_lines = config_store.get().terminal.scrollback_lines;
     let mut pty_session = PtySession::spawn(command, args, env, scrollback_lines, events.sender())
-        .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
+        .map_err(|err| io::Error::other(err.to_string()))?;
 
     app.attach_pty(pty_session.handle());
     if let Ok((cols, rows)) = crossterm::terminal::size() {
@@ -149,16 +169,6 @@ pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Re
                     InputAction::ImagePaste => {
                         handle_image_paste(&mut app, &mut clipboard);
                     }
-                    InputAction::RetrySummarization => {
-                        // Re-trigger the summarization
-                        if let Some(backend_id) = app.pending_backend_switch().map(String::from) {
-                            app.dispatch_summarize(SummarizeIntent::Start);
-                            app.request_summarize_and_switch(backend_id);
-                        }
-                    }
-                    InputAction::CancelSummarization => {
-                        // Already handled in input handler
-                    }
                 }
             }
             Ok(AppEvent::Mouse(mouse)) => {
@@ -181,16 +191,6 @@ pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Re
             Ok(AppEvent::ImagePaste(data_uri)) => app.on_image_paste(&data_uri),
             Ok(AppEvent::Tick) => {
                 app.on_tick();
-                // Animation tick for summarization spinner
-                if app.should_animate(ANIMATION_TICK_INTERVAL) {
-                    app.dispatch_summarize(SummarizeIntent::AnimationTick);
-                }
-                // Check for scheduled auto-retry
-                if app.is_retry_due() {
-                    if let Some(backend_id) = app.pending_backend_switch().map(String::from) {
-                        app.request_summarize_and_switch(backend_id);
-                    }
-                }
                 if app.should_refresh_status(STATUS_REFRESH_INTERVAL) {
                     app.request_status_refresh();
                 }
@@ -256,24 +256,6 @@ pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Re
                 );
                 app.request_quit();
             }
-            Ok(AppEvent::SummarizeSuccess { summary_preview }) => {
-                app.clear_scheduled_retry();
-                app.dispatch_summarize(SummarizeIntent::Success { summary_preview });
-                // Complete the switch - dialog will auto-close
-                if let Some(_backend_id) = app.complete_summarization() {
-                    app.close_popup();
-                    // Backend was already switched by IPC handler
-                    app.request_backends_refresh();
-                    app.request_status_refresh();
-                }
-            }
-            Ok(AppEvent::SummarizeError { message }) => {
-                app.dispatch_summarize(SummarizeIntent::Error { message: message.clone() });
-                // Schedule auto-retry with exponential backoff if in Retrying state
-                if let Some(attempt) = app.summarize_dialog().retry_attempt() {
-                    app.schedule_retry(attempt);
-                }
-            }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         }
@@ -325,23 +307,6 @@ async fn run_ui_bridge(
                     }
                     Err(err) => {
                         let _ = event_tx.send(AppEvent::IpcError(err.to_string()));
-                    }
-                }
-            }
-            UiCommand::SummarizeAndSwitchBackend { from_backend, to_backend } => {
-                match ipc_client.summarize_and_switch_backend(from_backend, to_backend).await {
-                    Ok(Ok(summary_preview)) => {
-                        let _ = event_tx.send(AppEvent::SummarizeSuccess { summary_preview });
-                    }
-                    Ok(Err(err)) => {
-                        let _ = event_tx.send(AppEvent::SummarizeError {
-                            message: err.to_string(),
-                        });
-                    }
-                    Err(err) => {
-                        let _ = event_tx.send(AppEvent::SummarizeError {
-                            message: err.to_string(),
-                        });
                     }
                 }
             }

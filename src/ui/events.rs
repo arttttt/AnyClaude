@@ -66,10 +66,6 @@ pub enum AppEvent {
     Shutdown,
     /// Claude child process exited (EOF from PTY reader)
     ProcessExit,
-    /// Summarization completed successfully
-    SummarizeSuccess { summary_preview: String },
-    /// Summarization failed
-    SummarizeError { message: String },
 }
 
 pub struct EventHandler {

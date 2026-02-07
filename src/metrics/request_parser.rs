@@ -3,6 +3,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 #[derive(Debug, Clone, Serialize)]
+#[derive(Default)]
 pub struct RequestAnalysis {
     pub model: Option<String>,
     pub max_tokens: Option<u64>,
@@ -19,14 +20,17 @@ pub struct RequestAnalysis {
     pub estimated_input_tokens: Option<u64>,
 }
 
-pub struct RequestParser {
-    #[allow(dead_code)]
-    enabled: bool,
+pub struct RequestParser;
+
+impl Default for RequestParser {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl RequestParser {
-    pub fn new(enabled: bool) -> Self {
-        Self { enabled }
+    pub fn new() -> Self {
+        Self
     }
 
     pub fn parse_request(&self, body: &[u8]) -> RequestAnalysis {
@@ -88,7 +92,7 @@ impl RequestParser {
             }
         }
 
-        analysis.estimated_input_tokens = self.estimate_tokens(&json);
+        analysis.estimated_input_tokens = self.estimate_tokens(json);
 
         analysis
     }
@@ -167,25 +171,6 @@ impl RequestParser {
     }
 }
 
-impl Default for RequestAnalysis {
-    fn default() -> Self {
-        Self {
-            model: None,
-            max_tokens: None,
-            temperature: None,
-            message_count: 0,
-            has_system_prompt: false,
-            has_images: false,
-            image_count: 0,
-            total_image_bytes: 0,
-            has_tools: false,
-            tool_names: Vec::new(),
-            thinking_enabled: false,
-            thinking_budget: None,
-            estimated_input_tokens: None,
-        }
-    }
-}
 
 impl ObservabilityPlugin for RequestParser {
     fn pre_request(

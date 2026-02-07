@@ -4,7 +4,6 @@ mod common;
 
 use anyclaude::config::{
     Backend, Config, ConfigStore, DebugLoggingConfig, Defaults, ProxyConfig, TerminalConfig,
-    ThinkingConfig,
 };
 use anyclaude::proxy::ProxyServer;
 use common::mock_backend::{MockBackend, MockResponse};
@@ -28,7 +27,7 @@ fn test_config(backend: Backend, bind_addr: &str) -> Config {
             bind_addr: bind_addr.to_string(),
             base_url: format!("http://{}", bind_addr),
         },
-        thinking: ThinkingConfig::default(),
+
         terminal: TerminalConfig::default(),
         debug_logging: DebugLoggingConfig::default(),
         backends: vec![backend],
@@ -43,6 +42,8 @@ fn create_backend(name: &str, base_url: &str) -> Backend {
         auth_type_str: "passthrough".to_string(),
         api_key: None,
         pricing: None,
+        thinking_compat: None,
+        thinking_budget_tokens: None,
     }
 }
 

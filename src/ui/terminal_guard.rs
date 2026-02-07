@@ -10,8 +10,10 @@ use ratatui::Terminal;
 use std::io::{self, Stdout};
 use std::sync::Arc;
 
+type CleanupFn = Arc<Mutex<Option<Box<dyn FnOnce() + Send + 'static>>>>;
+
 pub struct TerminalGuard {
-    cleanup: Arc<Mutex<Option<Box<dyn FnOnce() + Send + 'static>>>>,
+    cleanup: CleanupFn,
 }
 
 impl TerminalGuard {

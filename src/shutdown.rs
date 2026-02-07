@@ -95,9 +95,15 @@ impl ShutdownHandle {
     }
 
     pub async fn wait(&self) {
+        // Subscribe to Notify BEFORE checking the flag to avoid TOCTOU race:
+        // without this, signal() could fire between the check and the await,
+        // and notify_waiters() would have no subscribers, losing the notification.
+        let notified = self.notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
         if self.is_shutting_down() {
             return;
         }
-        self.notify.notified().await;
+        notified.await;
     }
 }

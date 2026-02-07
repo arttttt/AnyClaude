@@ -8,13 +8,19 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub struct Footer;
 
+impl Default for Footer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Footer {
     pub fn new() -> Self {
         Self
     }
 
     pub fn widget(&self, area: Rect) -> Paragraph<'static> {
-        let hints = " Ctrl+B: Switch │ Ctrl+S: Status │ Ctrl+Q: Quit";
+        let hints = " Ctrl+B: Switch │ Ctrl+S: Status │ Ctrl+H: History │ Ctrl+Q: Quit";
         let version = format!("v{} ", VERSION);
 
         // Calculate padding using char count, not byte count (for Unicode)

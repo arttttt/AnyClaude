@@ -43,7 +43,7 @@ impl ResizeWatcher {
                     parser.lock().screen_mut().set_size(rows, cols);
                 }
             });
-            return Ok(Some(Self { handle, thread }));
+            Ok(Some(Self { handle, thread }))
         }
 
         #[cfg(not(unix))]

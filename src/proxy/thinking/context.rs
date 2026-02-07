@@ -23,13 +23,6 @@ impl TransformContext {
             request_path: request_path.into(),
         }
     }
-
-    /// Check if this is a chat completion request (not count_tokens, etc.)
-    pub fn is_chat_completion(&self) -> bool {
-        // Chat completion endpoint is /v1/messages without any suffix
-        self.request_path.ends_with("/messages")
-            || self.request_path.ends_with("/messages?beta=true")
-    }
 }
 
 /// Result of a transformation operation.
@@ -37,34 +30,11 @@ impl TransformContext {
 pub struct TransformResult {
     /// Whether the request body was modified
     pub changed: bool,
-    /// Transformation statistics
-    pub stats: TransformStats,
-}
-
-/// Statistics about what was transformed.
-#[derive(Debug, Default)]
-pub struct TransformStats {
-    /// Number of thinking blocks stripped/removed
-    pub stripped_count: u32,
-    /// Number of thinking blocks summarized
-    pub summarized_count: u32,
-    /// Number of tool_use blocks processed
-    pub tools_processed_count: u32,
-    /// Number of blocks passed through unchanged
-    pub passthrough_count: u32,
 }
 
 impl TransformResult {
     /// Create a result indicating no changes were made.
     pub fn unchanged() -> Self {
         Self::default()
-    }
-
-    /// Create a result indicating changes were made.
-    pub fn with_stats(stats: TransformStats) -> Self {
-        let changed = stats.stripped_count > 0
-            || stats.summarized_count > 0
-            || stats.tools_processed_count > 0;
-        Self { changed, stats }
     }
 }

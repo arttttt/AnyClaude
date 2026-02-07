@@ -19,18 +19,18 @@ AnyClaude solves this:
 ## Features
 
 - **Hot-Swap Backends** — Switch between providers without restarting Claude
-- **Session Context Preservation** — Summarize conversation on backend switch (summarize mode)
+- **Thinking Block Filtering** — Automatic filtering of previous backend's thinking blocks on switch
+- **Adaptive Thinking Conversion** — Convert adaptive thinking to enabled format for non-Anthropic backends (`thinking_compat`)
 - **Transparent Proxy** — Routes API requests through active backend
-- **Thinking Block Handling** — Strip or summarize thinking blocks for cross-provider compatibility
-- **Live Configuration** — Config hot reload on file changes
 - **Image Paste** — Paste images from clipboard (Ctrl+V)
+- **Backend History** — View switch history with `Ctrl+H`
 - **Debug Logging** — Request/response logging with configurable detail levels
 
 ## Architecture
 
 ```
 ┌─────────────────────────────┐
-│     AnyClaude TUI       │
+│        AnyClaude TUI        │
 └──────────────┬──────────────┘
                │
         ┌──────▼──────┐
@@ -39,7 +39,6 @@ AnyClaude solves this:
                │ ANTHROPIC_BASE_URL
         ┌──────▼──────┐
         │ Local Proxy │
-        │   :8080     │
         └──────┬──────┘
                │
      ┌─────────┼─────────┐
@@ -47,20 +46,27 @@ AnyClaude solves this:
  Backend1  Backend2   Backend3
 ```
 
-## Building
+## Installation
+
+```bash
+cargo install --path .
+```
+
+Or build manually:
 
 ```bash
 cargo build --release
+# binary at ./target/release/anyclaude
 ```
 
 ## Usage
 
 ```bash
-./target/release/anyclaude
+anyclaude
 ```
 
 The wrapper automatically:
-1. Starts a local proxy on `127.0.0.1:8080`
+1. Starts a local proxy (port auto-assigned starting from configured `bind_addr`)
 2. Sets `ANTHROPIC_BASE_URL` environment variable
 3. Spawns Claude Code in an embedded terminal
 4. Routes all API requests through the active backend
@@ -71,6 +77,7 @@ The wrapper automatically:
 |-----|--------|
 | `Ctrl+B` | Backend switcher popup |
 | `Ctrl+S` | Status/metrics popup |
+| `Ctrl+H` | Backend switch history |
 | `Ctrl+V` | Paste image from clipboard |
 | `Ctrl+Q` | Quit |
 | `1-9` | Quick-select backend (in switcher) |
@@ -113,25 +120,15 @@ max_retries = 3                   # Connection retry attempts
 retry_backoff_base_ms = 100       # Base backoff for retries (exponential)
 
 [proxy]
-bind_addr = "127.0.0.1:8080"      # Local proxy listen address
-base_url = "http://127.0.0.1:8080"
+bind_addr = "127.0.0.1:8080"      # Local proxy listen address (auto-increments if busy)
 
 [terminal]
 scrollback_lines = 10000          # History buffer size
 
-[thinking]
-mode = "summarize"                # "strip" or "summarize"
-
-[thinking.summarize]
-base_url = "https://your-summarizer-api.com"  # Anthropic-compatible API
-api_key = "your-summarizer-api-key"           # API key for summarization
-model = "your-model-name"                     # Model for summarization
-max_tokens = 500                              # Max tokens in summary
-
 [debug_logging]
-enabled = true
-level = "verbose"                 # "basic", "verbose", or "full"
-path = "~/.config/anyclaude/debug.log"
+level = "verbose"                 # "off", "basic", "verbose", "full"
+destination = "file"              # "stderr", "file", "both"
+file_path = "~/.config/anyclaude/debug.log"
 
 [[backends]]
 name = "anthropic"
@@ -145,6 +142,8 @@ display_name = "Alternative Provider"
 base_url = "https://your-provider.com/api"
 auth_type = "bearer"
 api_key = "your-api-key"
+thinking_compat = true            # Convert adaptive→enabled thinking for this backend
+thinking_budget_tokens = 10000    # Default thinking budget for adaptive→enabled conversion
 
 [[backends]]
 name = "custom"
@@ -161,45 +160,41 @@ auth_type = "passthrough"         # Forward original auth headers
 | `bearer` | `Authorization: Bearer <value>` | Most providers |
 | `passthrough` | Forwards original headers | OAuth flows, custom auth |
 
-### Thinking Block Modes
+### Thinking Block Handling
 
-When switching between providers, thinking blocks need special handling due to signature validation:
+AnyClaude handles two separate problems with thinking blocks when proxying through multiple backends.
 
-| Mode | Behavior | Backend Switch |
-|------|----------|----------------|
-| `strip` | Removes all thinking blocks from requests | Instant, no context preserved |
-| `summarize` | Summarizes session via external LLM on backend switch | Context preserved as summary |
+#### 1. Thinking block filtering (always active)
 
-**Recommended:** Use `summarize` mode for most cases — it preserves conversation context when switching backends.
+Each provider's thinking blocks contain cryptographic signatures tied to that provider. When you switch backends mid-session, the conversation history includes thinking blocks from the previous provider. The new provider rejects these as invalid, causing 400 errors.
 
-#### Strip Mode
+AnyClaude tracks all thinking blocks by content hash and automatically filters out blocks from previous sessions on backend switch. This works unconditionally for all backends — no configuration needed.
 
-```toml
-[thinking]
-mode = "strip"
-```
+#### 2. Adaptive thinking conversion (`thinking_compat`)
 
-Completely removes thinking blocks from message history. Fast and stable, but loses thinking context between turns.
+Claude Code (Opus 4.6) uses **adaptive thinking** — `"thinking": {"type": "adaptive"}`, where the model decides when and how much to think. The native Anthropic API supports this, but non-Anthropic backends don't. They require the explicit format: `"thinking": {"type": "enabled", "budget_tokens": N}`.
 
-#### Summarize Mode (Recommended)
+Set `thinking_compat = true` on non-Anthropic backends to enable conversion:
+
+- **Request body:** `adaptive` → `enabled` with a configurable token budget
+- **Header:** `anthropic-beta: adaptive-thinking-*` → `interleaved-thinking-2025-05-14`
 
 ```toml
-[thinking]
-mode = "summarize"
-
-[thinking.summarize]
-base_url = "https://your-summarizer-api.com"  # Anthropic-compatible API
-api_key = "your-summarizer-api-key"           # API key for summarization
-model = "your-model-name"                     # Model for summarization
-max_tokens = 500                              # Max tokens in summary
+[[backends]]
+name = "alternative"
+base_url = "https://your-provider.com/api"
+auth_type = "bearer"
+api_key = "your-api-key"
+thinking_compat = true            # Convert adaptive→enabled thinking
+thinking_budget_tokens = 10000    # Budget for conversion (default: 10000)
 ```
 
-When you switch backends:
-1. Current session history is summarized via the configured LLM
-2. Summary is prepended to the first message on the new backend
-3. New backend receives context: `[CONTEXT FROM PREVIOUS SESSION]...[/CONTEXT FROM PREVIOUS SESSION]`
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `thinking_compat` | `false` | Convert adaptive thinking to explicit enabled format |
+| `thinking_budget_tokens` | `10000` | Token budget for conversion. If the request has `max_tokens`, uses `max_tokens - 1` instead |
 
-This allows seamless backend switching while preserving conversation context.
+**Note:** Anthropic's own API handles adaptive thinking natively — only enable `thinking_compat` for third-party backends.
 
 ### Debug Logging
 
@@ -207,16 +202,37 @@ Enable detailed request/response logging for debugging:
 
 ```toml
 [debug_logging]
-enabled = true
-level = "verbose"   # "basic" | "verbose" | "full"
-path = "~/.config/anyclaude/debug.log"
+level = "verbose"                  # "off" | "basic" | "verbose" | "full"
+destination = "file"               # "stderr" | "file" | "both"
+file_path = "~/.config/anyclaude/debug.log"
+format = "console"                 # "console" | "json"
+pretty_print = true                # Pretty-print JSON bodies
+full_body = false                  # Log complete bodies (no size limit)
+body_preview_bytes = 1024          # Truncate preview if full_body = false
+header_preview = true              # Include headers in logs
+
+[debug_logging.rotation]
+mode = "size"                      # "none" | "size" | "daily"
+max_bytes = 10485760               # 10MB
+max_files = 5                      # Keep 5 rotated files
 ```
 
 | Level | Content |
 |-------|---------|
+| `off` | Disabled (default) |
 | `basic` | Request timestamps, status codes, latency |
 | `verbose` | + Token counts, model info, cost estimates |
 | `full` | + Request/response body previews, headers |
+
+## Development
+
+Requires [just](https://github.com/casey/just) task runner.
+
+| Command | Description |
+|---------|-------------|
+| `just check` | Run clippy + tests |
+| `just release 0.3.0` | Bump version, update CHANGELOG, commit, tag |
+| `just changelog` | Regenerate CHANGELOG.md |
 
 ## License
 

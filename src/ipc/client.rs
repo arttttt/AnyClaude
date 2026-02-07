@@ -5,13 +5,10 @@ use tokio::sync::{mpsc, oneshot};
 use crate::backend::BackendError;
 use crate::config::DebugLoggingConfig;
 use crate::metrics::MetricsSnapshot;
-use crate::proxy::thinking::TransformError;
 
 use super::types::{BackendInfo, IpcCommand, IpcError, ProxyStatus};
 
 const IPC_TIMEOUT: Duration = Duration::from_secs(1);
-/// Longer timeout for summarization (can take time with LLM call)
-const SUMMARIZE_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Clone)]
 pub struct IpcClient {
@@ -99,32 +96,6 @@ impl IpcClient {
         result
     }
 
-    /// Summarize session and switch backend.
-    ///
-    /// This is used when thinking.mode = summarize.
-    /// Returns Ok(summary_preview) on success, or the TransformError on failure.
-    pub async fn summarize_and_switch_backend(
-        &self,
-        from_backend: String,
-        to_backend: String,
-    ) -> Result<Result<String, TransformError>, IpcError> {
-        let (respond_to, receiver) = oneshot::channel();
-        self.sender
-            .send(IpcCommand::SummarizeAndSwitchBackend {
-                from_backend,
-                to_backend,
-                respond_to,
-            })
-            .await
-            .map_err(|_| IpcError::Disconnected)?;
-
-        // Use longer timeout for summarization
-        match tokio::time::timeout(SUMMARIZE_TIMEOUT, receiver).await {
-            Ok(Ok(value)) => Ok(value),
-            Ok(Err(_)) => Err(IpcError::Disconnected),
-            Err(_) => Err(IpcError::Timeout),
-        }
-    }
 }
 
 async fn recv_with_timeout<T>(receiver: oneshot::Receiver<T>) -> Result<T, IpcError> {

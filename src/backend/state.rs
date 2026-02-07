@@ -95,9 +95,13 @@ impl BackendState {
         };
 
         let inner = BackendStateInner {
-            active_backend,
+            active_backend: active_backend.clone(),
             config,
-            switch_log: Vec::new(),
+            switch_log: vec![SwitchLogEntry {
+                timestamp: SystemTime::now(),
+                old_backend: None,
+                new_backend: active_backend,
+            }],
         };
 
         Ok(Self {
@@ -146,6 +150,12 @@ impl BackendState {
     /// Get the full current configuration.
     pub fn get_config(&self) -> Config {
         self.inner.read().config.clone()
+    }
+
+    /// Get config and active backend atomically under a single lock.
+    pub fn get_config_and_active_backend(&self) -> (Config, String) {
+        let state = self.inner.read();
+        (state.config.clone(), state.active_backend.clone())
     }
 
     /// Switch to a different backend.
@@ -279,7 +289,6 @@ mod tests {
                 retry_backoff_base_ms: 100,
             },
             proxy: crate::config::ProxyConfig::default(),
-            thinking: crate::config::ThinkingConfig::default(),
             terminal: crate::config::TerminalConfig::default(),
             debug_logging: crate::config::DebugLoggingConfig::default(),
             backends: vec![
@@ -290,6 +299,8 @@ mod tests {
                     auth_type_str: "api_key".to_string(),
                     api_key: None,
                     pricing: None,
+                    thinking_compat: None,
+                    thinking_budget_tokens: None,
                 },
                 Backend {
                     name: "backend2".to_string(),
@@ -298,6 +309,8 @@ mod tests {
                     auth_type_str: "bearer".to_string(),
                     api_key: None,
                     pricing: None,
+                    thinking_compat: None,
+                    thinking_budget_tokens: None,
                 },
             ],
         }
@@ -368,8 +381,8 @@ mod tests {
 
         state.switch_backend("backend1").unwrap();
         assert_eq!(state.get_active_backend(), "backend1");
-        // Should not create a log entry for no-op switch
-        assert!(state.get_switch_log().is_empty());
+        // Should not create a log entry for no-op switch (only initial entry)
+        assert_eq!(state.get_switch_log().len(), 1);
     }
 
     #[test]
@@ -381,11 +394,13 @@ mod tests {
         state.switch_backend("backend1").unwrap();
 
         let log = state.get_switch_log();
-        assert_eq!(log.len(), 2);
-        assert_eq!(log[0].old_backend, Some("backend1".to_string()));
-        assert_eq!(log[0].new_backend, "backend2".to_string());
-        assert_eq!(log[1].old_backend, Some("backend2".to_string()));
-        assert_eq!(log[1].new_backend, "backend1".to_string());
+        assert_eq!(log.len(), 3); // initial + 2 switches
+        assert_eq!(log[0].old_backend, None);
+        assert_eq!(log[0].new_backend, "backend1".to_string());
+        assert_eq!(log[1].old_backend, Some("backend1".to_string()));
+        assert_eq!(log[1].new_backend, "backend2".to_string());
+        assert_eq!(log[2].old_backend, Some("backend2".to_string()));
+        assert_eq!(log[2].new_backend, "backend1".to_string());
     }
 
     #[test]
@@ -436,6 +451,8 @@ mod tests {
             auth_type_str: "api_key".to_string(),
             api_key: None,
             pricing: None,
+            thinking_compat: None,
+            thinking_budget_tokens: None,
         });
 
         state.update_config(new_config).unwrap();

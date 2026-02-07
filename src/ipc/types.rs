@@ -3,7 +3,6 @@ use tokio::sync::oneshot;
 use crate::backend::BackendError;
 use crate::config::DebugLoggingConfig;
 use crate::metrics::MetricsSnapshot;
-use crate::proxy::thinking::TransformError;
 
 #[derive(Debug)]
 pub enum IpcError {
@@ -43,17 +42,6 @@ pub enum IpcCommand {
     SwitchBackend {
         backend_id: String,
         respond_to: oneshot::Sender<Result<String, BackendError>>,
-    },
-    /// Summarize session and then switch backend.
-    ///
-    /// This is used when thinking.mode = summarize.
-    /// 1. Calls transformer.on_backend_switch() to summarize
-    /// 2. If successful, switches to the new backend
-    /// 3. Returns Ok(summary_preview) or Err(TransformError)
-    SummarizeAndSwitchBackend {
-        from_backend: String,
-        to_backend: String,
-        respond_to: oneshot::Sender<Result<String, TransformError>>,
     },
     GetStatus {
         respond_to: oneshot::Sender<ProxyStatus>,

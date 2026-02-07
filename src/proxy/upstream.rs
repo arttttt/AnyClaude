@@ -6,10 +6,9 @@ use reqwest::Client;
 use tokio::time::sleep;
 use crate::backend::BackendState;
 use crate::config::{build_auth_header, DebugLogLevel};
-use crate::config::ConfigStore;
 use crate::metrics::{
-    redact_body_preview, redact_headers, DebugLogger, ObservedStream, ObservabilityHub,
-    RequestMeta, RequestParser, RequestSpan, ResponseMeta, ResponseParser, ResponsePreview,
+    redact_body, redact_headers, DebugLogger, ObservedStream, ObservabilityHub, RequestMeta,
+    RequestParser, RequestSpan, ResponseMeta, ResponseParser, ResponsePreview,
 };
 use crate::proxy::error::ProxyError;
 use crate::proxy::pool::PoolConfig;
@@ -21,7 +20,6 @@ pub struct UpstreamClient {
     client: Client,
     timeout_config: TimeoutConfig,
     pool_config: PoolConfig,
-    config: ConfigStore,
     transformer_registry: Arc<TransformerRegistry>,
     debug_logger: Arc<DebugLogger>,
     request_parser: RequestParser,
@@ -32,7 +30,6 @@ impl UpstreamClient {
     pub fn new(
         timeout_config: TimeoutConfig,
         pool_config: PoolConfig,
-        config: ConfigStore,
         transformer_registry: Arc<TransformerRegistry>,
         debug_logger: Arc<DebugLogger>,
     ) -> Self {
@@ -47,10 +44,9 @@ impl UpstreamClient {
             client,
             timeout_config,
             pool_config,
-            config,
             transformer_registry,
             debug_logger,
-            request_parser: RequestParser::new(true),
+            request_parser: RequestParser::new(),
             response_parser: ResponseParser::new(),
         }
     }
@@ -143,7 +139,7 @@ impl UpstreamClient {
                 return Err(err);
             }
         };
-        let mut body_bytes = body_bytes.to_vec();
+        let body_bytes = body_bytes.to_vec();
         let request_content_type = headers
             .get(CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
@@ -168,58 +164,136 @@ impl UpstreamClient {
                         body_preview: None,
                     }
                 });
-            meta.body_preview = redact_body_preview(
+            let limit = if debug_config.full_body {
+                None
+            } else {
+                Some(debug_config.body_preview_bytes)
+            };
+            meta.body_preview = redact_body(
                 &body_bytes,
                 request_content_type,
-                debug_config.body_preview_bytes,
+                limit,
+                debug_config.pretty_print,
             );
         }
 
-        if request_content_type.contains("application/json") {
-            // Update transformer mode if config changed
-            self.transformer_registry
-                .update_mode(self.config.get().thinking.mode.clone())
-                .await;
+        // Apply thinking transformer
+        let mut body_bytes = body_bytes;
+        let needs_thinking_compat = backend.needs_thinking_compat();
 
-            // Parse JSON body for transformation
+        // Detect streaming requests: reqwest's .timeout() covers the entire response
+        // body read, which kills SSE streams mid-generation. For streaming requests
+        // we rely on connect_timeout (Client-level) + idle_timeout (ObservedStream).
+        let mut is_streaming_request = false;
+
+        // Notify thinking registry about current backend (increments session on switch)
+        self.transformer_registry
+            .notify_backend_for_thinking(&backend.name);
+        // Capture session ID now — the on_complete callback may fire after a subsequent
+        // request has already incremented the session via notify_backend_for_thinking.
+        let thinking_session_id = self.transformer_registry.current_thinking_session();
+
+        if request_content_type.contains("application/json") {
             if let Ok(mut json_body) = serde_json::from_slice::<serde_json::Value>(&body_bytes) {
+                is_streaming_request = json_body
+                    .get("stream")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+
+                // Convert adaptive thinking to standard format for non-Anthropic backends
+                let mut thinking_converted = false;
+                if needs_thinking_compat {
+                    if let Some(changed) =
+                        convert_adaptive_thinking(&mut json_body, backend.thinking_budget_tokens)
+                    {
+                        if changed {
+                            thinking_converted = true;
+                            self.debug_logger.log_auxiliary(
+                                "thinking_compat",
+                                None,
+                                None,
+                                Some(&format!(
+                                    "Converted adaptive → enabled for backend '{}', budget={}",
+                                    backend.name,
+                                    json_body.get("thinking")
+                                        .and_then(|t| t.get("budget_tokens"))
+                                        .and_then(|b| b.as_u64())
+                                        .unwrap_or(0)
+                                )),
+                                None,
+                            );
+                        }
+                    }
+                }
+
+                // Filter out thinking blocks from other sessions
+                let cache_before = self.transformer_registry.thinking_cache_stats();
+                let filtered = self.transformer_registry.filter_thinking_blocks(&mut json_body);
+                if filtered > 0 || cache_before.total > 0 {
+                    self.debug_logger.log_auxiliary(
+                        "thinking_filter",
+                        None, None,
+                        Some(&format!(
+                            "Filter: cache={} blocks, removed={} from request",
+                            cache_before.total, filtered,
+                        )),
+                        None,
+                    );
+                }
+
                 let context = TransformContext::new(
                     backend.name.clone(),
                     span.request_id().to_string(),
                     path_and_query,
                 );
 
-                // Get transformer and apply transformation
-                let transformer = self.transformer_registry.get().await;
+                let transformer = self.transformer_registry.transformer();
+                let mut transformer_changed = false;
 
-                match transformer.transform_request(&mut json_body, &context).await {
+                match transformer.transform_request(&mut json_body, &context) {
                     Ok(result) => {
+                        transformer_changed = result.changed;
                         if result.changed {
-                            // Serialize back to bytes
-                            match serde_json::to_vec(&json_body) {
-                                Ok(updated) => {
-                                    body_bytes = updated;
-                                    tracing::info!(
-                                        backend = %backend.name,
-                                        transformer = transformer.name(),
-                                        stripped = result.stats.stripped_count,
-                                        "Transformed thinking blocks"
-                                    );
-                                }
-                                Err(e) => {
-                                    tracing::error!(
-                                        error = %e,
-                                        "Failed to serialize transformed request body"
-                                    );
-                                }
-                            }
+                            tracing::info!(
+                                backend = %backend.name,
+                                transformer = transformer.name(),
+                                "Applied transformer"
+                            );
                         }
                     }
                     Err(e) => {
                         tracing::error!(
                             error = %e,
-                            "Failed to transform thinking blocks"
+                            "Failed to apply transformer"
                         );
+                    }
+                }
+
+                // Re-serialize body if any transformation occurred
+                if thinking_converted || filtered > 0 || transformer_changed {
+                    if thinking_converted {
+                        let thinking_json = json_body.get("thinking")
+                            .map(|t| t.to_string())
+                            .unwrap_or_else(|| "null".to_string());
+                        self.debug_logger.log_auxiliary(
+                            "thinking_compat",
+                            None,
+                            None,
+                            Some(&format!(
+                                "Final request thinking field: {}",
+                                thinking_json
+                            )),
+                            None,
+                        );
+                    }
+                    match serde_json::to_vec(&json_body) {
+                        Ok(updated) => body_bytes = updated,
+                        Err(e) => {
+                            tracing::error!(
+                                error = %e,
+                                "Failed to serialize transformed request body, using original"
+                            );
+                        }
                     }
                 }
             }
@@ -243,14 +317,35 @@ impl UpstreamClient {
                 }
                 // Strip auth headers when backend uses its own credentials (bearer/api_key)
                 // Passthrough mode forwards all headers unchanged
-                if strip_auth_headers {
-                    if name == AUTHORIZATION || name.as_str().eq_ignore_ascii_case("x-api-key") {
+                if strip_auth_headers
+                    && (name == AUTHORIZATION || name.as_str().eq_ignore_ascii_case("x-api-key")) {
                         tracing::debug!(
                             header = %name,
                             backend = %backend.name,
                             auth_type = ?backend.auth_type(),
                             "Stripping incoming auth header"
                         );
+                        continue;
+                    }
+                // Rewrite anthropic-beta header for non-Anthropic backends
+                if needs_thinking_compat
+                    && name.as_str().eq_ignore_ascii_case("anthropic-beta")
+                {
+                    if let Ok(val) = value.to_str() {
+                        let patched = patch_anthropic_beta_header(val);
+                        if patched != val {
+                            self.debug_logger.log_auxiliary(
+                                "thinking_compat",
+                                None,
+                                None,
+                                Some(&format!(
+                                    "Patched anthropic-beta: '{}' → '{}'",
+                                    val, patched
+                                )),
+                                None,
+                            );
+                        }
+                        builder = builder.header(name, &patched);
                         continue;
                     }
                 }
@@ -262,8 +357,14 @@ impl UpstreamClient {
                 builder = builder.header(name, value);
             }
 
+            // For streaming requests: skip reqwest timeout entirely.
+            // connect_timeout is set on Client, idle_timeout on ObservedStream.
+            // For non-streaming: apply request timeout to the full response.
+            if !is_streaming_request {
+                builder = builder.timeout(self.timeout_config.request);
+            }
+
             let send_result = builder
-                .timeout(self.timeout_config.request)
                 .body(body_bytes.clone())
                 .send()
                 .await;
@@ -326,20 +427,22 @@ impl UpstreamClient {
 
         let is_streaming = content_type
             .as_deref()
-            .map_or(false, |ct| ct.contains("text/event-stream"));
+            .is_some_and(|ct| ct.contains("text/event-stream"));
 
         let status = upstream_resp.status();
+        let response_headers = upstream_resp.headers().clone();
+
         span.set_status(status.as_u16());
 
         if debug_level >= DebugLogLevel::Full && debug_config.header_preview {
             let meta = span
                 .record_mut()
                 .response_meta
-                .get_or_insert_with(|| ResponseMeta {
+                .get_or_insert(ResponseMeta {
                     headers: None,
                     body_preview: None,
                 });
-            meta.headers = Some(redact_headers(upstream_resp.headers()));
+            meta.headers = Some(redact_headers(&response_headers));
         }
 
         // Log error responses for debugging
@@ -354,29 +457,58 @@ impl UpstreamClient {
 
         let mut response_builder = Response::builder().status(status);
 
-        for (name, value) in upstream_resp.headers() {
+        for (name, value) in response_headers.iter() {
             response_builder = response_builder.header(name, value);
         }
 
         if is_streaming {
             let stream = upstream_resp.bytes_stream();
             let response_preview = if debug_level >= DebugLogLevel::Full {
-                ResponsePreview::new(
-                    debug_config.body_preview_bytes,
-                    content_type.clone().unwrap_or_default(),
-                )
+                let ct = content_type.clone().unwrap_or_default();
+                if debug_config.full_body {
+                    Some(ResponsePreview::full(ct, debug_config.pretty_print))
+                } else {
+                    ResponsePreview::new(debug_config.body_preview_bytes, ct)
+                }
             } else {
                 None
             };
 
-            // Create callback to capture response for summarization
+            // Create callback to capture response for thinking registration
             let registry = Arc::clone(&self.transformer_registry);
+            let cb_debug_logger = Arc::clone(&self.debug_logger);
             let on_complete: crate::metrics::ResponseCompleteCallback = Box::new(move |bytes| {
-                let registry = Arc::clone(&registry);
-                let bytes = bytes.to_vec();
-                tokio::spawn(async move {
-                    registry.on_response_complete(&bytes).await;
-                });
+                // Parse SSE events once, reuse for diagnostics and registration
+                let events = crate::sse::parse_sse_events(bytes);
+                let thinking_stats = crate::sse::analyze_thinking_stream(&events);
+                cb_debug_logger.log_auxiliary(
+                    "sse_callback",
+                    None, None,
+                    Some(&format!(
+                        "SSE callback: {} bytes, {} events, thinking: {}",
+                        bytes.len(),
+                        events.len(),
+                        thinking_stats,
+                    )),
+                    None,
+                );
+
+                // Register thinking blocks synchronously to avoid race condition:
+                // next request's filter must see these blocks in the registry.
+                let before = registry.thinking_cache_stats();
+                registry.register_thinking_from_sse_stream(&events, thinking_session_id);
+                let after = registry.thinking_cache_stats();
+                let registered = after.total.saturating_sub(before.total);
+                cb_debug_logger.log_auxiliary(
+                    "sse_callback",
+                    None, None,
+                    Some(&format!(
+                        "Registered {} new thinking blocks (cache: {} → {})",
+                        registered, before.total, after.total,
+                    )),
+                    None,
+                );
+
             });
 
             let observed = ObservedStream::new(
@@ -394,11 +526,16 @@ impl UpstreamClient {
             let body_bytes = match upstream_resp.bytes().await {
                 Ok(bytes) => bytes,
                 Err(e) => {
-                    let err = ProxyError::Internal(format!("Failed to read response body: {}", e));
+                    let err =
+                        ProxyError::Internal(format!("Failed to read response body: {}", e));
                     observability.finish_error(span, Some(err.status_code().as_u16()));
                     return Err(err);
                 }
             };
+
+            // Register thinking blocks from non-streaming response
+            self.transformer_registry
+                .register_thinking_from_response(&body_bytes, thinking_session_id);
 
             if debug_level >= DebugLogLevel::Verbose {
                 let mut analysis = self.response_parser.parse_response(&body_bytes);
@@ -421,14 +558,20 @@ impl UpstreamClient {
                 let meta = span
                     .record_mut()
                     .response_meta
-                    .get_or_insert_with(|| ResponseMeta {
+                    .get_or_insert(ResponseMeta {
                         headers: None,
                         body_preview: None,
                     });
-                meta.body_preview = redact_body_preview(
+                let limit = if debug_config.full_body {
+                    None
+                } else {
+                    Some(debug_config.body_preview_bytes)
+                };
+                meta.body_preview = redact_body(
                     &body_bytes,
                     content_type.as_deref().unwrap_or(""),
-                    debug_config.body_preview_bytes,
+                    limit,
+                    debug_config.pretty_print,
                 );
             }
 
@@ -469,22 +612,166 @@ fn compute_cost_usd(
     Some(cost)
 }
 
+/// Convert `"thinking": {"type": "adaptive"}` to `"thinking": {"type": "enabled", "budget_tokens": N}`.
+///
+/// Budget priority: explicit config (`thinking_budget_tokens`) > `max_tokens - 1` from request > default 10000.
+///
+/// Returns `Some(true)` if converted, `Some(false)` if thinking exists but not adaptive,
+/// `None` if no thinking field present.
+fn convert_adaptive_thinking(body: &mut serde_json::Value, configured_budget: Option<u32>) -> Option<bool> {
+    let is_adaptive = body
+        .get("thinking")
+        .and_then(|t| t.get("type"))
+        .and_then(|t| t.as_str())
+        == Some("adaptive");
+
+    if !is_adaptive {
+        return body.get("thinking").map(|_| false);
+    }
+
+    let budget = configured_budget.unwrap_or_else(|| {
+        body.get("max_tokens")
+            .and_then(|v| v.as_u64())
+            .map(|mt| mt.saturating_sub(1) as u32)
+            .unwrap_or(10_000)
+    });
+
+    body.as_object_mut()?.insert(
+        "thinking".to_string(),
+        serde_json::json!({
+            "type": "enabled",
+            "budget_tokens": budget
+        }),
+    );
+    Some(true)
+}
+
+/// Rewrite anthropic-beta header for non-Anthropic backends:
+/// strip `adaptive-thinking-*` and ensure `interleaved-thinking-2025-05-14` is present.
+fn patch_anthropic_beta_header(value: &str) -> String {
+    let mut parts: Vec<&str> = value
+        .split(',')
+        .map(|p| p.trim())
+        .filter(|part| !part.starts_with("adaptive-thinking-"))
+        .collect();
+
+    let has_interleaved = parts
+        .iter()
+        .any(|p| p.starts_with("interleaved-thinking-"));
+    if !has_interleaved {
+        parts.push("interleaved-thinking-2025-05-14");
+    }
+
+    parts.join(",")
+}
+
 impl Default for UpstreamClient {
     fn default() -> Self {
-        let config = ConfigStore::new(
-            crate::config::Config::default(),
-            crate::config::Config::config_path(),
-        );
-        let registry = Arc::new(TransformerRegistry::with_mode(
-            crate::config::ThinkingMode::Strip,
-        ));
-        let debug_logger = Arc::new(DebugLogger::new(config.get().debug_logging.clone()));
+        let registry = Arc::new(TransformerRegistry::new());
+        let debug_logger = Arc::new(DebugLogger::new(Default::default()));
         Self::new(
             TimeoutConfig::default(),
             PoolConfig::default(),
-            config,
             registry,
             debug_logger,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- convert_adaptive_thinking ---
+
+    #[test]
+    fn test_convert_adaptive_to_enabled_with_config_budget() {
+        let mut body = serde_json::json!({
+            "model": "claude-opus-4-6",
+            "max_tokens": 32000,
+            "thinking": {"type": "adaptive"}
+        });
+        let result = convert_adaptive_thinking(&mut body, Some(16000));
+        assert_eq!(result, Some(true));
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(body["thinking"]["budget_tokens"], 16000);
+    }
+
+    #[test]
+    fn test_convert_adaptive_falls_back_to_max_tokens() {
+        let mut body = serde_json::json!({
+            "model": "claude-opus-4-6",
+            "max_tokens": 32000,
+            "thinking": {"type": "adaptive"}
+        });
+        let result = convert_adaptive_thinking(&mut body, None);
+        assert_eq!(result, Some(true));
+        assert_eq!(body["thinking"]["budget_tokens"], 31999);
+    }
+
+    #[test]
+    fn test_convert_adaptive_falls_back_to_default() {
+        let mut body = serde_json::json!({
+            "model": "claude-opus-4-6",
+            "thinking": {"type": "adaptive"}
+        });
+        let result = convert_adaptive_thinking(&mut body, None);
+        assert_eq!(result, Some(true));
+        assert_eq!(body["thinking"]["budget_tokens"], 10000);
+    }
+
+    #[test]
+    fn test_convert_enabled_unchanged() {
+        let mut body = serde_json::json!({
+            "thinking": {"type": "enabled", "budget_tokens": 8000}
+        });
+        let result = convert_adaptive_thinking(&mut body, Some(16000));
+        assert_eq!(result, Some(false));
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(body["thinking"]["budget_tokens"], 8000);
+    }
+
+    #[test]
+    fn test_convert_no_thinking_field() {
+        let mut body = serde_json::json!({"model": "claude-opus-4-6"});
+        let result = convert_adaptive_thinking(&mut body, Some(16000));
+        assert_eq!(result, None);
+    }
+
+    // --- patch_anthropic_beta_header ---
+
+    #[test]
+    fn test_patch_header_replaces_adaptive() {
+        let header = "claude-code-20250219,adaptive-thinking-2026-01-28,prompt-caching-2024-07-31";
+        let patched = patch_anthropic_beta_header(header);
+        assert!(!patched.contains("adaptive-thinking"));
+        assert!(patched.contains("interleaved-thinking-2025-05-14"));
+        assert!(patched.contains("claude-code-20250219"));
+        assert!(patched.contains("prompt-caching-2024-07-31"));
+    }
+
+    #[test]
+    fn test_patch_header_preserves_existing_interleaved() {
+        let header = "interleaved-thinking-2025-05-14,prompt-caching-2024-07-31";
+        let patched = patch_anthropic_beta_header(header);
+        assert_eq!(
+            patched.matches("interleaved-thinking").count(),
+            1,
+            "should not duplicate interleaved-thinking"
+        );
+    }
+
+    #[test]
+    fn test_patch_header_no_adaptive_adds_interleaved() {
+        let header = "claude-code-20250219,prompt-caching-2024-07-31";
+        let patched = patch_anthropic_beta_header(header);
+        assert!(patched.contains("interleaved-thinking-2025-05-14"));
+    }
+
+    #[test]
+    fn test_patch_header_only_adaptive() {
+        let header = "adaptive-thinking-2026-01-28";
+        let patched = patch_anthropic_beta_header(header);
+        assert_eq!(patched, "interleaved-thinking-2025-05-14");
     }
 }

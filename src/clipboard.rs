@@ -56,15 +56,6 @@ impl ClipboardHandler {
         ClipboardContent::Empty
     }
 
-    /// Get text content only (for normal paste operations).
-    #[allow(dead_code)]
-    pub fn get_text(&mut self) -> Option<String> {
-        self.clipboard
-            .get_text()
-            .ok()
-            .filter(|t| !t.trim().is_empty())
-    }
-
     /// Check if clipboard has image content without consuming it.
     pub fn has_image(&mut self) -> bool {
         self.clipboard.get_image().is_ok()

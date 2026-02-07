@@ -7,8 +7,6 @@ pub struct Config {
     #[serde(default)]
     pub proxy: ProxyConfig,
     #[serde(default)]
-    pub thinking: ThinkingConfig,
-    #[serde(default)]
     pub terminal: TerminalConfig,
     #[serde(default)]
     pub debug_logging: DebugLoggingConfig,
@@ -53,40 +51,6 @@ pub struct ProxyConfig {
     pub base_url: String,
 }
 
-/// Thinking block compatibility settings.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ThinkingConfig {
-    #[serde(default)]
-    pub mode: ThinkingMode,
-    /// Configuration for summarize mode (used when mode = "summarize")
-    #[serde(default)]
-    pub summarize: SummarizeConfig,
-}
-
-/// Configuration for the summarize thinking mode.
-///
-/// When switching backends, this mode summarizes the session history
-/// using an LLM call to an Anthropic-compatible API.
-/// All fields are required when using summarize mode.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SummarizeConfig {
-    /// Base URL for the summarization API (Anthropic-compatible endpoint).
-    #[serde(default)]
-    pub base_url: String,
-
-    /// API key for summarization.
-    #[serde(default)]
-    pub api_key: Option<String>,
-
-    /// Model to use for summarization.
-    #[serde(default)]
-    pub model: String,
-
-    /// Maximum tokens in the generated summary.
-    #[serde(default = "default_summarize_max_tokens")]
-    pub max_tokens: u32,
-}
-
 /// Terminal display settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TerminalConfig {
@@ -110,13 +74,21 @@ pub struct DebugLoggingConfig {
     pub body_preview_bytes: usize,
     #[serde(default = "default_debug_header_preview")]
     pub header_preview: bool,
+    /// Log full request/response bodies (no size limit)
+    #[serde(default)]
+    pub full_body: bool,
+    /// Pretty-print JSON bodies for readability
+    #[serde(default = "default_true")]
+    pub pretty_print: bool,
     #[serde(default)]
     pub rotation: DebugLogRotation,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum DebugLogLevel {
+    #[default]
     Off,
     Basic,
     Verbose,
@@ -125,14 +97,18 @@ pub enum DebugLogLevel {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum DebugLogFormat {
+    #[default]
     Console,
     Json,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum DebugLogDestination {
+    #[default]
     Stderr,
     File,
     Both,
@@ -150,28 +126,12 @@ pub struct DebugLogRotation {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum DebugLogRotationMode {
+    #[default]
     None,
     Size,
     Daily,
-}
-
-/// Handling mode for thinking blocks.
-///
-/// # Modes
-///
-/// - `Strip` (recommended): Remove thinking blocks entirely. Simple and compatible.
-/// - `Summarize` (future): Keep native during work, summarize on backend switch.
-/// - `Native` (future): Keep native format, requires handoff on switch.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ThinkingMode {
-    /// Remove thinking blocks entirely (recommended)
-    Strip,
-    /// Keep native during work, summarize on backend switch (future)
-    Summarize,
-    /// Keep native format with handoff on switch (future)
-    Native,
 }
 
 fn default_connect_timeout() -> u32 {
@@ -214,6 +174,10 @@ fn default_debug_header_preview() -> bool {
     true
 }
 
+fn default_true() -> bool {
+    true
+}
+
 fn default_debug_rotation_max_bytes() -> u64 {
     10 * 1024 * 1024
 }
@@ -228,10 +192,6 @@ fn default_proxy_bind_addr() -> String {
 
 fn default_proxy_base_url() -> String {
     "http://127.0.0.1:8080".to_string()
-}
-
-fn default_summarize_max_tokens() -> u32 {
-    500
 }
 
 /// Backend configuration for an API provider.
@@ -252,6 +212,15 @@ pub struct Backend {
     /// Optional pricing per million tokens.
     #[serde(default)]
     pub pricing: Option<BackendPricing>,
+    /// Convert adaptive thinking to standard "enabled" format.
+    /// None = auto-detect (true for non-Anthropic backends).
+    /// true = always convert, false = never convert.
+    #[serde(default)]
+    pub thinking_compat: Option<bool>,
+    /// Budget tokens when converting adaptive → enabled thinking.
+    /// Default: 10000.
+    #[serde(default)]
+    pub thinking_budget_tokens: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -269,6 +238,8 @@ impl Default for Backend {
             auth_type_str: "passthrough".to_string(),
             api_key: None,
             pricing: None,
+            thinking_compat: None,
+            thinking_budget_tokens: None,
         }
     }
 }
@@ -293,7 +264,6 @@ impl Default for Config {
         Self {
             defaults: Defaults::default(),
             proxy: ProxyConfig::default(),
-            thinking: ThinkingConfig::default(),
             terminal: TerminalConfig::default(),
             debug_logging: DebugLoggingConfig::default(),
             backends: vec![Backend::default()],
@@ -307,32 +277,6 @@ impl Default for ProxyConfig {
             bind_addr: default_proxy_bind_addr(),
             base_url: default_proxy_base_url(),
         }
-    }
-}
-
-impl Default for ThinkingConfig {
-    fn default() -> Self {
-        Self {
-            mode: ThinkingMode::Strip,
-            summarize: SummarizeConfig::default(),
-        }
-    }
-}
-
-impl Default for SummarizeConfig {
-    fn default() -> Self {
-        Self {
-            base_url: String::new(),
-            api_key: None,
-            model: String::new(),
-            max_tokens: default_summarize_max_tokens(),
-        }
-    }
-}
-
-impl Default for ThinkingMode {
-    fn default() -> Self {
-        ThinkingMode::Strip
     }
 }
 
@@ -353,6 +297,8 @@ impl Default for DebugLoggingConfig {
             file_path: default_debug_log_file_path(),
             body_preview_bytes: default_debug_body_preview_bytes(),
             header_preview: default_debug_header_preview(),
+            full_body: false,
+            pretty_print: true,
             rotation: DebugLogRotation::default(),
         }
     }
@@ -368,29 +314,9 @@ impl Default for DebugLogRotation {
     }
 }
 
-impl Default for DebugLogLevel {
-    fn default() -> Self {
-        DebugLogLevel::Off
-    }
-}
 
-impl Default for DebugLogFormat {
-    fn default() -> Self {
-        DebugLogFormat::Console
-    }
-}
 
-impl Default for DebugLogDestination {
-    fn default() -> Self {
-        DebugLogDestination::Stderr
-    }
-}
 
-impl Default for DebugLogRotationMode {
-    fn default() -> Self {
-        DebugLogRotationMode::None
-    }
-}
 
 impl DebugLoggingConfig {
     pub fn apply_env_overrides(&mut self) {
@@ -422,6 +348,14 @@ impl DebugLoggingConfig {
             if let Ok(parsed) = value.parse::<usize>() {
                 self.body_preview_bytes = parsed;
             }
+        }
+
+        if let Ok(value) = std::env::var("CLAUDE_WRAPPER_DEBUG_FULL_BODY") {
+            self.full_body = value == "1" || value.to_lowercase() == "true";
+        }
+
+        if let Ok(value) = std::env::var("CLAUDE_WRAPPER_DEBUG_PRETTY_PRINT") {
+            self.pretty_print = value == "1" || value.to_lowercase() == "true";
         }
     }
 }

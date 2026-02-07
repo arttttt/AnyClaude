@@ -43,6 +43,8 @@ mod tests {
             auth_type_str: auth_type.to_string(),
             api_key: api_key.map(|value| value.to_string()),
             pricing: None,
+            thinking_compat: None,
+            thinking_budget_tokens: None,
         }
     }
 

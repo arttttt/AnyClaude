@@ -3,6 +3,14 @@ name = "anyclaude"
 version = "0.2.0"
 edition = "2021"
 
+[lints]
+workspace = true
+
+[workspace.lints.rust]
+dead_code = "deny"
+unused_imports = "deny"
+unreachable_code = "deny"
+
 [dependencies]
 # PTY & Terminal
 portable-pty = "0.9"
@@ -20,7 +28,7 @@ uuid = { version = "1.20", features = ["v4"] }
 # HTTP Proxy
 axum = { version = "0.8", features = ["json"] }
 http-body-util = "0.1"
-reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "rustls", "http2"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "rustls", "http2", "gzip", "brotli", "deflate"] }
 tower = "0.5"
 futures-core = "0.3"
 
@@ -37,9 +45,6 @@ fs2 = "0.4"
 
 # Concurrency
 parking_lot = "0.12"
-
-# Async traits
-async-trait = "0.1"
 
 # Utilities
 scopeguard = "1.2"

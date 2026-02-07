@@ -40,7 +40,7 @@ impl Widget for TerminalBody {
                     if let Some(cell_ref) = buf.cell_mut((x, y)) {
                         if cell.has_contents() {
                             // Cell has actual content - render it
-                            cell_ref.set_symbol(&cell.contents()).set_style(style);
+                            cell_ref.set_symbol(cell.contents()).set_style(style);
                         } else if cell.bgcolor() != vt100::Color::Default {
                             // Empty cell but has background color - render space with style
                             cell_ref.set_symbol(" ").set_style(style);

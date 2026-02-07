@@ -7,4 +7,5 @@ pub mod metrics;
 pub mod proxy;
 pub mod pty;
 pub mod shutdown;
+pub mod sse;
 pub mod ui;
