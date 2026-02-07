@@ -20,6 +20,9 @@ pub enum SummarizeIntent {
         message: String,
     },
 
+    /// Toggle button selection in Failed state.
+    ToggleButton,
+
     /// Hide the dialog (after cancel).
     Hide,
 }

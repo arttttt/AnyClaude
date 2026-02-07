@@ -32,6 +32,8 @@ pub enum SummarizeDialogState {
     Failed {
         /// Error message from the last attempt.
         error: String,
+        /// Selected button (0 = Retry, 1 = Cancel).
+        selected_button: u8,
     },
 }
 
@@ -59,7 +61,7 @@ impl SummarizeDialogState {
     /// Get the current error message, if any.
     pub fn error_message(&self) -> Option<&str> {
         match self {
-            Self::Retrying { error, .. } | Self::Failed { error } => Some(error),
+            Self::Retrying { error, .. } | Self::Failed { error, .. } => Some(error),
             _ => None,
         }
     }
@@ -75,6 +77,14 @@ impl SummarizeDialogState {
     /// Check if auto-retry should be triggered.
     pub fn should_auto_retry(&self) -> bool {
         matches!(self, Self::Retrying { .. })
+    }
+
+    /// Get the currently selected button (0 = Retry, 1 = Cancel).
+    pub fn selected_button(&self) -> u8 {
+        match self {
+            Self::Failed { selected_button, .. } => *selected_button,
+            _ => 0,
+        }
     }
 }
 
@@ -92,7 +102,8 @@ mod tests {
         assert!(!SummarizeDialogState::Hidden.is_visible());
         assert!(SummarizeDialogState::Summarizing { animation_tick: 0 }.is_visible());
         assert!(SummarizeDialogState::Failed {
-            error: "test".into()
+            error: "test".into(),
+            selected_button: 0,
         }
         .is_visible());
     }
@@ -102,7 +113,8 @@ mod tests {
         assert!(!SummarizeDialogState::Hidden.needs_user_input());
         assert!(!SummarizeDialogState::Summarizing { animation_tick: 0 }.needs_user_input());
         assert!(SummarizeDialogState::Failed {
-            error: "test".into()
+            error: "test".into(),
+            selected_button: 0,
         }
         .needs_user_input());
     }

@@ -46,7 +46,7 @@ impl Reducer for SummarizeReducer {
 
                 if current_attempt >= MAX_AUTO_RETRIES {
                     // Max retries reached, show user choice
-                    SummarizeDialogState::Failed { error: message }
+                    SummarizeDialogState::Failed { error: message, selected_button: 0 }
                 } else {
                     // Auto-retry
                     SummarizeDialogState::Retrying {
@@ -56,6 +56,16 @@ impl Reducer for SummarizeReducer {
                     }
                 }
             }
+
+            SummarizeIntent::ToggleButton => match state {
+                SummarizeDialogState::Failed { error, selected_button } => {
+                    SummarizeDialogState::Failed {
+                        error,
+                        selected_button: if selected_button == 0 { 1 } else { 0 },
+                    }
+                }
+                other => other,
+            },
 
             SummarizeIntent::Hide => SummarizeDialogState::Hidden,
         }
@@ -122,8 +132,9 @@ mod tests {
         );
 
         match new_state {
-            SummarizeDialogState::Failed { error } => {
+            SummarizeDialogState::Failed { error, selected_button } => {
                 assert_eq!(error, "final error");
+                assert_eq!(selected_button, 0);
             }
             _ => panic!("Expected Failed state"),
         }

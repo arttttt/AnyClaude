@@ -73,8 +73,6 @@ pub struct App {
     history_provider: Option<Arc<dyn Fn() -> Vec<HistoryEntry> + Send + Sync>>,
     /// Backend ID pending switch (waiting for summarization).
     pending_backend_switch: Option<String>,
-    /// Selected button in failed state (0 = Retry, 1 = Cancel).
-    summarize_button_selection: u8,
     /// Last animation tick for spinner.
     last_animation_tick: Instant,
     /// Scheduled time for next auto-retry (exponential backoff).
@@ -108,7 +106,6 @@ impl App {
             history_dialog: HistoryDialogState::default(),
             history_provider: None,
             pending_backend_switch: None,
-            summarize_button_selection: 0,
             last_animation_tick: now,
             scheduled_retry_at: None,
         }
@@ -487,17 +484,7 @@ impl App {
 
     /// Get the currently selected button (0 = Retry, 1 = Cancel).
     pub fn summarize_button_selection(&self) -> u8 {
-        self.summarize_button_selection
-    }
-
-    /// Toggle button selection.
-    pub fn toggle_summarize_button(&mut self) {
-        self.summarize_button_selection = if self.summarize_button_selection == 0 { 1 } else { 0 };
-    }
-
-    /// Reset button selection to default (Retry).
-    pub fn reset_summarize_button(&mut self) {
-        self.summarize_button_selection = 0;
+        self.summarize_dialog.selected_button()
     }
 
     /// Check and update animation tick. Returns true if tick should be sent.

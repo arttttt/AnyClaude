@@ -72,7 +72,7 @@ pub fn render_summarize_dialog(
             render_retrying(frame, inner, error, *attempt, *animation_tick, countdown_secs);
         }
 
-        SummarizeDialogState::Failed { error } => {
+        SummarizeDialogState::Failed { error, .. } => {
             render_failed(frame, inner, error, selected_button);
         }
     }
@@ -223,7 +223,8 @@ mod tests {
         );
         assert_eq!(
             dialog_height(&SummarizeDialogState::Failed {
-                error: "test".into()
+                error: "test".into(),
+                selected_button: 0,
             }),
             8
         );

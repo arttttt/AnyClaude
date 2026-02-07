@@ -1,7 +1,7 @@
 use crate::config::ThinkingMode;
 use crate::ui::app::{App, PopupKind};
 use crate::ui::history::HistoryIntent;
-use crate::ui::summarization::SummarizeDialogState;
+use crate::ui::summarization::{SummarizeDialogState, SummarizeIntent};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 /// Action to take after processing a key event.
@@ -233,11 +233,10 @@ fn handle_summarize_dialog_key(app: &mut App, key: KeyEvent) -> InputAction {
         SummarizeDialogState::Failed { .. } => {
             match key.code {
                 KeyCode::Tab | KeyCode::Left | KeyCode::Right => {
-                    app.toggle_summarize_button();
+                    app.dispatch_summarize(SummarizeIntent::ToggleButton);
                 }
                 KeyCode::Enter => {
                     if app.summarize_button_selection() == 0 {
-                        app.reset_summarize_button();
                         return InputAction::RetrySummarization;
                     } else {
                         app.cancel_summarization();
@@ -249,7 +248,6 @@ fn handle_summarize_dialog_key(app: &mut App, key: KeyEvent) -> InputAction {
                     return InputAction::None;
                 }
                 KeyCode::Char('r') | KeyCode::Char('R') => {
-                    app.reset_summarize_button();
                     return InputAction::RetrySummarization;
                 }
                 KeyCode::Char('c') | KeyCode::Char('C') => {
