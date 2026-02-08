@@ -26,7 +26,7 @@ pub fn render_history_dialog(frame: &mut Frame, state: &HistoryDialogState) {
     let inner_width = DIALOG_WIDTH.saturating_sub(2) as usize; // subtract borders
     let can_scroll = entries.len() > MAX_VISIBLE_ROWS;
 
-    let mut lines: Vec<Line> = entries
+    let lines: Vec<Line> = entries
         .iter()
         .skip(*scroll_offset)
         .take(MAX_VISIBLE_ROWS)
@@ -50,32 +50,25 @@ pub fn render_history_dialog(frame: &mut Frame, state: &HistoryDialogState) {
         })
         .collect();
 
-    // Legend
-    lines.push(Line::from(""));
-    lines.push(Line::from(vec![Span::styled(
-        if can_scroll {
-            "  Up/Down: Scroll  Esc/Ctrl+H: Close"
-        } else {
-            "  Esc/Ctrl+H: Close"
-        },
-        Style::default().fg(HEADER_TEXT),
-    )]));
+    let content_rows = lines.len();
 
-    let rect = PopupDialog::new("Backend History", lines)
-        .fixed_width(DIALOG_WIDTH)
-        .render(frame, frame.area());
+    let mut dialog = PopupDialog::new("Backend History", lines)
+        .fixed_width(DIALOG_WIDTH);
+    if can_scroll {
+        dialog = dialog.footer("Up/Down: Scroll");
+    }
+    let rect = dialog.render(frame, frame.area());
 
     // Scrollbar
     if can_scroll {
-        let max_offset = entries.len().saturating_sub(MAX_VISIBLE_ROWS);
-        let mut scrollbar_state = ScrollbarState::new(max_offset).position(*scroll_offset);
-        // Shrink area to content rows (exclude borders and legend)
+        let mut scrollbar_state =
+            ScrollbarState::new(entries.len()).position(*scroll_offset);
+        // Limit scrollbar to content rows only (exclude borders and footer)
         let scrollbar_area = ratatui::layout::Rect {
             x: rect.x,
             y: rect.y,
             width: rect.width,
-            // total height minus bottom border (1) minus legend lines (2)
-            height: rect.height.saturating_sub(3),
+            height: (content_rows as u16).saturating_add(2), // content + borders
         };
         frame.render_stateful_widget(
             Scrollbar::new(ScrollbarOrientation::VerticalRight)

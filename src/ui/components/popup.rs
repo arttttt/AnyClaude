@@ -1,5 +1,5 @@
 use crate::ui::layout::centered_rect_by_size;
-use crate::ui::theme::{CLAUDE_ORANGE, POPUP_BORDER};
+use crate::ui::theme::{CLAUDE_ORANGE, HEADER_TEXT, POPUP_BORDER};
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -10,6 +10,7 @@ use ratatui::Frame;
 pub struct PopupDialog<'a> {
     title: &'a str,
     lines: Vec<Line<'a>>,
+    footer: Option<&'a str>,
     min_width: u16,
     fixed_width: Option<u16>,
 }
@@ -19,9 +20,15 @@ impl<'a> PopupDialog<'a> {
         Self {
             title,
             lines,
+            footer: None,
             min_width: 0,
             fixed_width: None,
         }
+    }
+
+    pub fn footer(mut self, text: &'a str) -> Self {
+        self.footer = Some(text);
+        self
     }
 
     pub fn min_width(mut self, w: u16) -> Self {
@@ -35,7 +42,16 @@ impl<'a> PopupDialog<'a> {
     }
 
     /// Render the dialog and return the occupied `Rect` (useful for overlays like scrollbars).
-    pub fn render(self, frame: &mut Frame, area: Rect) -> Rect {
+    pub fn render(mut self, frame: &mut Frame, area: Rect) -> Rect {
+        // Append footer as centered line with a separator
+        if let Some(text) = self.footer {
+            self.lines.push(Line::from(""));
+            self.lines.push(
+                Line::from(Span::styled(text, Style::default().fg(HEADER_TEXT)))
+                    .centered(),
+            );
+        }
+
         let popup_width = match self.fixed_width {
             Some(w) => w,
             None => {
