@@ -54,9 +54,11 @@ pub fn render_history_dialog(frame: &mut Frame, state: &HistoryDialogState) {
 
     let mut dialog = PopupDialog::new("Backend History", lines)
         .fixed_width(DIALOG_WIDTH);
-    if can_scroll {
-        dialog = dialog.footer("Up/Down: Scroll");
-    }
+    dialog = dialog.footer(if can_scroll {
+        "Up/Down: Scroll  Esc/Ctrl+H: Close"
+    } else {
+        "Esc/Ctrl+H: Close"
+    });
     let rect = dialog.render(frame, frame.area());
 
     // Scrollbar
