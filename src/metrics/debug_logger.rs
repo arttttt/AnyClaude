@@ -3,7 +3,7 @@ use std::fs::File;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use parking_lot::RwLock;
@@ -128,6 +128,29 @@ impl ObservabilityPlugin for DebugLogger {
 
         let event = DebugLogEvent::from_record(ctx.record, level);
         let _ = self.sender.try_send(LogEvent::Request(Box::new(event)));
+    }
+}
+
+// --- Global logger accessor ---
+
+static GLOBAL_LOGGER: OnceLock<Arc<DebugLogger>> = OnceLock::new();
+
+/// Initialize the global logger. Call once at startup.
+pub fn init_global_logger(logger: Arc<DebugLogger>) {
+    let _ = GLOBAL_LOGGER.set(logger);
+}
+
+/// Log an informational message.
+pub fn app_log(operation: &str, message: &str) {
+    if let Some(logger) = GLOBAL_LOGGER.get() {
+        logger.log_auxiliary(operation, None, None, Some(message), None);
+    }
+}
+
+/// Log an error message.
+pub fn app_log_error(operation: &str, message: &str, error: &str) {
+    if let Some(logger) = GLOBAL_LOGGER.get() {
+        logger.log_auxiliary(operation, None, None, Some(message), Some(error));
     }
 }
 

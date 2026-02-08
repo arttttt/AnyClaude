@@ -8,6 +8,7 @@ mod common;
 use anyclaude::config::{
     Backend, Config, ConfigStore, DebugLoggingConfig, Defaults, ProxyConfig, TerminalConfig,
 };
+use anyclaude::metrics::DebugLogger;
 use anyclaude::proxy::ProxyServer;
 use common::mock_backend::{MockBackend, MockResponse};
 use reqwest::Client;
@@ -83,7 +84,8 @@ async fn test_concurrent_port_zero_binding() {
             let bind_addr = "127.0.0.1:0";
             let config = test_config(create_backend(&format!("test{}", i), &mock_url), bind_addr);
             let config_store = ConfigStore::new(config.clone(), PathBuf::from(&format!("/tmp/test{}.toml", i)));
-            let mut server = ProxyServer::new(config_store.clone()).unwrap();
+            let debug_logger = Arc::new(DebugLogger::new(Default::default()));
+            let mut server = ProxyServer::new(config_store.clone(), debug_logger).unwrap();
 
             // Bind to port - this should atomically allocate the port
             let (addr, _) = server.try_bind(&config_store).await.unwrap();
@@ -172,7 +174,8 @@ async fn test_concurrent_same_start_port_gets_consecutive_ports() {
             // All servers try to bind starting from the same port
             let config = test_config(create_backend(&format!("test{}", i), &mock_url), &bind_addr_clone);
             let config_store = ConfigStore::new(config.clone(), PathBuf::from(&format!("/tmp/test{}.toml", i)));
-            let mut server = ProxyServer::new(config_store.clone()).unwrap();
+            let debug_logger = Arc::new(DebugLogger::new(Default::default()));
+            let mut server = ProxyServer::new(config_store.clone(), debug_logger).unwrap();
 
             // Bind - due to fallback logic, each will get a unique port
             let (addr, _) = server.try_bind(&config_store).await.unwrap();
@@ -237,7 +240,8 @@ async fn test_port_remains_bound_between_try_bind_and_run() {
     let bind_addr = "127.0.0.1:0";
     let config = test_config(create_backend("test", &mock.base_url()), bind_addr);
     let config_store = ConfigStore::new(config.clone(), PathBuf::from("/tmp/test.toml"));
-    let mut server = ProxyServer::new(config_store.clone()).unwrap();
+    let debug_logger = Arc::new(DebugLogger::new(Default::default()));
+    let mut server = ProxyServer::new(config_store.clone(), debug_logger).unwrap();
 
     // Bind to port
     let (addr, _) = server.try_bind(&config_store).await.unwrap();

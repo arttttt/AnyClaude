@@ -49,7 +49,7 @@ pub struct App {
     focus: Focus,
     size: Option<(u16, u16)>,
     /// PTY lifecycle state (MVI pattern).
-    pty_lifecycle: PtyLifecycleState,
+    pub pty_lifecycle: PtyLifecycleState,
     /// PTY handle (resource, managed outside MVI).
     pty_handle: Option<PtyHandle>,
     config: ConfigStore,
@@ -122,6 +122,11 @@ impl App {
         self.focus == Focus::Terminal
     }
 
+    /// True once the child process has produced its first output.
+    pub fn is_pty_ready(&self) -> bool {
+        self.pty_lifecycle.is_ready()
+    }
+
     pub fn toggle_popup(&mut self, kind: PopupKind) -> bool {
         self.focus = match self.focus {
             Focus::Popup(active) if active == kind => Focus::Terminal,
@@ -150,7 +155,7 @@ impl App {
     }
 
     /// Send input to PTY or buffer if not ready.
-    fn send_input(&mut self, bytes: &[u8]) {
+    pub fn send_input(&mut self, bytes: &[u8]) {
         if self.pty_lifecycle.is_ready() {
             if let Some(pty) = &self.pty_handle {
                 let _ = pty.send_input(bytes);
@@ -163,14 +168,11 @@ impl App {
     }
 
     pub fn on_paste(&mut self, text: &str) {
-        // Send paste content wrapped in bracketed paste escape sequences
-        // so the subprocess knows this is pasted content
         let bracketed = format!("\x1b[200~{}\x1b[201~", text);
         self.send_input(bracketed.as_bytes());
     }
 
     pub fn on_image_paste(&mut self, data_uri: &str) {
-        // Send image data URI as text input
         let bracketed = format!("\x1b[200~{}\x1b[201~", data_uri);
         self.send_input(bracketed.as_bytes());
     }
@@ -188,15 +190,41 @@ impl App {
         self.dispatch_pty(PtyIntent::Attach);
     }
 
-    /// Called when PTY produces output. Flushes buffer and transitions to Ready.
+    /// Called when PTY produces output.
+    ///
+    /// Transitions to `Ready` once the child process has both:
+    /// 1. Hidden the hardware cursor (DECTCEM off) — UI framework took control
+    /// 2. Rendered content (cursor moved past row 0) — first frame is drawn
+    ///
+    /// React Ink's startup order is: hide cursor → setRawMode → render frame.
+    /// By requiring rendered content we guarantee setRawMode has been called,
+    /// so the PTY slave no longer echoes input.
     pub fn on_pty_output(&mut self) {
-        // Extract buffer before state transition (side effect)
+        if self.pty_lifecycle.is_ready() {
+            return;
+        }
+
+        let (cursor_hidden, cursor_row) = self
+            .pty_handle
+            .as_ref()
+            .map(|pty| {
+                let c = pty.emulator().lock().cursor();
+                (!c.visible, c.row)
+            })
+            .unwrap_or((false, 0));
+
+        // Wait until cursor is hidden AND child has rendered content.
+        if !cursor_hidden || cursor_row == 0 {
+            return;
+        }
+
+        // Extract buffer before state transition.
         let buffer = match &mut self.pty_lifecycle {
             PtyLifecycleState::Attached { buffer } => std::mem::take(buffer),
             _ => VecDeque::new(),
         };
         self.dispatch_pty(PtyIntent::GotOutput);
-        // Flush buffered input now that Claude Code is ready
+        // Flush buffered input now that child UI is active.
         if let Some(pty) = &self.pty_handle {
             for bytes in buffer {
                 let _ = pty.send_input(&bytes);
@@ -373,7 +401,7 @@ impl App {
     // ========================================================================
 
     /// Dispatch an intent to the PTY lifecycle reducer.
-    fn dispatch_pty(&mut self, intent: PtyIntent) {
+    pub fn dispatch_pty(&mut self, intent: PtyIntent) {
         dispatch_mvi!(self, pty_lifecycle, PtyReducer, intent);
     }
 

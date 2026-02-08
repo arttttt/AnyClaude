@@ -28,8 +28,13 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
     frame.render_widget(Clear, body);
     if let Some(emu) = app.emulator() {
         frame.render_widget(TerminalBody::new(Arc::clone(&emu)), body);
-        // Only show cursor when in live view (scrollback == 0) and terminal has focus
-        if app.focus_is_terminal() && app.scrollback() == 0 && body.width > 0 && body.height > 0 {
+        // Show hardware cursor only when:
+        // - the child process has started (is_pty_ready)
+        // - terminal has focus and is at live view (scrollback == 0)
+        // - the child wants the cursor visible (DECTCEM)
+        // Apps like Claude Code hide the hardware cursor and render their own
+        // visual cursor as an inverse-styled space.
+        if app.is_pty_ready() && app.focus_is_terminal() && app.scrollback() == 0 && body.width > 0 && body.height > 0 {
             let cursor = emu.lock().cursor();
             if cursor.visible {
                 let x = body.x + cursor.col.min(body.width.saturating_sub(1));

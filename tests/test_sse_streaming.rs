@@ -1,13 +1,16 @@
 use anyclaude::config::{Config, ConfigStore};
+use anyclaude::metrics::DebugLogger;
 use reqwest::Client;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 #[tokio::test]
 async fn test_non_streaming_response() {
     let config = Config::default();
     let config_store = ConfigStore::new(config, PathBuf::from("/tmp/test-config.toml"));
     let session_token = "test-session-token".to_string();
-    let mut server = anyclaude::proxy::ProxyServer::new(config_store.clone())
+    let debug_logger = Arc::new(DebugLogger::new(Default::default()));
+    let mut server = anyclaude::proxy::ProxyServer::new(config_store.clone(), debug_logger)
         .expect("Failed to create proxy server");
 
     // Bind to port before spawning - this prevents race conditions

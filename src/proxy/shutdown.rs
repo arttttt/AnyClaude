@@ -3,7 +3,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::signal;
 use tokio::sync::Notify;
-use tracing;
+
+use crate::metrics::app_log;
 
 pub struct ShutdownManager {
     shutdown: Arc<AtomicBool>,
@@ -44,7 +45,7 @@ impl ShutdownManager {
         }
 
         self.shutdown.store(true, Ordering::SeqCst);
-        tracing::info!("Shutting down gracefully...");
+        app_log("proxy-shutdown", "Shutting down gracefully...");
         Ok(())
     }
 
@@ -67,21 +68,21 @@ impl ShutdownManager {
 
     pub async fn wait_for_connections(&self, timeout: Duration) {
         let active = self.active_connections.load(Ordering::SeqCst);
-        tracing::info!("Waiting for {} active connections...", active);
+        app_log("proxy-shutdown", &format!("Waiting for {} active connections...", active));
 
         let start = tokio::time::Instant::now();
 
         while start.elapsed() < timeout {
             let active = self.active_connections.load(Ordering::SeqCst);
             if active == 0 {
-                tracing::info!("Server stopped");
+                app_log("proxy-shutdown", "Server stopped");
                 return;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
 
         let active = self.active_connections.load(Ordering::SeqCst);
-        tracing::warn!("Forced shutdown after timeout ({} connections remain)", active);
+        app_log("proxy-shutdown", &format!("Forced shutdown after timeout ({} connections remain)", active));
     }
 }
 

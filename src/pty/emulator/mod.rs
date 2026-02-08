@@ -1,4 +1,4 @@
-mod vt100_impl;
+mod alacritty_impl;
 
 /// Terminal color representation, independent of any specific emulator library.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,7 +32,7 @@ pub struct CursorState {
 
 /// Backend-agnostic terminal emulator interface.
 ///
-/// Implementations wrap a concrete terminal emulation library (e.g. `vt100`,
+/// Implementations wrap a concrete terminal emulation library (e.g.
 /// `alacritty_terminal`) and expose a uniform API consumed by the rest of the
 /// codebase.  Only the implementation file should depend on the underlying
 /// library crate.
@@ -62,5 +62,5 @@ pub trait TerminalEmulator: Send {
 /// to a different library, change only this function and the implementation
 /// module.
 pub fn create(rows: u16, cols: u16, scrollback_len: usize) -> Box<dyn TerminalEmulator> {
-    Box::new(vt100_impl::Vt100Emulator::new(rows, cols, scrollback_len))
+    Box::new(alacritty_impl::AlacrittyEmulator::new(rows, cols, scrollback_len))
 }

@@ -14,7 +14,7 @@ unreachable_code = "deny"
 [dependencies]
 # PTY & Terminal
 portable-pty = "0.9"
-vt100 = "0.16"
+alacritty_terminal = "0.25"
 crossterm = { version = "0.29", features = ["event-stream"] }
 signal-hook = "0.4"
 
@@ -55,9 +55,7 @@ arboard = { version = "3.6", default-features = true }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 base64 = "0.22"
 
-# Logging
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "time"] }
+# Error handling
 anyhow = "1.0.100"
 
 [dev-dependencies]

@@ -1,11 +1,15 @@
-use super::*;
-use crate::backend::BackendState;
-use crate::config::{
+//! Tests for IPC layer: backend switching, status, disconnect, timeout.
+
+mod common;
+
+use anyclaude::backend::BackendState;
+use anyclaude::config::{
     Backend, Config, DebugLoggingConfig, Defaults, ProxyConfig, TerminalConfig,
 };
-use crate::metrics::{DebugLogger, ObservabilityHub};
-use crate::proxy::shutdown::ShutdownManager;
-use crate::proxy::thinking::TransformerRegistry;
+use anyclaude::ipc::{IpcError, IpcLayer};
+use anyclaude::metrics::{DebugLogger, ObservabilityHub};
+use anyclaude::proxy::shutdown::ShutdownManager;
+use anyclaude::proxy::thinking::TransformerRegistry;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 

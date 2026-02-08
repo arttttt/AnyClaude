@@ -5,10 +5,12 @@ mod common;
 use anyclaude::config::{
     Backend, Config, ConfigStore, DebugLoggingConfig, Defaults, ProxyConfig, TerminalConfig,
 };
+use anyclaude::metrics::DebugLogger;
 use anyclaude::proxy::ProxyServer;
 use common::mock_backend::{MockBackend, MockResponse};
 use reqwest::Client;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 fn test_config_with_backends(backends: Vec<Backend>, bind_addr: &str) -> Config {
@@ -58,7 +60,8 @@ async fn test_request_routed_to_active_backend() {
         &bind_addr,
     );
     let config_store = ConfigStore::new(config.clone(), PathBuf::from("/tmp/test.toml"));
-    let mut server = ProxyServer::new(config_store.clone()).unwrap();
+    let debug_logger = Arc::new(DebugLogger::new(Default::default()));
+    let mut server = ProxyServer::new(config_store.clone(), debug_logger).unwrap();
 
     // Bind to port before spawning - this prevents race conditions
     let (proxy_addr, _base_url) = server.try_bind(&config_store).await.unwrap();
@@ -101,7 +104,8 @@ async fn test_backend_switch_routes_to_new_backend() {
         &bind_addr,
     );
     let config_store = ConfigStore::new(config.clone(), PathBuf::from("/tmp/test.toml"));
-    let mut server = ProxyServer::new(config_store.clone()).unwrap();
+    let debug_logger = Arc::new(DebugLogger::new(Default::default()));
+    let mut server = ProxyServer::new(config_store.clone(), debug_logger).unwrap();
     let backend_state = server.backend_state();
 
     // Bind to port before spawning - this prevents race conditions
@@ -155,7 +159,8 @@ async fn test_switch_to_nonexistent_backend_fails() {
         &bind_addr,
     );
     let config_store = ConfigStore::new(config, PathBuf::from("/tmp/test.toml"));
-    let server = ProxyServer::new(config_store).unwrap();
+    let debug_logger = Arc::new(DebugLogger::new(Default::default()));
+    let server = ProxyServer::new(config_store, debug_logger).unwrap();
     let backend_state = server.backend_state();
 
     let result = backend_state.switch_backend("nonexistent");
@@ -177,7 +182,8 @@ async fn test_list_backends() {
         &bind_addr,
     );
     let config_store = ConfigStore::new(config, PathBuf::from("/tmp/test.toml"));
-    let server = ProxyServer::new(config_store).unwrap();
+    let debug_logger = Arc::new(DebugLogger::new(Default::default()));
+    let server = ProxyServer::new(config_store, debug_logger).unwrap();
     let backend_state = server.backend_state();
 
     let backends = backend_state.list_backends();

@@ -7,8 +7,6 @@ pub mod server;
 pub mod shutdown;
 pub mod thinking;
 pub mod timeout;
-pub mod tracing;
 pub mod upstream;
 
 pub use server::{ProxyHandle, ProxyServer};
-pub use tracing::init_tracing;

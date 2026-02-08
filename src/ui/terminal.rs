@@ -42,13 +42,12 @@ impl Widget for TerminalBody {
 
                 if let Some(cell_ref) = buf.cell_mut((x, y)) {
                     if cell.has_contents {
-                        // Cell has actual content - render it
                         cell_ref.set_symbol(&cell.symbol).set_style(style);
-                    } else if cell.bg != TermColor::Default {
-                        // Empty cell but has background color - render space with style
+                    } else if cell.bg != TermColor::Default || cell.inverse {
+                        // Render styled space: background color or inverse video
+                        // (e.g. cursor rendered as inverse space by child process)
                         cell_ref.set_symbol(" ").set_style(style);
                     }
-                    // Otherwise leave cell as-is (already cleared by ratatui)
                 }
             }
         }

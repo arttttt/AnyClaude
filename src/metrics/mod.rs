@@ -10,7 +10,10 @@ pub mod span;
 pub mod stream;
 pub mod types;
 
-pub use debug_logger::{AuxiliaryLogEvent, DebugLogEvent, DebugLogger, LogEvent};
+pub use debug_logger::{
+    app_log, app_log_error, init_global_logger, AuxiliaryLogEvent, DebugLogEvent, DebugLogger,
+    LogEvent,
+};
 pub use hub::ObservabilityHub;
 pub use plugin::ObservabilityPlugin;
 pub use redaction::{redact_body, redact_body_preview, redact_headers};

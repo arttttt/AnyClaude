@@ -254,17 +254,17 @@ impl UpstreamClient {
                     Ok(result) => {
                         transformer_changed = result.changed;
                         if result.changed {
-                            tracing::info!(
-                                backend = %backend.name,
-                                transformer = transformer.name(),
-                                "Applied transformer"
-                            );
+                            crate::metrics::app_log("upstream", &format!(
+                                "Applied transformer '{}' for backend '{}'",
+                                transformer.name(), backend.name
+                            ));
                         }
                     }
                     Err(e) => {
-                        tracing::error!(
-                            error = %e,
-                            "Failed to apply transformer"
+                        crate::metrics::app_log_error(
+                            "upstream",
+                            "Failed to apply transformer",
+                            &e.to_string(),
                         );
                     }
                 }
@@ -289,9 +289,10 @@ impl UpstreamClient {
                     match serde_json::to_vec(&json_body) {
                         Ok(updated) => body_bytes = updated,
                         Err(e) => {
-                            tracing::error!(
-                                error = %e,
-                                "Failed to serialize transformed request body, using original"
+                            crate::metrics::app_log_error(
+                                "upstream",
+                                "Failed to serialize transformed request body, using original",
+                                &e.to_string(),
                             );
                         }
                     }
@@ -319,12 +320,10 @@ impl UpstreamClient {
                 // Passthrough mode forwards all headers unchanged
                 if strip_auth_headers
                     && (name == AUTHORIZATION || name.as_str().eq_ignore_ascii_case("x-api-key")) {
-                        tracing::debug!(
-                            header = %name,
-                            backend = %backend.name,
-                            auth_type = ?backend.auth_type(),
-                            "Stripping incoming auth header"
-                        );
+                        crate::metrics::app_log("upstream", &format!(
+                            "Stripping incoming auth header '{}' for backend '{}' (auth_type={:?})",
+                            name, backend.name, backend.auth_type()
+                        ));
                         continue;
                     }
                 // Rewrite anthropic-beta header for non-Anthropic backends
@@ -372,14 +371,13 @@ impl UpstreamClient {
             match send_result {
                 Ok(response) => break response,
                 Err(err) => {
-                    tracing::error!(
-                        backend = %backend.name,
-                        is_connect = err.is_connect(),
-                        is_timeout = err.is_timeout(),
-                        is_request = err.is_request(),
-                        is_body = err.is_body(),
-                        error = ?err,
-                        "Upstream request error details"
+                    crate::metrics::app_log_error(
+                        "upstream",
+                        &format!(
+                            "Upstream request error details: backend='{}', is_connect={}, is_timeout={}, is_request={}, is_body={}",
+                            backend.name, err.is_connect(), err.is_timeout(), err.is_request(), err.is_body()
+                        ),
+                        &format!("{:?}", err),
                     );
                     let should_retry = err.is_connect() || err.is_timeout();
                     if should_retry && attempt < self.pool_config.max_retries {
@@ -387,14 +385,10 @@ impl UpstreamClient {
                             .pool_config
                             .retry_backoff_base
                             .saturating_mul(1u32 << attempt);
-                        tracing::warn!(
-                            backend = %backend.name,
-                            attempt = attempt + 1,
-                            max_retries = self.pool_config.max_retries,
-                            backoff_ms = backoff.as_millis(),
-                            error = %err,
-                            "Upstream request failed, retrying"
-                        );
+                        crate::metrics::app_log("upstream", &format!(
+                            "Upstream request failed, retrying: backend='{}', attempt={}/{}, backoff_ms={}, error={}",
+                            backend.name, attempt + 1, self.pool_config.max_retries, backoff.as_millis(), err
+                        ));
                         sleep(backoff).await;
                         attempt += 1;
                         continue;
@@ -447,12 +441,10 @@ impl UpstreamClient {
 
         // Log error responses for debugging
         if !status.is_success() {
-            tracing::warn!(
-                backend = %backend.name,
-                status = %status,
-                content_type = ?content_type.as_deref(),
-                "Upstream returned error status"
-            );
+            crate::metrics::app_log("upstream", &format!(
+                "Upstream returned error status: backend='{}', status={}, content_type={:?}",
+                backend.name, status, content_type.as_deref()
+            ));
         }
 
         let mut response_builder = Response::builder().status(status);
@@ -583,12 +575,10 @@ impl UpstreamClient {
                 } else {
                     body_preview.to_string()
                 };
-                tracing::warn!(
-                    backend = %backend.name,
-                    status = %status,
-                    body = %truncated,
-                    "Upstream error response body"
-                );
+                crate::metrics::app_log("upstream", &format!(
+                    "Upstream error response body: backend='{}', status={}, body={}",
+                    backend.name, status, truncated
+                ));
             }
 
             span.add_response_bytes(body_bytes.len());
@@ -618,7 +608,7 @@ fn compute_cost_usd(
 ///
 /// Returns `Some(true)` if converted, `Some(false)` if thinking exists but not adaptive,
 /// `None` if no thinking field present.
-fn convert_adaptive_thinking(body: &mut serde_json::Value, configured_budget: Option<u32>) -> Option<bool> {
+pub fn convert_adaptive_thinking(body: &mut serde_json::Value, configured_budget: Option<u32>) -> Option<bool> {
     let is_adaptive = body
         .get("thinking")
         .and_then(|t| t.get("type"))
@@ -648,7 +638,7 @@ fn convert_adaptive_thinking(body: &mut serde_json::Value, configured_budget: Op
 
 /// Rewrite anthropic-beta header for non-Anthropic backends:
 /// strip `adaptive-thinking-*` and ensure `interleaved-thinking-2025-05-14` is present.
-fn patch_anthropic_beta_header(value: &str) -> String {
+pub fn patch_anthropic_beta_header(value: &str) -> String {
     let mut parts: Vec<&str> = value
         .split(',')
         .map(|p| p.trim())
@@ -678,100 +668,3 @@ impl Default for UpstreamClient {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // --- convert_adaptive_thinking ---
-
-    #[test]
-    fn test_convert_adaptive_to_enabled_with_config_budget() {
-        let mut body = serde_json::json!({
-            "model": "claude-opus-4-6",
-            "max_tokens": 32000,
-            "thinking": {"type": "adaptive"}
-        });
-        let result = convert_adaptive_thinking(&mut body, Some(16000));
-        assert_eq!(result, Some(true));
-        assert_eq!(body["thinking"]["type"], "enabled");
-        assert_eq!(body["thinking"]["budget_tokens"], 16000);
-    }
-
-    #[test]
-    fn test_convert_adaptive_falls_back_to_max_tokens() {
-        let mut body = serde_json::json!({
-            "model": "claude-opus-4-6",
-            "max_tokens": 32000,
-            "thinking": {"type": "adaptive"}
-        });
-        let result = convert_adaptive_thinking(&mut body, None);
-        assert_eq!(result, Some(true));
-        assert_eq!(body["thinking"]["budget_tokens"], 31999);
-    }
-
-    #[test]
-    fn test_convert_adaptive_falls_back_to_default() {
-        let mut body = serde_json::json!({
-            "model": "claude-opus-4-6",
-            "thinking": {"type": "adaptive"}
-        });
-        let result = convert_adaptive_thinking(&mut body, None);
-        assert_eq!(result, Some(true));
-        assert_eq!(body["thinking"]["budget_tokens"], 10000);
-    }
-
-    #[test]
-    fn test_convert_enabled_unchanged() {
-        let mut body = serde_json::json!({
-            "thinking": {"type": "enabled", "budget_tokens": 8000}
-        });
-        let result = convert_adaptive_thinking(&mut body, Some(16000));
-        assert_eq!(result, Some(false));
-        assert_eq!(body["thinking"]["type"], "enabled");
-        assert_eq!(body["thinking"]["budget_tokens"], 8000);
-    }
-
-    #[test]
-    fn test_convert_no_thinking_field() {
-        let mut body = serde_json::json!({"model": "claude-opus-4-6"});
-        let result = convert_adaptive_thinking(&mut body, Some(16000));
-        assert_eq!(result, None);
-    }
-
-    // --- patch_anthropic_beta_header ---
-
-    #[test]
-    fn test_patch_header_replaces_adaptive() {
-        let header = "claude-code-20250219,adaptive-thinking-2026-01-28,prompt-caching-2024-07-31";
-        let patched = patch_anthropic_beta_header(header);
-        assert!(!patched.contains("adaptive-thinking"));
-        assert!(patched.contains("interleaved-thinking-2025-05-14"));
-        assert!(patched.contains("claude-code-20250219"));
-        assert!(patched.contains("prompt-caching-2024-07-31"));
-    }
-
-    #[test]
-    fn test_patch_header_preserves_existing_interleaved() {
-        let header = "interleaved-thinking-2025-05-14,prompt-caching-2024-07-31";
-        let patched = patch_anthropic_beta_header(header);
-        assert_eq!(
-            patched.matches("interleaved-thinking").count(),
-            1,
-            "should not duplicate interleaved-thinking"
-        );
-    }
-
-    #[test]
-    fn test_patch_header_no_adaptive_adds_interleaved() {
-        let header = "claude-code-20250219,prompt-caching-2024-07-31";
-        let patched = patch_anthropic_beta_header(header);
-        assert!(patched.contains("interleaved-thinking-2025-05-14"));
-    }
-
-    #[test]
-    fn test_patch_header_only_adaptive() {
-        let header = "adaptive-thinking-2026-01-28";
-        let patched = patch_anthropic_beta_header(header);
-        assert_eq!(patched, "interleaved-thinking-2025-05-14");
-    }
-}

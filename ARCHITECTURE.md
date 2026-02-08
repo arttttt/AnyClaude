@@ -67,6 +67,10 @@ Statistics collection:
 - Errors
 - Token usage
 
+## Tests
+
+All tests live in `tests/`. No `#[cfg(test)]` in source files. Shared mocks and builders go in a common module. Enforced by `just check`.
+
 ## Module Dependencies
 
 ```

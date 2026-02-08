@@ -1,13 +1,23 @@
 //! Shared test utilities and mock infrastructure.
 
-#![allow(dead_code)]
+#![allow(dead_code, unused_imports)]
 
 pub mod mock_backend;
 
+use anyclaude::config::{Config, ConfigStore};
+use anyclaude::pty::emulator::TerminalEmulator;
+use anyclaude::pty::PtyHandle;
+use anyclaude::ui::app::App;
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+use parking_lot::Mutex;
 use std::net::{SocketAddr, TcpListener};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempDir;
+
+pub type SharedEmulator = Arc<Mutex<Box<dyn TerminalEmulator>>>;
+pub type SpyBuffer = Arc<Mutex<Vec<u8>>>;
 
 /// Find an available port for testing.
 pub fn free_port() -> u16 {
@@ -65,4 +75,93 @@ pub async fn wait_for_server(addr: SocketAddr, timeout: Duration) -> bool {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     false
+}
+
+// -- App helpers --------------------------------------------------------------
+
+pub fn make_app() -> App {
+    let config = ConfigStore::new(Config::default(), PathBuf::from("/tmp/test.toml"));
+    App::new(config)
+}
+
+pub fn press_key(code: KeyCode) -> KeyEvent {
+    KeyEvent {
+        code,
+        modifiers: KeyModifiers::empty(),
+        kind: KeyEventKind::Press,
+        state: KeyEventState::empty(),
+    }
+}
+
+// -- PTY mocks ----------------------------------------------------------------
+
+/// Writer that records all bytes sent through `PtyHandle::send_input`.
+pub struct SpyWriter(Arc<Mutex<Vec<u8>>>);
+
+impl SpyWriter {
+    pub fn new(buf: Arc<Mutex<Vec<u8>>>) -> Self {
+        Self(buf)
+    }
+}
+
+impl std::io::Write for SpyWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Minimal stub satisfying the `MasterPty` trait.
+pub struct MockMasterPty;
+
+impl portable_pty::MasterPty for MockMasterPty {
+    fn resize(&self, _: portable_pty::PtySize) -> anyhow::Result<()> {
+        Ok(())
+    }
+    fn get_size(&self) -> anyhow::Result<portable_pty::PtySize> {
+        Ok(portable_pty::PtySize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+    }
+    fn try_clone_reader(&self) -> anyhow::Result<Box<dyn std::io::Read + Send>> {
+        Ok(Box::new(std::io::empty()))
+    }
+    fn take_writer(&self) -> anyhow::Result<Box<dyn std::io::Write + Send>> {
+        Ok(Box::new(std::io::sink()))
+    }
+    #[cfg(unix)]
+    fn process_group_leader(&self) -> Option<libc::pid_t> {
+        None
+    }
+    #[cfg(unix)]
+    fn as_raw_fd(&self) -> Option<std::os::unix::io::RawFd> {
+        None
+    }
+    #[cfg(unix)]
+    fn tty_name(&self) -> Option<std::path::PathBuf> {
+        None
+    }
+}
+
+// -- Composite builders -------------------------------------------------------
+
+/// Build an `App` wired to a real terminal emulator and spy writer.
+///
+/// Returns `(app, spy_buffer, emulator)`.
+pub fn make_app_with_pty() -> (App, SpyBuffer, SharedEmulator) {
+    let mut app = make_app();
+    let emu: SharedEmulator =
+        Arc::new(Mutex::new(anyclaude::pty::emulator::create(24, 80, 0)));
+    let spy_buf: SpyBuffer = Arc::new(Mutex::new(Vec::new()));
+    let writer: Box<dyn std::io::Write + Send> = Box::new(SpyWriter::new(spy_buf.clone()));
+    let master: Box<dyn portable_pty::MasterPty + Send> = Box::new(MockMasterPty);
+    let handle = PtyHandle::new(emu.clone(), writer, Arc::new(Mutex::new(master)));
+    app.attach_pty(handle);
+    (app, spy_buf, emu)
 }

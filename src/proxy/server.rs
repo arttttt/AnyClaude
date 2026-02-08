@@ -31,11 +31,11 @@ pub struct ProxyServer {
 impl ProxyServer {
     pub fn new(
         config: ConfigStore,
+        debug_logger: Arc<DebugLogger>,
     ) -> Result<Self, crate::backend::BackendError> {
         let timeout_config = TimeoutConfig::from(&config.get().defaults);
         let pool_config = PoolConfig::from(&config.get().defaults);
         let backend_state = BackendState::from_config(config.get())?;
-        let debug_logger = Arc::new(DebugLogger::new(config.get().debug_logging.clone()));
         let observability = ObservabilityHub::new(1000)
             .with_plugins(vec![debug_logger.clone()]);
         let transformer_registry = Arc::new(TransformerRegistry::new());
@@ -93,11 +93,11 @@ impl ProxyServer {
                     self.addr = actual_addr;
                     // Keep listener alive to prevent race conditions
                     self.listener = Some(listener);
-                    tracing::info!("Proxy bound to {} (base_url: {})", actual_addr, actual_base_url);
+                    crate::metrics::app_log("proxy", &format!("Proxy bound to {} (base_url: {})", actual_addr, actual_base_url));
                     return Ok((actual_addr, actual_base_url));
                 }
                 Err(e) => {
-                    tracing::debug!("Port {} busy: {}", port, e);
+                    crate::metrics::app_log("proxy", &format!("Port {} busy: {}", port, e));
                     continue;
                 }
             }
@@ -140,7 +140,7 @@ impl ProxyServer {
         let listener = self.listener
             .ok_or("try_bind() must be called before run()")?;
 
-        tracing::info!("Starting proxy server on {}", self.addr);
+        crate::metrics::app_log("proxy", &format!("Starting proxy server on {}", self.addr));
 
         let app = build_router(self.router.clone());
         let make_service = app.into_make_service();
@@ -155,7 +155,7 @@ impl ProxyServer {
             .await?;
 
         self.shutdown.wait_for_connections(Duration::from_secs(10)).await;
-        tracing::info!("Shutting down gracefully");
+        crate::metrics::app_log("proxy", "Shutting down gracefully");
 
         Ok(())
     }

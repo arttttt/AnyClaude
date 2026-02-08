@@ -2,7 +2,8 @@ use crate::clipboard::{ClipboardContent, ClipboardHandler};
 use crate::config::{Config, ConfigStore};
 use crate::error::{ErrorCategory, ErrorSeverity};
 use crate::ipc::IpcLayer;
-use crate::proxy::{init_tracing, ProxyServer};
+use crate::metrics::{init_global_logger, DebugLogger};
+use crate::proxy::ProxyServer;
 use crate::pty::PtySession;
 use crate::shutdown::{ShutdownCoordinator, ShutdownPhase};
 use crate::ui::app::{App, UiCommand};
@@ -25,9 +26,6 @@ const METRICS_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 const BACKENDS_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 
 pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Result<()> {
-    // Initialize tracing (file logging if CLAUDE_WRAPPER_LOG is set)
-    init_tracing();
-
     let (mut terminal, guard) = setup_terminal()?;
     let tick_rate = Duration::from_millis(250);
 
@@ -54,11 +52,14 @@ pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Re
     // Config file watching removed to avoid race conditions with CLI overrides.
     // Config is loaded once at startup and remains static for the session.
 
+    let debug_logger = Arc::new(DebugLogger::new(config_store.get().debug_logging.clone()));
+    init_global_logger(debug_logger.clone());
+
     let (ui_command_tx, ui_command_rx) = mpsc::channel(UI_COMMAND_BUFFER);
     let mut app = App::new(config_store.clone());
     app.set_ipc_sender(ui_command_tx.clone());
 
-    let mut proxy_server = ProxyServer::new(config_store.clone())
+    let mut proxy_server = ProxyServer::new(config_store.clone(), debug_logger.clone())
         .map_err(|err| io::Error::other(err.to_string()))?;
     
     // Try to bind and get the actual port, updating the base URL
@@ -86,7 +87,6 @@ pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Re
     }
 
     let observability = proxy_server.observability();
-    let debug_logger = proxy_server.debug_logger();
     let shutdown = proxy_server.shutdown_handle();
     let transformer_registry = proxy_server.transformer_registry();
     let started_at = std::time::Instant::now();
@@ -94,7 +94,7 @@ pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Re
     let (ipc_client, ipc_server) = IpcLayer::create();
     async_runtime.spawn(async move {
         if let Err(err) = proxy_server.run().await {
-            tracing::error!(error = %err, "Proxy server exited");
+            crate::metrics::app_log_error("runtime", "Proxy server exited", &err.to_string());
         }
     });
     async_runtime.spawn(ipc_server.run(
@@ -279,7 +279,7 @@ pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Re
     async_runtime.shutdown_timeout(Duration::from_secs(2));
 
     shutdown_coordinator.advance(ShutdownPhase::Complete);
-    tracing::info!("Shutdown complete");
+    crate::metrics::app_log("runtime", "Shutdown complete");
     Ok(())
 }
 
@@ -381,10 +381,10 @@ async fn wait_for_os_signal() {
 
         tokio::select! {
             _ = signal::ctrl_c() => {
-                tracing::info!("Received SIGINT");
+                crate::metrics::app_log("runtime", "Received SIGINT");
             }
             _ = sigterm.recv() => {
-                tracing::info!("Received SIGTERM");
+                crate::metrics::app_log("runtime", "Received SIGTERM");
             }
         }
     }
@@ -394,6 +394,6 @@ async fn wait_for_os_signal() {
         signal::ctrl_c()
             .await
             .expect("Failed to listen for Ctrl+C");
-        tracing::info!("Received Ctrl+C");
+        crate::metrics::app_log("runtime", "Received Ctrl+C");
     }
 }

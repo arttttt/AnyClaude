@@ -5,14 +5,14 @@ use std::time::Instant;
 use tokio::sync::mpsc;
 
 use crate::backend::BackendState;
-use crate::metrics::{DebugLogger, MetricsSnapshot, ObservabilityHub};
+use crate::metrics::{app_log, DebugLogger, MetricsSnapshot, ObservabilityHub};
 use crate::proxy::shutdown::ShutdownManager;
 use crate::proxy::thinking::TransformerRegistry;
 
 use super::types::{BackendInfo, IpcCommand, ProxyStatus};
 
 pub struct IpcServer {
-    pub(crate) receiver: mpsc::Receiver<IpcCommand>,
+    pub receiver: mpsc::Receiver<IpcCommand>,
 }
 
 impl IpcServer {
@@ -42,7 +42,7 @@ impl IpcServer {
                         transformer_registry.notify_backend_for_thinking(&backend_id);
                     }
                     if respond_to.send(result).is_err() {
-                        tracing::trace!("IPC: SwitchBackend response dropped (receiver gone)");
+                        app_log("ipc","IPC: SwitchBackend response dropped (receiver gone)");
                     }
                 }
                 IpcCommand::GetStatus { respond_to } => {
@@ -59,7 +59,7 @@ impl IpcServer {
                         healthy: !shutdown.is_shutting_down(),
                     };
                     if respond_to.send(status).is_err() {
-                        tracing::trace!("IPC: GetStatus response dropped (receiver gone)");
+                        app_log("ipc","IPC: GetStatus response dropped (receiver gone)");
                     }
                 }
                 IpcCommand::GetMetrics {
@@ -69,7 +69,7 @@ impl IpcServer {
                     let snapshot = observability.snapshot();
                     let filtered = filter_metrics(snapshot, backend_id.as_deref());
                     if respond_to.send(filtered).is_err() {
-                        tracing::trace!("IPC: GetMetrics response dropped (receiver gone)");
+                        app_log("ipc","IPC: GetMetrics response dropped (receiver gone)");
                     }
                 }
                 IpcCommand::ListBackends { respond_to } => {
@@ -85,19 +85,19 @@ impl IpcServer {
                         });
                     }
                     if respond_to.send(backends).is_err() {
-                        tracing::trace!("IPC: ListBackends response dropped (receiver gone)");
+                        app_log("ipc","IPC: ListBackends response dropped (receiver gone)");
                     }
                 }
                 IpcCommand::GetDebugLogging { respond_to } => {
                     let config = debug_logger.config();
                     if respond_to.send(config).is_err() {
-                        tracing::trace!("IPC: GetDebugLogging response dropped (receiver gone)");
+                        app_log("ipc","IPC: GetDebugLogging response dropped (receiver gone)");
                     }
                 }
                 IpcCommand::SetDebugLogging { config, respond_to } => {
                     debug_logger.set_config(config);
                     if respond_to.send(Ok(())).is_err() {
-                        tracing::trace!("IPC: SetDebugLogging response dropped (receiver gone)");
+                        app_log("ipc","IPC: SetDebugLogging response dropped (receiver gone)");
                     }
                 }
             }

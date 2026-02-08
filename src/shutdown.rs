@@ -1,5 +1,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
+
+use crate::metrics::{app_log};
 use tokio::sync::Notify;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,7 +34,7 @@ impl ShutdownCoordinator {
     /// Signal shutdown start
     pub fn signal(&self) {
         if !self.shutdown.swap(true, Ordering::SeqCst) {
-            tracing::info!("Graceful shutdown initiated");
+            app_log("shutdown", "Graceful shutdown initiated");
             self.notify.notify_waiters();
         }
     }
@@ -58,7 +60,7 @@ impl ShutdownCoordinator {
     /// Advance to next phase
     pub fn advance(&self, phase: ShutdownPhase) {
         self.phase.store(phase as u8, Ordering::SeqCst);
-        tracing::debug!("Shutdown phase: {:?}", phase);
+        app_log("shutdown", &format!("Shutdown phase: {:?}", phase));
     }
 
     /// Create a handle for sharing

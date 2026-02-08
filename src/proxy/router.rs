@@ -71,13 +71,7 @@ async fn proxy_handler(
 ) -> Response {
     let request_id = Uuid::new_v4().to_string();
     let query_str = query.as_deref().unwrap_or("");
-    tracing::debug!(
-        method = %req.method(),
-        path = %req.uri().path(),
-        query = %query_str,
-        request_id = %request_id,
-        "Incoming request"
-    );
+    crate::metrics::app_log("router", &format!("Incoming request: {} {} request_id={}", req.method(), req.uri().path(), request_id));
 
     let active_backend = state.backend_state.get_active_backend();
     let mut start = state
@@ -124,12 +118,7 @@ async fn proxy_handler(
     {
         Ok(resp) => resp,
         Err(e) => {
-            tracing::error!(
-                request_id = %request_id,
-                error = %e,
-                error_type = %e.error_type(),
-                "Request failed"
-            );
+            crate::metrics::app_log_error("router", &format!("Request failed: request_id={}", request_id), &format!("{} ({})", e, e.error_type()));
 
             ErrorResponse::from_error(&e, &request_id)
         }

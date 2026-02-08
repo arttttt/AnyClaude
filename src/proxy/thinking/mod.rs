@@ -13,13 +13,10 @@ mod context;
 mod error;
 mod native;
 mod registry;
-#[cfg(test)]
-mod request_structure_tests;
-
 pub use context::{TransformContext, TransformResult};
 pub use error::TransformError;
 pub use native::NativeTransformer;
-pub use registry::{CacheStats, ThinkingRegistry};
+pub use registry::{fast_hash, safe_suffix, safe_truncate, BlockInfo, CacheStats, ThinkingRegistry};
 
 use parking_lot::Mutex;
 
@@ -33,7 +30,7 @@ pub struct TransformerRegistry {
 impl TransformerRegistry {
     /// Create a new registry.
     pub fn new() -> Self {
-        tracing::info!("Creating NativeTransformer (passthrough)");
+        crate::metrics::app_log("thinking", "Creating NativeTransformer (passthrough)");
         Self {
             transformer: NativeTransformer::new(),
             thinking_registry: Mutex::new(ThinkingRegistry::new()),
@@ -113,16 +110,5 @@ impl Default for TransformerRegistry {
 impl std::fmt::Debug for TransformerRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TransformerRegistry").finish()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn registry_creates_native_transformer() {
-        let registry = TransformerRegistry::new();
-        assert_eq!(registry.transformer().name(), "native");
     }
 }
