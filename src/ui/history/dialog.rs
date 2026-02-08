@@ -1,7 +1,7 @@
 use crate::ui::components::PopupDialog;
 use crate::ui::history::reducer::MAX_VISIBLE_ROWS;
 use crate::ui::history::state::HistoryDialogState;
-use crate::ui::theme::{HEADER_TEXT, POPUP_BORDER};
+use crate::ui::theme::{HEADER_SEPARATOR, HEADER_TEXT, POPUP_BORDER};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::Frame;
@@ -23,7 +23,8 @@ pub fn render_history_dialog(frame: &mut Frame, state: &HistoryDialogState) {
     }
 
     let can_scroll = entries.len() > MAX_VISIBLE_ROWS;
-    // subtract borders; reserve 1 extra column for scrollbar when present
+    // Subtract borders; when scrollbar present, reserve 1 column for it (0 gap cells —
+    // the narrow centered ┃ char provides ~0.25-cell visual gaps on each side).
     let inner_width = DIALOG_WIDTH.saturating_sub(if can_scroll { 3 } else { 2 }) as usize;
 
     let lines: Vec<Line> = entries
@@ -36,17 +37,21 @@ pub fn render_history_dialog(frame: &mut Frame, state: &HistoryDialogState) {
                 Some(from) => format!("{} → {}", from, entry.to_backend),
             };
             let time = format_time(entry.timestamp);
+            let margins = if can_scroll { 1 } else { 2 };
             let padding = inner_width
                 .saturating_sub(description.chars().count())
                 .saturating_sub(time.len())
-                .saturating_sub(2); // 1 char margin each side
-            Line::from(vec![
+                .saturating_sub(margins);
+            let mut spans = vec![
                 Span::styled(" ", Style::default()),
                 Span::styled(description, Style::default().fg(HEADER_TEXT)),
                 Span::styled(" ".repeat(padding.max(1)), Style::default()),
                 Span::styled(time, Style::default().fg(POPUP_BORDER)),
-                Span::styled(" ", Style::default()),
-            ])
+            ];
+            if !can_scroll {
+                spans.push(Span::styled(" ", Style::default()));
+            }
+            Line::from(spans)
         })
         .collect();
 
@@ -73,14 +78,14 @@ pub fn render_history_dialog(frame: &mut Frame, state: &HistoryDialogState) {
             0
         };
 
-        let x = rect.x + rect.width - 2; // inside border
+        let x = rect.x + rect.width - 2; // adjacent to border, 0 gap
         let y_base = rect.y + 1; // skip top border
         let buf = frame.buffer_mut();
         for i in 0..track {
             let cell = &mut buf[(x, y_base + i as u16)];
             if i >= thumb_start && i < thumb_start + thumb_size {
-                cell.set_char('█');
-                cell.set_style(Style::default().fg(HEADER_TEXT));
+                cell.set_char('┃');
+                cell.set_style(Style::default().fg(HEADER_SEPARATOR));
             }
         }
     }
