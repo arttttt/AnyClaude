@@ -78,7 +78,7 @@ pub fn render_history_dialog(frame: &mut Frame, state: &HistoryDialogState) {
         for i in 0..track {
             let cell = &mut buf[(x, y_base + i as u16)];
             if i >= thumb_start && i < thumb_start + thumb_size {
-                cell.set_char('┃');
+                cell.set_char('█');
                 cell.set_style(Style::default().fg(HEADER_TEXT));
             }
         }
