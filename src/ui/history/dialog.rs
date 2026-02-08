@@ -1,9 +1,10 @@
+use crate::ui::components::PopupDialog;
 use crate::ui::history::reducer::MAX_VISIBLE_ROWS;
 use crate::ui::history::state::HistoryDialogState;
-use crate::ui::components::PopupDialog;
 use crate::ui::theme::{HEADER_TEXT, POPUP_BORDER};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
+use ratatui::widgets::{Scrollbar, ScrollbarOrientation, ScrollbarState};
 use ratatui::Frame;
 use std::time::SystemTime;
 
@@ -23,8 +24,9 @@ pub fn render_history_dialog(frame: &mut Frame, state: &HistoryDialogState) {
     }
 
     let inner_width = DIALOG_WIDTH.saturating_sub(2) as usize; // subtract borders
+    let can_scroll = entries.len() > MAX_VISIBLE_ROWS;
 
-    let lines: Vec<Line> = entries
+    let mut lines: Vec<Line> = entries
         .iter()
         .skip(*scroll_offset)
         .take(MAX_VISIBLE_ROWS)
@@ -48,10 +50,41 @@ pub fn render_history_dialog(frame: &mut Frame, state: &HistoryDialogState) {
         })
         .collect();
 
-    PopupDialog::new("Backend History", lines)
+    // Legend
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![Span::styled(
+        if can_scroll {
+            "  Up/Down: Scroll  Esc/Ctrl+H: Close"
+        } else {
+            "  Esc/Ctrl+H: Close"
+        },
+        Style::default().fg(HEADER_TEXT),
+    )]));
 
+    let rect = PopupDialog::new("Backend History", lines)
         .fixed_width(DIALOG_WIDTH)
         .render(frame, frame.area());
+
+    // Scrollbar
+    if can_scroll {
+        let max_offset = entries.len().saturating_sub(MAX_VISIBLE_ROWS);
+        let mut scrollbar_state = ScrollbarState::new(max_offset).position(*scroll_offset);
+        // Shrink area to content rows (exclude borders and legend)
+        let scrollbar_area = ratatui::layout::Rect {
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            // total height minus bottom border (1) minus legend lines (2)
+            height: rect.height.saturating_sub(3),
+        };
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .thumb_style(Style::default().fg(HEADER_TEXT))
+                .track_style(Style::default().fg(POPUP_BORDER)),
+            scrollbar_area,
+            &mut scrollbar_state,
+        );
+    }
 }
 
 fn format_time(timestamp: SystemTime) -> String {

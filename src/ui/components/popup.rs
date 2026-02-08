@@ -34,7 +34,8 @@ impl<'a> PopupDialog<'a> {
         self
     }
 
-    pub fn render(self, frame: &mut Frame, area: Rect) {
+    /// Render the dialog and return the occupied `Rect` (useful for overlays like scrollbars).
+    pub fn render(self, frame: &mut Frame, area: Rect) -> Rect {
         let popup_width = match self.fixed_width {
             Some(w) => w,
             None => {
@@ -57,5 +58,6 @@ impl<'a> PopupDialog<'a> {
             .border_style(Style::default().fg(POPUP_BORDER));
         let widget = Paragraph::new(self.lines).block(block);
         frame.render_widget(widget, rect);
+        rect
     }
 }
