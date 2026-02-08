@@ -1,7 +1,7 @@
 use crate::ui::components::PopupDialog;
 use crate::ui::history::reducer::MAX_VISIBLE_ROWS;
 use crate::ui::history::state::HistoryDialogState;
-use crate::ui::theme::{HEADER_SEPARATOR, HEADER_TEXT, POPUP_BORDER};
+use crate::ui::theme::{HEADER_TEXT, POPUP_BORDER};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::Frame;
@@ -55,40 +55,15 @@ pub fn render_history_dialog(frame: &mut Frame, state: &HistoryDialogState) {
         })
         .collect();
 
-    let content_rows = lines.len();
-
     let mut dialog = PopupDialog::new("Backend History", lines)
-        .fixed_width(DIALOG_WIDTH);
+        .fixed_width(DIALOG_WIDTH)
+        .scrollbar(entries.len(), *scroll_offset);
     dialog = dialog.footer(if can_scroll {
         "Up/Down: Scroll  Esc/Ctrl+H: Close"
     } else {
         "Esc/Ctrl+H: Close"
     });
-    let rect = dialog.render(frame, frame.area());
-
-    // Custom scrollbar — ratatui's Scrollbar rounds start/end independently,
-    // causing ±1 thumb size jitter. Draw manually for constant thumb size.
-    if can_scroll {
-        let max_offset = entries.len().saturating_sub(MAX_VISIBLE_ROWS);
-        let track = content_rows;
-        let thumb_size = (track * MAX_VISIBLE_ROWS / entries.len()).max(1);
-        let thumb_start = if max_offset > 0 {
-            *scroll_offset * (track - thumb_size) / max_offset
-        } else {
-            0
-        };
-
-        let x = rect.x + rect.width - 2; // adjacent to border, 0 gap
-        let y_base = rect.y + 1; // skip top border
-        let buf = frame.buffer_mut();
-        for i in 0..track {
-            let cell = &mut buf[(x, y_base + i as u16)];
-            if i >= thumb_start && i < thumb_start + thumb_size {
-                cell.set_char('┃');
-                cell.set_style(Style::default().fg(HEADER_SEPARATOR));
-            }
-        }
-    }
+    dialog.render(frame, frame.area());
 }
 
 fn format_time(timestamp: SystemTime) -> String {
