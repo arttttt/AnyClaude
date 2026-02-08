@@ -3,15 +3,15 @@ use crate::ui::app::{App, PopupKind};
 use crate::ui::footer::Footer;
 use crate::ui::header::Header;
 use crate::ui::history::render_history_dialog;
-use crate::ui::layout::{centered_rect_by_size, layout_regions};
+use crate::ui::layout::layout_regions;
+use crate::ui::components::PopupDialog;
 use crate::ui::terminal::TerminalBody;
 use crate::ui::theme::{
-    ACTIVE_HIGHLIGHT, CLAUDE_ORANGE, HEADER_TEXT, POPUP_BORDER, STATUS_ERROR, STATUS_OK,
-    STATUS_WARNING,
+    ACTIVE_HIGHLIGHT, HEADER_TEXT, STATUS_ERROR, STATUS_OK, STATUS_WARNING,
 };
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::Clear;
 use ratatui::Frame;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -291,22 +291,11 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
             PopupKind::History => unreachable!("handled above"),
         };
 
-        let content_width = lines.iter().map(Line::width).max().unwrap_or(0) as u16;
-        let popup_min_width = match kind {
-            PopupKind::BackendSwitch => 60,
-            _ => 0,
-        };
-        let popup_width = content_width.saturating_add(4).max(popup_min_width);
-        let popup_height = lines.len().saturating_add(2) as u16;
-        let area = centered_rect_by_size(body, popup_width, popup_height);
-
-        frame.render_widget(Clear, area);
-        let popup = Block::default()
-            .title(Span::styled(title, Style::default().fg(CLAUDE_ORANGE)))
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(POPUP_BORDER));
-        let widget = Paragraph::new(lines).block(popup);
-        frame.render_widget(widget, area);
+        let mut dialog = PopupDialog::new(title, lines);
+        if matches!(kind, PopupKind::BackendSwitch) {
+            dialog = dialog.min_width(60);
+        }
+        dialog.render(frame, body);
 
     }
 }

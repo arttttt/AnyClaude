@@ -1,10 +1,9 @@
 use crate::ui::history::reducer::MAX_VISIBLE_ROWS;
 use crate::ui::history::state::HistoryDialogState;
-use crate::ui::layout::centered_rect_by_size;
-use crate::ui::theme::{CLAUDE_ORANGE, HEADER_TEXT, POPUP_BORDER};
+use crate::ui::components::PopupDialog;
+use crate::ui::theme::{HEADER_TEXT, POPUP_BORDER};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 use std::time::SystemTime;
 
@@ -22,20 +21,6 @@ pub fn render_history_dialog(frame: &mut Frame, state: &HistoryDialogState) {
     if entries.is_empty() {
         return;
     }
-
-    let visible_count = entries.len().min(MAX_VISIBLE_ROWS);
-    let popup_height = (visible_count as u16).saturating_add(2); // borders
-    let area = centered_rect_by_size(frame.area(), DIALOG_WIDTH, popup_height);
-
-    frame.render_widget(Clear, area);
-
-    let block = Block::default()
-        .title(Span::styled(
-            " Backend History ",
-            Style::default().fg(CLAUDE_ORANGE),
-        ))
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(POPUP_BORDER));
 
     let inner_width = DIALOG_WIDTH.saturating_sub(2) as usize; // subtract borders
 
@@ -63,8 +48,10 @@ pub fn render_history_dialog(frame: &mut Frame, state: &HistoryDialogState) {
         })
         .collect();
 
-    let widget = Paragraph::new(lines).block(block);
-    frame.render_widget(widget, area);
+    PopupDialog::new("Backend History", lines)
+
+        .fixed_width(DIALOG_WIDTH)
+        .render(frame, frame.area());
 }
 
 fn format_time(timestamp: SystemTime) -> String {

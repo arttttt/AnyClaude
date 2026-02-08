@@ -22,7 +22,6 @@ AnyClaude solves this:
 - **Thinking Block Filtering** — Automatic filtering of previous backend's thinking blocks on switch
 - **Adaptive Thinking Conversion** — Convert adaptive thinking to enabled format for non-Anthropic backends (`thinking_compat`)
 - **Transparent Proxy** — Routes API requests through active backend
-- **Image Paste** — Paste images from clipboard (Ctrl+V)
 - **Backend History** — View switch history with `Ctrl+H`
 - **Debug Logging** — Request/response logging with configurable detail levels
 
@@ -120,14 +119,25 @@ retry_backoff_base_ms = 100       # Base backoff for retries (exponential)
 
 [proxy]
 bind_addr = "127.0.0.1:8080"      # Local proxy listen address (auto-increments if busy)
+base_url = "http://127.0.0.1:8080" # Base URL exposed to Claude Code
 
 [terminal]
 scrollback_lines = 10000          # History buffer size
 
 [debug_logging]
 level = "verbose"                 # "off", "basic", "verbose", "full"
+format = "console"                # "console", "json"
 destination = "file"              # "stderr", "file", "both"
 file_path = "~/.config/anyclaude/debug.log"
+body_preview_bytes = 1024         # Max bytes of request/response body to log
+header_preview = true             # Log request/response headers
+full_body = false                 # Log full bodies (no size limit)
+pretty_print = true               # Pretty-print JSON bodies
+
+[debug_logging.rotation]
+mode = "none"                     # "none", "size", "daily"
+max_bytes = 10485760              # Max log file size before rotation (10 MB)
+max_files = 5                     # Max rotated log files to keep
 
 [[backends]]
 name = "anthropic"
@@ -149,6 +159,10 @@ name = "custom"
 display_name = "Custom Provider"
 base_url = "https://my-proxy.example.com"
 auth_type = "passthrough"         # Forward original auth headers
+
+[backends.pricing]
+input_per_million = 3.00          # Cost per million input tokens
+output_per_million = 15.00        # Cost per million output tokens
 ```
 
 ### Authentication Types
