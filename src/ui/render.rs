@@ -210,12 +210,6 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
                     }
                 }
 
-                lines.push(Line::from(""));
-                lines.push(Line::from(vec![Span::styled(
-                    "  Esc/Ctrl+S: Close",
-                    Style::default().fg(HEADER_TEXT),
-                )]));
-
                 if let Some(error) = app.last_ipc_error() {
                     lines.push(Line::from(""));
                     lines.push(Line::from(vec![Span::styled(
@@ -275,10 +269,6 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
                         lines.push(Line::from(spans));
                     }
 
-                    lines.push(Line::from(""));
-                    lines.push(Line::from(
-                        "    Up/Down: Move  Enter: Select  Esc/Ctrl+B: Close",
-                    ));
                 }
 
                 if let Some(error) = app.last_ipc_error() {
@@ -292,8 +282,16 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
         };
 
         let mut dialog = PopupDialog::new(title, lines);
-        if matches!(kind, PopupKind::BackendSwitch) {
-            dialog = dialog.min_width(60);
+        match kind {
+            PopupKind::Status => {
+                dialog = dialog.footer("Esc/Ctrl+S: Close");
+            }
+            PopupKind::BackendSwitch => {
+                dialog = dialog
+                    .min_width(60)
+                    .footer("Up/Down: Move  Enter: Select  Esc/Ctrl+B: Close");
+            }
+            PopupKind::History => unreachable!(),
         }
         dialog.render(frame, body);
 

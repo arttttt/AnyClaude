@@ -1,6 +1,6 @@
+use crate::ui::components::PopupDialog;
 use crate::ui::history::reducer::MAX_VISIBLE_ROWS;
 use crate::ui::history::state::HistoryDialogState;
-use crate::ui::components::PopupDialog;
 use crate::ui::theme::{HEADER_TEXT, POPUP_BORDER};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -22,7 +22,10 @@ pub fn render_history_dialog(frame: &mut Frame, state: &HistoryDialogState) {
         return;
     }
 
-    let inner_width = DIALOG_WIDTH.saturating_sub(2) as usize; // subtract borders
+    let can_scroll = entries.len() > MAX_VISIBLE_ROWS;
+    // Subtract borders; when scrollbar present, reserve 1 column for it (0 gap cells —
+    // the narrow centered ┃ char provides ~0.25-cell visual gaps on each side).
+    let inner_width = DIALOG_WIDTH.saturating_sub(if can_scroll { 3 } else { 2 }) as usize;
 
     let lines: Vec<Line> = entries
         .iter()
@@ -34,24 +37,33 @@ pub fn render_history_dialog(frame: &mut Frame, state: &HistoryDialogState) {
                 Some(from) => format!("{} → {}", from, entry.to_backend),
             };
             let time = format_time(entry.timestamp);
+            let margins = if can_scroll { 1 } else { 2 };
             let padding = inner_width
                 .saturating_sub(description.chars().count())
                 .saturating_sub(time.len())
-                .saturating_sub(2); // 1 char margin each side
-            Line::from(vec![
+                .saturating_sub(margins);
+            let mut spans = vec![
                 Span::styled(" ", Style::default()),
                 Span::styled(description, Style::default().fg(HEADER_TEXT)),
                 Span::styled(" ".repeat(padding.max(1)), Style::default()),
                 Span::styled(time, Style::default().fg(POPUP_BORDER)),
-                Span::styled(" ", Style::default()),
-            ])
+            ];
+            if !can_scroll {
+                spans.push(Span::styled(" ", Style::default()));
+            }
+            Line::from(spans)
         })
         .collect();
 
-    PopupDialog::new("Backend History", lines)
-
+    let mut dialog = PopupDialog::new("Backend History", lines)
         .fixed_width(DIALOG_WIDTH)
-        .render(frame, frame.area());
+        .scrollbar(entries.len(), *scroll_offset);
+    dialog = dialog.footer(if can_scroll {
+        "Up/Down: Scroll  Esc/Ctrl+H: Close"
+    } else {
+        "Esc/Ctrl+H: Close"
+    });
+    dialog.render(frame, frame.area());
 }
 
 fn format_time(timestamp: SystemTime) -> String {
