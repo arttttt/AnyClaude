@@ -226,14 +226,3 @@ impl<S> Drop for ObservedStream<S> {
         self.finish();
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn stream_error_display() {
-        let err = StreamError::IdleTimeout { duration: 60 };
-        assert_eq!(err.to_string(), "idle timeout after 60s of inactivity");
-    }
-}

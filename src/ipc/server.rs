@@ -12,7 +12,7 @@ use crate::proxy::thinking::TransformerRegistry;
 use super::types::{BackendInfo, IpcCommand, ProxyStatus};
 
 pub struct IpcServer {
-    pub(crate) receiver: mpsc::Receiver<IpcCommand>,
+    pub receiver: mpsc::Receiver<IpcCommand>,
 }
 
 impl IpcServer {
