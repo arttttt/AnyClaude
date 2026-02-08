@@ -72,7 +72,7 @@ pub fn render_history_dialog(frame: &mut Frame, state: &HistoryDialogState) {
             0
         };
 
-        let x = rect.x + rect.width - 1;
+        let x = rect.x + rect.width - 2; // inside border
         let y_base = rect.y + 1; // skip top border
         let buf = frame.buffer_mut();
         for i in 0..track {
