@@ -35,7 +35,7 @@ pub fn render_history_dialog(frame: &mut Frame, state: &HistoryDialogState) {
             };
             let time = format_time(entry.timestamp);
             let padding = inner_width
-                .saturating_sub(description.len())
+                .saturating_sub(description.chars().count())
                 .saturating_sub(time.len())
                 .saturating_sub(2); // 1 char margin each side
             Line::from(vec![
