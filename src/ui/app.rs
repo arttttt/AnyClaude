@@ -614,29 +614,149 @@ fn key_event_to_bytes(key: KeyEvent) -> Option<Vec<u8>> {
         return None;
     }
 
+    // Check for Alt/Option modifier
+    let has_alt = key.modifiers.contains(KeyModifiers::ALT);
+    // Check for Control modifier
+    let has_control = key.modifiers.contains(KeyModifiers::CONTROL);
+
     match key.code {
         KeyCode::Char(c) => {
-            if key.modifiers.contains(KeyModifiers::CONTROL) {
+            if has_control {
                 let value = (c as u8).to_ascii_lowercase();
                 return Some(vec![value.saturating_sub(b'a') + 1]);
             }
+            // Fast path for ASCII characters (most common case)
+            if c.is_ascii() {
+                if has_alt {
+                    return Some(vec![0x1b, c as u8]);
+                }
+                return Some(vec![c as u8]);
+            }
+            // Slow path for multi-byte UTF-8 characters
             let mut buffer = [0u8; 4];
-            Some(c.encode_utf8(&mut buffer).as_bytes().to_vec())
+            let bytes = c.encode_utf8(&mut buffer).as_bytes();
+            if has_alt {
+                let mut result = Vec::with_capacity(1 + bytes.len());
+                result.push(0x1b);
+                result.extend_from_slice(bytes);
+                return Some(result);
+            }
+            Some(bytes.to_vec())
         }
         KeyCode::Enter => Some(vec![b'\r']),
         KeyCode::Tab => Some(vec![b'\t']),
         KeyCode::Backspace => Some(vec![0x7f]),
         KeyCode::Esc => Some(vec![0x1b]),
-        KeyCode::Up => Some(b"\x1b[A".to_vec()),
-        KeyCode::Down => Some(b"\x1b[B".to_vec()),
-        KeyCode::Right => Some(b"\x1b[C".to_vec()),
-        KeyCode::Left => Some(b"\x1b[D".to_vec()),
-        KeyCode::Home => Some(b"\x1b[H".to_vec()),
-        KeyCode::End => Some(b"\x1b[F".to_vec()),
-        KeyCode::PageUp => Some(b"\x1b[5~".to_vec()),
-        KeyCode::PageDown => Some(b"\x1b[6~".to_vec()),
-        KeyCode::Delete => Some(b"\x1b[3~".to_vec()),
-        KeyCode::Insert => Some(b"\x1b[2~".to_vec()),
+        KeyCode::Up => {
+            if has_alt && has_control {
+                Some(vec![0x1b, b'[', b'1', b';', b'7', b'A']) // Alt+Ctrl+Up
+            } else if has_alt {
+                Some(vec![0x1b, b'[', b'1', b';', b'3', b'A']) // Alt+Up
+            } else if has_control {
+                Some(vec![0x1b, b'[', b'1', b';', b'5', b'A']) // Ctrl+Up
+            } else {
+                Some(vec![0x1b, b'[', b'A']) // Up
+            }
+        }
+        KeyCode::Down => {
+            if has_alt && has_control {
+                Some(vec![0x1b, b'[', b'1', b';', b'7', b'B']) // Alt+Ctrl+Down
+            } else if has_alt {
+                Some(vec![0x1b, b'[', b'1', b';', b'3', b'B']) // Alt+Down
+            } else if has_control {
+                Some(vec![0x1b, b'[', b'1', b';', b'5', b'B']) // Ctrl+Down
+            } else {
+                Some(vec![0x1b, b'[', b'B']) // Down
+            }
+        }
+        KeyCode::Right => {
+            if has_alt && has_control {
+                Some(vec![0x1b, b'[', b'1', b';', b'7', b'C']) // Alt+Ctrl+Right
+            } else if has_alt {
+                Some(vec![0x1b, b'[', b'1', b';', b'3', b'C']) // Alt+Right
+            } else if has_control {
+                Some(vec![0x1b, b'[', b'1', b';', b'5', b'C']) // Ctrl+Right
+            } else {
+                Some(vec![0x1b, b'[', b'C']) // Right
+            }
+        }
+        KeyCode::Left => {
+            if has_alt && has_control {
+                Some(vec![0x1b, b'[', b'1', b';', b'7', b'D']) // Alt+Ctrl+Left
+            } else if has_alt {
+                Some(vec![0x1b, b'[', b'1', b';', b'3', b'D']) // Alt+Left
+            } else if has_control {
+                Some(vec![0x1b, b'[', b'1', b';', b'5', b'D']) // Ctrl+Left
+            } else {
+                Some(vec![0x1b, b'[', b'D']) // Left
+            }
+        }
+        KeyCode::Home => {
+            if has_alt && has_control {
+                Some(vec![0x1b, b'[', b'1', b';', b'7', b'H']) // Alt+Ctrl+Home
+            } else if has_alt {
+                Some(vec![0x1b, b'[', b'1', b';', b'3', b'H']) // Alt+Home
+            } else if has_control {
+                Some(vec![0x1b, b'[', b'1', b';', b'5', b'H']) // Ctrl+Home
+            } else {
+                Some(vec![0x1b, b'[', b'H'])
+            }
+        }
+        KeyCode::End => {
+            if has_alt && has_control {
+                Some(vec![0x1b, b'[', b'1', b';', b'7', b'F']) // Alt+Ctrl+End
+            } else if has_alt {
+                Some(vec![0x1b, b'[', b'1', b';', b'3', b'F']) // Alt+End
+            } else if has_control {
+                Some(vec![0x1b, b'[', b'1', b';', b'5', b'F']) // Ctrl+End
+            } else {
+                Some(vec![0x1b, b'[', b'F'])
+            }
+        }
+        KeyCode::PageUp => {
+            if has_alt && has_control {
+                Some(vec![0x1b, b'[', b'5', b';', b'7', b'~']) // Alt+Ctrl+PageUp
+            } else if has_alt {
+                Some(vec![0x1b, b'[', b'5', b';', b'3', b'~']) // Alt+PageUp
+            } else if has_control {
+                Some(vec![0x1b, b'[', b'5', b';', b'5', b'~']) // Ctrl+PageUp
+            } else {
+                Some(vec![0x1b, b'[', b'5', b'~'])
+            }
+        }
+        KeyCode::PageDown => {
+            if has_alt && has_control {
+                Some(vec![0x1b, b'[', b'6', b';', b'7', b'~']) // Alt+Ctrl+PageDown
+            } else if has_alt {
+                Some(vec![0x1b, b'[', b'6', b';', b'3', b'~']) // Alt+PageDown
+            } else if has_control {
+                Some(vec![0x1b, b'[', b'6', b';', b'5', b'~']) // Ctrl+PageDown
+            } else {
+                Some(vec![0x1b, b'[', b'6', b'~'])
+            }
+        }
+        KeyCode::Delete => {
+            if has_alt && has_control {
+                Some(vec![0x1b, b'[', b'3', b';', b'7', b'~']) // Alt+Ctrl+Delete
+            } else if has_alt {
+                Some(vec![0x1b, b'[', b'3', b';', b'3', b'~']) // Alt+Delete
+            } else if has_control {
+                Some(vec![0x1b, b'[', b'3', b';', b'5', b'~']) // Ctrl+Delete
+            } else {
+                Some(vec![0x1b, b'[', b'3', b'~'])
+            }
+        }
+        KeyCode::Insert => {
+            if has_alt && has_control {
+                Some(vec![0x1b, b'[', b'2', b';', b'7', b'~']) // Alt+Ctrl+Insert
+            } else if has_alt {
+                Some(vec![0x1b, b'[', b'2', b';', b'3', b'~']) // Alt+Insert
+            } else if has_control {
+                Some(vec![0x1b, b'[', b'2', b';', b'5', b'~']) // Ctrl+Insert
+            } else {
+                Some(vec![0x1b, b'[', b'2', b'~'])
+            }
+        }
         _ => None,
     }
 }
