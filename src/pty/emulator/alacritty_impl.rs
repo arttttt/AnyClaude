@@ -56,8 +56,10 @@ pub(super) struct AlacrittyEmulator {
 
 impl AlacrittyEmulator {
     pub(super) fn new(rows: u16, cols: u16, scrollback_len: usize) -> Self {
-        let mut config = Config::default();
-        config.scrolling_history = scrollback_len;
+        let config = Config {
+            scrolling_history: scrollback_len,
+            ..Config::default()
+        };
 
         let size = TermSize {
             lines: rows as usize,

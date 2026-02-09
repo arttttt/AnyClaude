@@ -4,7 +4,7 @@ use crate::error::{ErrorCategory, ErrorSeverity};
 use crate::ipc::IpcLayer;
 use crate::metrics::{init_global_logger, DebugLogger};
 use crate::proxy::ProxyServer;
-use crate::pty::{PtySession, PtySpawnConfig, SessionMode};
+use crate::pty::{PtySession, PtySpawnConfig, SessionMode, SpawnParams};
 use crate::shutdown::{ShutdownCoordinator, ShutdownPhase};
 use crate::ui::app::{App, UiCommand};
 use crate::ui::events::{mouse_scroll_direction, AppEvent, EventHandler};
@@ -133,6 +133,14 @@ pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Re
         claude_args,
         actual_base_url,
     );
+
+    for warning in spawn_config.warnings() {
+        app.error_registry().record(
+            ErrorSeverity::Warning,
+            ErrorCategory::Process,
+            warning,
+        );
+    }
 
     let initial_env = app.settings_manager().to_env_vars();
     let initial_args = app.settings_manager().to_cli_args();
@@ -277,13 +285,12 @@ pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Re
                         // Retry with --session-id to start fresh session.
                         let env_vars = app.settings_manager().to_env_vars();
                         let cli_args = app.settings_manager().to_cli_args();
+                        let params = spawn_config.build(env_vars, cli_args, SessionMode::Initial);
                         respawn_pty(
                             &mut app,
                             &mut pty_session,
                             &spawn_config,
-                            env_vars,
-                            cli_args,
-                            SessionMode::Initial,
+                            params,
                             scrollback_lines,
                             &events,
                         );
@@ -311,13 +318,12 @@ pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Re
                 // resume). The ProcessExit safety net will then retry with
                 // --session-id (SessionMode::Initial).
                 restart_can_retry = true;
+                let params = spawn_config.build(env_vars, cli_args, SessionMode::Resume);
                 respawn_pty(
                     &mut app,
                     &mut pty_session,
                     &spawn_config,
-                    env_vars,
-                    cli_args,
-                    SessionMode::Resume,
+                    params,
                     scrollback_lines,
                     &events,
                 );
@@ -443,7 +449,7 @@ async fn run_ui_bridge(
     }
 }
 
-/// Shut down the current PTY and spawn a new one with the given session mode.
+/// Shut down the current PTY and spawn a new one with the given spawn params.
 ///
 /// On success, attaches the new PTY and resizes it to the current terminal.
 /// On failure, dispatches `SpawnFailed` and records an error.
@@ -451,9 +457,7 @@ fn respawn_pty(
     app: &mut App,
     pty_session: &mut PtySession,
     spawn_config: &PtySpawnConfig,
-    env_vars: Vec<(String, String)>,
-    cli_args: Vec<String>,
-    session_mode: SessionMode,
+    params: SpawnParams,
     scrollback_lines: usize,
     events: &EventHandler,
 ) {
@@ -463,7 +467,6 @@ fn respawn_pty(
     app.detach_pty();
     let _ = pty_session.shutdown();
 
-    let params = spawn_config.build(env_vars, cli_args, session_mode);
     match PtySession::spawn(
         spawn_config.command().to_string(),
         params.args,
