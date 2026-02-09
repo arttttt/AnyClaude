@@ -195,8 +195,9 @@ impl App {
         self.send_input(bracketed.as_bytes());
     }
 
-    pub fn on_image_paste(&mut self, data_uri: &str) {
-        let bracketed = format!("\x1b[200~{}\x1b[201~", data_uri);
+    pub fn on_image_paste(&mut self, path: &std::path::Path) {
+        let path_str = path.to_string_lossy();
+        let bracketed = format!("\x1b[200~{}\x1b[201~", path_str);
         self.send_input(bracketed.as_bytes());
     }
 

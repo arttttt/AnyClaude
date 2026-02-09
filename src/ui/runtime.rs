@@ -200,7 +200,7 @@ pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Re
                     app.on_paste(&text);
                 }
             }
-            Ok(AppEvent::ImagePaste(data_uri)) => app.on_image_paste(&data_uri),
+            Ok(AppEvent::ImagePaste(path)) => app.on_image_paste(&path),
             Ok(AppEvent::Tick) => {
                 app.on_tick();
                 if app.should_refresh_status(STATUS_REFRESH_INTERVAL) {
@@ -504,8 +504,8 @@ fn handle_image_paste(app: &mut App, clipboard: &mut Option<ClipboardHandler>) {
     };
 
     match clip.get_content() {
-        ClipboardContent::Image(data_uri) => {
-            app.on_image_paste(&data_uri);
+        ClipboardContent::Image(path) => {
+            app.on_image_paste(&path);
         }
         ClipboardContent::Text(text) => {
             // Fall back to text paste if no image

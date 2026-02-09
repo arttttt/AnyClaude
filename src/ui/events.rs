@@ -47,8 +47,8 @@ pub enum AppEvent {
     Input(KeyEvent),
     Mouse(MouseEvent),
     Paste(String),
-    /// Image paste: data URI
-    ImagePaste(String),
+    /// Image paste: path to saved temp file
+    ImagePaste(std::path::PathBuf),
     Tick,
     Resize(u16, u16),
     PtyOutput,
