@@ -9,3 +9,4 @@ pub const STATUS_OK: Color = Color::Rgb(0x22, 0xc5, 0x5e);
 pub const STATUS_WARNING: Color = Color::Rgb(0xf5, 0x9e, 0x0b);
 pub const STATUS_ERROR: Color = Color::Rgb(0xef, 0x44, 0x44);
 pub const ACTIVE_HIGHLIGHT: Color = Color::Rgb(0x3a, 0x3a, 0x3a);
+pub const SELECTION_BG: Color = Color::Rgb(0x33, 0x4e, 0x78);

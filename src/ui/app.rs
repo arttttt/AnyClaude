@@ -6,6 +6,7 @@ use crate::pty::PtyHandle;
 use crate::ui::history::{HistoryDialogState, HistoryEntry, HistoryIntent, HistoryReducer};
 use crate::ui::mvi::Reducer;
 use crate::ui::pty::{PtyIntent, PtyLifecycleState, PtyReducer};
+use crate::ui::selection::{GridPos, TextSelection};
 use crate::ui::settings::{SettingsDialogState, SettingsIntent, SettingsReducer};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use parking_lot::Mutex;
@@ -83,6 +84,8 @@ pub struct App {
     /// Monotonically increasing generation counter. Incremented on each PTY spawn.
     /// Used to tag ProcessExit events and ignore stale exits from old instances.
     pty_generation: u64,
+    /// Current mouse text selection (None when nothing is selected).
+    selection: Option<TextSelection>,
 }
 
 impl App {
@@ -114,6 +117,7 @@ impl App {
             settings_manager,
             settings_saved_snapshot,
             pty_generation: 0,
+            selection: None,
         }
     }
 
@@ -265,6 +269,14 @@ impl App {
         self.pty_handle.as_ref().map(|pty| pty.emulator())
     }
 
+    /// Check if mouse tracking is enabled by the application.
+    pub fn mouse_tracking(&self) -> bool {
+        self.pty_handle
+            .as_ref()
+            .map(|pty| pty.emulator().lock().mouse_tracking())
+            .unwrap_or(false)
+    }
+
     /// Scroll up (view older content).
     pub fn scroll_up(&mut self, lines: usize) {
         if let Some(pty) = &self.pty_handle {
@@ -289,6 +301,48 @@ impl App {
     /// Get current scrollback offset.
     pub fn scrollback(&self) -> usize {
         self.pty_handle.as_ref().map(|pty| pty.scrollback()).unwrap_or(0)
+    }
+
+    // ========================================================================
+    // Mouse text selection
+    // ========================================================================
+
+    /// Current selection state (for rendering).
+    pub fn selection(&self) -> Option<&TextSelection> {
+        self.selection.as_ref()
+    }
+
+    /// Start a new selection at the given grid position.
+    pub fn start_selection(&mut self, pos: GridPos) {
+        self.selection = Some(TextSelection::new(pos));
+    }
+
+    /// Update the selection end position (during drag).
+    pub fn update_selection(&mut self, pos: GridPos) {
+        if let Some(sel) = &mut self.selection {
+            sel.end = pos;
+        }
+    }
+
+    /// Clear the selection.
+    pub fn clear_selection(&mut self) {
+        self.selection = None;
+    }
+
+    /// Finalize the selection: mark inactive, extract text from grid.
+    /// Returns the selected text, or None if no selection.
+    pub fn finish_selection(&mut self) -> Option<String> {
+        let sel = self.selection.as_mut()?;
+        sel.active = false;
+        let text = self
+            .pty_handle
+            .as_ref()
+            .map(|pty| {
+                let emu = pty.emulator();
+                let guard = emu.lock();
+                sel.extract_text(&**guard)
+            })?;
+        Some(text)
     }
 
     pub fn set_ipc_sender(&mut self, sender: UiCommandSender) {
@@ -609,14 +663,18 @@ impl App {
     }
 }
 
+// xterm modifier parameter values: 1 + bitmask (bit0=Shift, bit1=Alt, bit2=Ctrl).
+// See https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h3-PC-Style-Function-Keys
+const MOD_ALT: u8 = b'3';          // 1 + 2 (Alt)
+const MOD_CTRL: u8 = b'5';         // 1 + 4 (Ctrl)
+const MOD_ALT_CTRL: u8 = b'7';     // 1 + 2 + 4 (Alt+Ctrl)
+
 fn key_event_to_bytes(key: KeyEvent) -> Option<Vec<u8>> {
     if key.kind != KeyEventKind::Press {
         return None;
     }
 
-    // Check for Alt/Option modifier
     let has_alt = key.modifiers.contains(KeyModifiers::ALT);
-    // Check for Control modifier
     let has_control = key.modifiers.contains(KeyModifiers::CONTROL);
 
     match key.code {
@@ -647,116 +705,36 @@ fn key_event_to_bytes(key: KeyEvent) -> Option<Vec<u8>> {
         KeyCode::Tab => Some(vec![b'\t']),
         KeyCode::Backspace => Some(vec![0x7f]),
         KeyCode::Esc => Some(vec![0x1b]),
-        KeyCode::Up => {
-            if has_alt && has_control {
-                Some(vec![0x1b, b'[', b'1', b';', b'7', b'A']) // Alt+Ctrl+Up
-            } else if has_alt {
-                Some(vec![0x1b, b'[', b'1', b';', b'3', b'A']) // Alt+Up
-            } else if has_control {
-                Some(vec![0x1b, b'[', b'1', b';', b'5', b'A']) // Ctrl+Up
-            } else {
-                Some(vec![0x1b, b'[', b'A']) // Up
-            }
-        }
-        KeyCode::Down => {
-            if has_alt && has_control {
-                Some(vec![0x1b, b'[', b'1', b';', b'7', b'B']) // Alt+Ctrl+Down
-            } else if has_alt {
-                Some(vec![0x1b, b'[', b'1', b';', b'3', b'B']) // Alt+Down
-            } else if has_control {
-                Some(vec![0x1b, b'[', b'1', b';', b'5', b'B']) // Ctrl+Down
-            } else {
-                Some(vec![0x1b, b'[', b'B']) // Down
-            }
-        }
-        KeyCode::Right => {
-            if has_alt && has_control {
-                Some(vec![0x1b, b'[', b'1', b';', b'7', b'C']) // Alt+Ctrl+Right
-            } else if has_alt {
-                Some(vec![0x1b, b'[', b'1', b';', b'3', b'C']) // Alt+Right
-            } else if has_control {
-                Some(vec![0x1b, b'[', b'1', b';', b'5', b'C']) // Ctrl+Right
-            } else {
-                Some(vec![0x1b, b'[', b'C']) // Right
-            }
-        }
-        KeyCode::Left => {
-            if has_alt && has_control {
-                Some(vec![0x1b, b'[', b'1', b';', b'7', b'D']) // Alt+Ctrl+Left
-            } else if has_alt {
-                Some(vec![0x1b, b'[', b'1', b';', b'3', b'D']) // Alt+Left
-            } else if has_control {
-                Some(vec![0x1b, b'[', b'1', b';', b'5', b'D']) // Ctrl+Left
-            } else {
-                Some(vec![0x1b, b'[', b'D']) // Left
-            }
-        }
-        KeyCode::Home => {
-            if has_alt && has_control {
-                Some(vec![0x1b, b'[', b'1', b';', b'7', b'H']) // Alt+Ctrl+Home
-            } else if has_alt {
-                Some(vec![0x1b, b'[', b'1', b';', b'3', b'H']) // Alt+Home
-            } else if has_control {
-                Some(vec![0x1b, b'[', b'1', b';', b'5', b'H']) // Ctrl+Home
-            } else {
-                Some(vec![0x1b, b'[', b'H'])
-            }
-        }
-        KeyCode::End => {
-            if has_alt && has_control {
-                Some(vec![0x1b, b'[', b'1', b';', b'7', b'F']) // Alt+Ctrl+End
-            } else if has_alt {
-                Some(vec![0x1b, b'[', b'1', b';', b'3', b'F']) // Alt+End
-            } else if has_control {
-                Some(vec![0x1b, b'[', b'1', b';', b'5', b'F']) // Ctrl+End
-            } else {
-                Some(vec![0x1b, b'[', b'F'])
-            }
-        }
-        KeyCode::PageUp => {
-            if has_alt && has_control {
-                Some(vec![0x1b, b'[', b'5', b';', b'7', b'~']) // Alt+Ctrl+PageUp
-            } else if has_alt {
-                Some(vec![0x1b, b'[', b'5', b';', b'3', b'~']) // Alt+PageUp
-            } else if has_control {
-                Some(vec![0x1b, b'[', b'5', b';', b'5', b'~']) // Ctrl+PageUp
-            } else {
-                Some(vec![0x1b, b'[', b'5', b'~'])
-            }
-        }
-        KeyCode::PageDown => {
-            if has_alt && has_control {
-                Some(vec![0x1b, b'[', b'6', b';', b'7', b'~']) // Alt+Ctrl+PageDown
-            } else if has_alt {
-                Some(vec![0x1b, b'[', b'6', b';', b'3', b'~']) // Alt+PageDown
-            } else if has_control {
-                Some(vec![0x1b, b'[', b'6', b';', b'5', b'~']) // Ctrl+PageDown
-            } else {
-                Some(vec![0x1b, b'[', b'6', b'~'])
-            }
-        }
-        KeyCode::Delete => {
-            if has_alt && has_control {
-                Some(vec![0x1b, b'[', b'3', b';', b'7', b'~']) // Alt+Ctrl+Delete
-            } else if has_alt {
-                Some(vec![0x1b, b'[', b'3', b';', b'3', b'~']) // Alt+Delete
-            } else if has_control {
-                Some(vec![0x1b, b'[', b'3', b';', b'5', b'~']) // Ctrl+Delete
-            } else {
-                Some(vec![0x1b, b'[', b'3', b'~'])
-            }
-        }
-        KeyCode::Insert => {
-            if has_alt && has_control {
-                Some(vec![0x1b, b'[', b'2', b';', b'7', b'~']) // Alt+Ctrl+Insert
-            } else if has_alt {
-                Some(vec![0x1b, b'[', b'2', b';', b'3', b'~']) // Alt+Insert
-            } else if has_control {
-                Some(vec![0x1b, b'[', b'2', b';', b'5', b'~']) // Ctrl+Insert
-            } else {
-                Some(vec![0x1b, b'[', b'2', b'~'])
-            }
-        }
+        KeyCode::Up => modified_key(has_alt, has_control, b'1', b'A', true),
+        KeyCode::Down => modified_key(has_alt, has_control, b'1', b'B', true),
+        KeyCode::Right => modified_key(has_alt, has_control, b'1', b'C', true),
+        KeyCode::Left => modified_key(has_alt, has_control, b'1', b'D', true),
+        KeyCode::Home => modified_key(has_alt, has_control, b'1', b'H', true),
+        KeyCode::End => modified_key(has_alt, has_control, b'1', b'F', true),
+        KeyCode::PageUp => modified_key(has_alt, has_control, b'5', b'~', false),
+        KeyCode::PageDown => modified_key(has_alt, has_control, b'6', b'~', false),
+        KeyCode::Delete => modified_key(has_alt, has_control, b'3', b'~', false),
+        KeyCode::Insert => modified_key(has_alt, has_control, b'2', b'~', false),
         _ => None,
     }
+}
+
+/// Build a CSI escape sequence with optional modifier for special keys.
+///
+/// `ss3_style`: true for arrow/Home/End keys (CSI 1;mod X), false for
+/// PageUp/Delete/Insert (CSI code;mod ~).
+fn modified_key(alt: bool, ctrl: bool, code: u8, suffix: u8, ss3_style: bool) -> Option<Vec<u8>> {
+    let modifier = match (alt, ctrl) {
+        (true, true) => Some(MOD_ALT_CTRL),
+        (true, false) => Some(MOD_ALT),
+        (false, true) => Some(MOD_CTRL),
+        (false, false) => None,
+    };
+
+    Some(match modifier {
+        Some(m) if ss3_style => vec![0x1b, b'[', code, b';', m, suffix],
+        Some(m) => vec![0x1b, b'[', code, b';', m, suffix],
+        None if ss3_style => vec![0x1b, b'[', suffix],
+        None => vec![0x1b, b'[', code, suffix],
+    })
 }

@@ -30,7 +30,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
     );
     frame.render_widget(Clear, body);
     if let Some(emu) = app.emulator() {
-        frame.render_widget(TerminalBody::new(Arc::clone(&emu)), body);
+        frame.render_widget(TerminalBody::new(Arc::clone(&emu), app.selection()), body);
         // Show hardware cursor only when:
         // - the child process has started (is_pty_ready)
         // - terminal has focus and is at live view (scrollback == 0)

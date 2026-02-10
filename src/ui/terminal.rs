@@ -1,5 +1,7 @@
 use crate::pty::emulator::TerminalEmulator;
 use crate::pty::{TermCell, TermColor};
+use crate::ui::selection::TextSelection;
+use crate::ui::theme::SELECTION_BG;
 use parking_lot::Mutex;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -7,17 +9,18 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::Widget;
 use std::sync::Arc;
 
-pub struct TerminalBody {
+pub struct TerminalBody<'a> {
     emulator: Arc<Mutex<Box<dyn TerminalEmulator>>>,
+    selection: Option<&'a TextSelection>,
 }
 
-impl TerminalBody {
-    pub fn new(emulator: Arc<Mutex<Box<dyn TerminalEmulator>>>) -> Self {
-        Self { emulator }
+impl<'a> TerminalBody<'a> {
+    pub fn new(emulator: Arc<Mutex<Box<dyn TerminalEmulator>>>, selection: Option<&'a TextSelection>) -> Self {
+        Self { emulator, selection }
     }
 }
 
-impl Widget for TerminalBody {
+impl Widget for TerminalBody<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let emu = self.emulator.lock();
 
@@ -38,14 +41,20 @@ impl Widget for TerminalBody {
                     continue;
                 }
 
-                let style = style_from_cell(&cell);
+                let mut style = style_from_cell(&cell);
+
+                // Apply selection highlight — solid background color
+                let in_selection = self.selection.is_some_and(|s| s.contains(row_idx as u16, col_idx as u16));
+                if in_selection {
+                    style = style.bg(SELECTION_BG);
+                }
 
                 if let Some(cell_ref) = buf.cell_mut((x, y)) {
                     if cell.has_contents {
                         cell_ref.set_symbol(&cell.symbol).set_style(style);
-                    } else if cell.bg != TermColor::Default || cell.inverse {
-                        // Render styled space: background color or inverse video
-                        // (e.g. cursor rendered as inverse space by child process)
+                    } else if cell.bg != TermColor::Default || cell.inverse || in_selection {
+                        // Render styled space: background color, inverse video,
+                        // or selection highlight on empty cells
                         cell_ref.set_symbol(" ").set_style(style);
                     }
                 }

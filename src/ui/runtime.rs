@@ -7,12 +7,14 @@ use crate::proxy::ProxyServer;
 use crate::pty::{PtySession, PtySpawnConfig, SessionMode, SpawnParams};
 use crate::shutdown::{ShutdownCoordinator, ShutdownPhase};
 use crate::ui::app::{App, UiCommand};
-use crate::ui::events::{mouse_scroll_direction, AppEvent, EventHandler};
+use crate::ui::events::{mouse_event_to_pty_bytes, mouse_scroll_direction, AppEvent, EventHandler};
 use crate::ui::history::HistoryEntry;
 use crate::ui::input::{handle_key, InputAction};
 use crate::ui::layout::body_rect;
 use crate::ui::render::draw;
+use crate::ui::selection::GridPos;
 use crate::ui::terminal_guard::setup_terminal;
+use crossterm::event::{MouseButton, MouseEventKind};
 use ratatui::layout::Rect;
 use std::io;
 use std::sync::Arc;
@@ -181,8 +183,9 @@ pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Re
 
         match events.next(tick_rate) {
             Ok(AppEvent::Input(key)) => {
-                // Reset scrollback to live view on any key input
+                // Reset scrollback and clear selection on any key input
                 app.reset_scrollback();
+                app.clear_selection();
                 let action = handle_key(&mut app, key);
                 match action {
                     InputAction::None => {}
@@ -192,11 +195,50 @@ pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Re
                 }
             }
             Ok(AppEvent::Mouse(mouse)) => {
+                // 1. Scroll — always handled locally
                 if let Some((scroll_up, lines)) = mouse_scroll_direction(&mouse) {
+                    app.clear_selection();
                     if scroll_up {
                         app.scroll_up(lines);
                     } else {
                         app.scroll_down(lines);
+                    }
+                }
+                // 2. PTY mouse tracking — forward to child process
+                else if app.mouse_tracking() {
+                    if let Some(bytes) = mouse_event_to_pty_bytes(&mouse) {
+                        app.send_input(&bytes);
+                    }
+                }
+                // 3. Wrapper text selection — click+drag
+                else {
+                    match mouse.kind {
+                        MouseEventKind::Down(MouseButton::Left) => {
+                            if let Some(pos) = screen_to_grid(mouse.column, mouse.row) {
+                                app.start_selection(pos);
+                            }
+                        }
+                        MouseEventKind::Drag(MouseButton::Left) => {
+                            if let Some(pos) = screen_to_grid(mouse.column, mouse.row) {
+                                app.update_selection(pos);
+                            }
+                        }
+                        MouseEventKind::Up(MouseButton::Left) => {
+                            if let Some(text) = app.finish_selection() {
+                                if !text.is_empty() {
+                                    if let Some(clip) = &mut clipboard {
+                                        if let Err(err) = clip.set_text(&text) {
+                                            app.error_registry().record(
+                                                ErrorSeverity::Warning,
+                                                ErrorCategory::Process,
+                                                &err,
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -500,6 +542,29 @@ fn respawn_pty(
     }
 }
 
+/// Convert screen coordinates to grid coordinates within the terminal body.
+/// Returns None if the position is outside the body area.
+fn screen_to_grid(col: u16, row: u16) -> Option<GridPos> {
+    let (cols, rows) = crossterm::terminal::size().ok()?;
+    let body = body_rect(Rect {
+        x: 0,
+        y: 0,
+        width: cols,
+        height: rows,
+    });
+    if col < body.x
+        || row < body.y
+        || col >= body.x.saturating_add(body.width)
+        || row >= body.y.saturating_add(body.height)
+    {
+        return None;
+    }
+    Some(GridPos {
+        row: row - body.y,
+        col: col - body.x,
+    })
+}
+
 /// Handle image paste request by checking clipboard for image content.
 fn handle_image_paste(app: &mut App, clipboard: &mut Option<ClipboardHandler>) {
     let Some(clip) = clipboard else {
@@ -515,6 +580,14 @@ fn handle_image_paste(app: &mut App, clipboard: &mut Option<ClipboardHandler>) {
             app.on_paste(&text);
         }
         ClipboardContent::Empty => {}
+    }
+
+    if let Some(err) = clip.take_error() {
+        app.error_registry().record(
+            ErrorSeverity::Warning,
+            ErrorCategory::Process,
+            &err,
+        );
     }
 }
 

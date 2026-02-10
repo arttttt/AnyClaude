@@ -153,6 +153,11 @@ impl TerminalEmulator for AlacrittyEmulator {
             visible,
         }
     }
+
+    fn mouse_tracking(&self) -> bool {
+        let mode = self.term.mode();
+        mode.contains(TermMode::MOUSE_MODE) || mode.contains(TermMode::MOUSE_MOTION)
+    }
 }
 
 fn convert_color(color: Color) -> TermColor {

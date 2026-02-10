@@ -1,4 +1,4 @@
-use crossterm::event::{self, Event, KeyEvent, MouseEvent, MouseEventKind};
+use crossterm::event::{self, Event, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -140,4 +140,39 @@ pub fn mouse_scroll_direction(event: &MouseEvent) -> Option<(bool, usize)> {
         MouseEventKind::ScrollDown => Some((false, 3)),
         _ => None,
     }
+}
+
+/// Convert mouse event to xterm mouse protocol bytes.
+/// Returns Some(bytes) if the event should be sent to the PTY.
+///
+/// X10 mouse protocol format:
+/// - ESC [ M followed by 3 bytes:
+///   - byte 1: button + 32 (0b00=left, 0b01=middle, 0b10=right, 0b11=release)
+///   - byte 2: column + 33
+///   - byte 3: row + 33
+pub fn mouse_event_to_pty_bytes(event: &MouseEvent) -> Option<Vec<u8>> {
+    // Only handle press, release, and drag events (scroll is handled separately)
+    // Skip Moved events (motion without buttons) to avoid garbage in input
+    let button_code = match event.kind {
+        MouseEventKind::Down(button) => match button {
+            MouseButton::Left => 0,
+            MouseButton::Middle => 1,
+            MouseButton::Right => 2,
+        },
+        MouseEventKind::Up(_) => 3, // Button release
+        MouseEventKind::Drag(button) => match button {
+            MouseButton::Left => 32,
+            MouseButton::Middle => 33,
+            MouseButton::Right => 34,
+        },
+        _ => return None, // Scroll and Moved handled separately/not sent
+    };
+
+    // X10 encoding: add 32 to button code to make it printable
+    // add 33 to coordinates (1-based)
+    let encoded_button = (button_code + 32) as u8;
+    let encoded_col = (event.column + 33) as u8;
+    let encoded_row = (event.row + 33) as u8;
+
+    Some(vec![0x1b, b'[', b'M', encoded_button, encoded_col, encoded_row])
 }

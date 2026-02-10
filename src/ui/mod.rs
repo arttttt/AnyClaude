@@ -9,6 +9,7 @@ pub mod components;
 pub mod mvi;
 pub mod pty;
 pub mod render;
+pub mod selection;
 pub mod settings;
 pub mod runtime;
 pub mod terminal;

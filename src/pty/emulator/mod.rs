@@ -54,6 +54,9 @@ pub trait TerminalEmulator: Send {
 
     /// Current cursor state.
     fn cursor(&self) -> CursorState;
+
+    /// Whether mouse tracking is enabled by the application.
+    fn mouse_tracking(&self) -> bool;
 }
 
 /// Create a terminal emulator backed by the default implementation.
