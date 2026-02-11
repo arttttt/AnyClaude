@@ -2,6 +2,64 @@
 
 All notable changes to AnyClaude are documented in this file.
 
+## [0.3.1] - 2026-02-11
+
+### Bug Fixes
+
+- Detect Option key via macOS CGEvent for Warp terminal
+- Propagate arrow keys with Control and Alt/Option modifiers
+- Improve session flag handling, warnings, and clippy compliance
+- Apply saved settings env vars on initial PTY spawn
+- Use narrow centered scrollbar char with distinct color
+- Add gap between content and scrollbar
+- Move scrollbar inside dialog border
+- Use █ for scrollbar thumb to contrast with border
+- Replace ratatui Scrollbar with manual draw for constant thumb size
+- Scrollbar thumb not reaching bottom of track
+- Scrollbar not reaching bottom with small scroll range
+- History dialog time alignment with multi-byte chars
+
+### Chore
+
+- Enforce no inline #[cfg(test)] in src/ via lint
+- Remove .DS_Store from tracking
+
+### Documentation
+
+- Add design docs for settings menu and agent teams integration
+- Consolidate test convention to single tests/ directory
+- Add testing rules to AGENTS.md
+- Add missing config fields to README Full Example
+- Remove Ctrl+V from hotkeys table
+
+### Features
+
+- Add term_input crate for lossless raw byte terminal input
+- Add mouse text selection and input improvements
+- Save pasted images to temp files instead of data URIs
+- Replace --continue with --session-id/--resume UUID targeting
+- Add Settings Menu (Ctrl+E) with PTY restart
+- Add settings configuration layer and PtySpawnConfig
+- Buffer user input during PTY startup and flush on ready
+- Migrate terminal emulator from vt100 to alacritty_terminal
+- Always show Esc/Ctrl+H in history dialog footer
+- Unified centered footer in PopupDialog, fix scrollbar
+- Add legend and scrollbar to history dialog
+
+### Refactor
+
+- Replace crossterm event parsing with term_input
+- Centralize PTY lifecycle with Restarting state and generation counter
+- Unify logging by removing tracing in favor of DebugLogger
+- Abstract terminal emulator behind TerminalEmulator trait
+- Move scrollbar into PopupDialog component
+- Extract unified PopupDialog into ui/components
+
+### Testing
+
+- Migrate all inline tests from src/ to tests/
+- Add PTY lifecycle and startup readiness tests
+
 ## [0.3.0] - 2026-02-07
 
 ### Bug Fixes
@@ -23,6 +81,7 @@ All notable changes to AnyClaude are documented in this file.
 
 ### Chore
 
+- Release v0.3.0
 - Add justfile with release and check commands
 - Add git-cliff config and generate CHANGELOG
 - Add .DS_Store to gitignore
