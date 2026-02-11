@@ -21,6 +21,7 @@ pub struct ProxyServer {
     /// Populated by try_bind(), consumed by run().
     listener: Option<TcpListener>,
     router: RouterEngine,
+    routing_rules: Vec<Box<dyn crate::proxy::routing::RoutingRule>>,
     shutdown: Arc<ShutdownManager>,
     backend_state: BackendState,
     observability: ObservabilityHub,
@@ -33,9 +34,10 @@ impl ProxyServer {
         config: ConfigStore,
         debug_logger: Arc<DebugLogger>,
     ) -> Result<Self, crate::backend::BackendError> {
-        let timeout_config = TimeoutConfig::from(&config.get().defaults);
-        let pool_config = PoolConfig::from(&config.get().defaults);
-        let backend_state = BackendState::from_config(config.get())?;
+        let cfg = config.get();
+        let timeout_config = TimeoutConfig::from(&cfg.defaults);
+        let pool_config = PoolConfig::from(&cfg.defaults);
+        let backend_state = BackendState::from_config(cfg.clone())?;
         let observability = ObservabilityHub::new(1000)
             .with_plugins(vec![debug_logger.clone()]);
         let transformer_registry = Arc::new(TransformerRegistry::new());
@@ -47,10 +49,12 @@ impl ProxyServer {
             debug_logger.clone(),
             transformer_registry.clone(),
         );
+        let routing_rules = crate::proxy::routing::build_rules(&cfg.agent_teams);
         Ok(Self {
-            addr: SocketAddr::from(([127, 0, 0, 1], 0)), // Will be determined at bind time
+            addr: SocketAddr::from(([127, 0, 0, 1], 0)),
             listener: None,
             router,
+            routing_rules,
             shutdown: Arc::new(ShutdownManager::new()),
             backend_state,
             observability,
@@ -142,7 +146,7 @@ impl ProxyServer {
 
         crate::metrics::app_log("proxy", &format!("Starting proxy server on {}", self.addr));
 
-        let app = build_router(self.router.clone());
+        let app = build_router(self.router.clone(), self.routing_rules);
         let make_service = app.into_make_service();
         let make_service = ConnectionCounter::new(make_service, self.shutdown.clone());
 

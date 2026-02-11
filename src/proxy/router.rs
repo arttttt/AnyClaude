@@ -1,5 +1,6 @@
 use axum::body::Body;
 use axum::extract::{RawQuery, State};
+use axum::Extension;
 use axum::http::Request;
 use axum::response::Response;
 use axum::routing::get;
@@ -50,11 +51,24 @@ impl RouterEngine {
     }
 }
 
-pub fn build_router(engine: RouterEngine) -> Router {
-    Router::new()
+pub fn build_router(
+    engine: RouterEngine,
+    routing_rules: Vec<Box<dyn super::routing::RoutingRule>>,
+) -> Router {
+    let mut router = Router::new()
         .route("/health", get(health_handler))
         .fallback(proxy_handler)
-        .with_state(engine)
+        .with_state(engine);
+
+    if !routing_rules.is_empty() {
+        // Extension must be outermost (added last) so it inserts rules
+        // into the request BEFORE the middleware extracts them.
+        router = router
+            .layer(axum::middleware::from_fn(super::routing::routing_middleware))
+            .layer(Extension(Arc::new(routing_rules)));
+    }
+
+    router
 }
 
 async fn health_handler(
@@ -73,7 +87,11 @@ async fn proxy_handler(
     let query_str = query.as_deref().unwrap_or("");
     crate::metrics::app_log("router", &format!("Incoming request: {} {} request_id={}", req.method(), req.uri().path(), request_id));
 
-    let active_backend = state.backend_state.get_active_backend();
+    let routed = req.extensions().get::<super::routing::RoutedTo>().cloned();
+    let active_backend = routed
+        .as_ref()
+        .map(|r| r.backend.clone())
+        .unwrap_or_else(|| state.backend_state.get_active_backend());
     let mut start = state
         .observability
         .start_request(request_id.clone(), &req, &active_backend);
