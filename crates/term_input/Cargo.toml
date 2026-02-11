@@ -1,0 +1,8 @@
+[package]
+name = "term_input"
+version = "0.1.0"
+edition = "2021"
+description = "Terminal input parser with raw byte passthrough"
+
+[dependencies]
+libc = "0.2"

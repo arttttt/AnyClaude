@@ -139,6 +139,7 @@ dependencies = [
  "serde_json",
  "signal-hook 0.4.3",
  "tempfile",
+ "term_input",
  "thiserror 2.0.18",
  "tokio",
  "toml",
@@ -594,7 +595,6 @@ dependencies = [
  "crossterm_winapi",
  "derive_more",
  "document-features",
- "futures-core",
  "mio",
  "parking_lot",
  "rustix",
@@ -2851,6 +2851,13 @@ dependencies = [
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "term_input"
+version = "0.1.0"
+dependencies = [
+ "libc",
 ]
 
 [[package]]
