@@ -8,7 +8,6 @@ use crate::ui::mvi::Reducer;
 use crate::ui::pty::{PtyIntent, PtyLifecycleState, PtyReducer};
 use crate::ui::selection::{GridPos, TextSelection};
 use crate::ui::settings::{SettingsDialogState, SettingsIntent, SettingsReducer};
-use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use parking_lot::Mutex;
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -172,13 +171,6 @@ impl App {
     }
 
     pub fn on_tick(&mut self) {
-    }
-
-    pub fn on_key(&mut self, key: KeyEvent) {
-        let Some(bytes) = key_event_to_bytes(key) else {
-            return;
-        };
-        self.send_input(&bytes);
     }
 
     /// Send input to PTY or buffer if not ready.
@@ -663,78 +655,3 @@ impl App {
     }
 }
 
-// xterm modifier parameter values: 1 + bitmask (bit0=Shift, bit1=Alt, bit2=Ctrl).
-// See https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h3-PC-Style-Function-Keys
-const MOD_ALT: u8 = b'3';          // 1 + 2 (Alt)
-const MOD_CTRL: u8 = b'5';         // 1 + 4 (Ctrl)
-const MOD_ALT_CTRL: u8 = b'7';     // 1 + 2 + 4 (Alt+Ctrl)
-
-fn key_event_to_bytes(key: KeyEvent) -> Option<Vec<u8>> {
-    if key.kind != KeyEventKind::Press {
-        return None;
-    }
-
-    let has_alt = key.modifiers.contains(KeyModifiers::ALT);
-    let has_control = key.modifiers.contains(KeyModifiers::CONTROL);
-
-    match key.code {
-        KeyCode::Char(c) => {
-            if has_control {
-                let value = (c as u8).to_ascii_lowercase();
-                return Some(vec![value.saturating_sub(b'a') + 1]);
-            }
-            // Fast path for ASCII characters (most common case)
-            if c.is_ascii() {
-                if has_alt {
-                    return Some(vec![0x1b, c as u8]);
-                }
-                return Some(vec![c as u8]);
-            }
-            // Slow path for multi-byte UTF-8 characters
-            let mut buffer = [0u8; 4];
-            let bytes = c.encode_utf8(&mut buffer).as_bytes();
-            if has_alt {
-                let mut result = Vec::with_capacity(1 + bytes.len());
-                result.push(0x1b);
-                result.extend_from_slice(bytes);
-                return Some(result);
-            }
-            Some(bytes.to_vec())
-        }
-        KeyCode::Enter => Some(vec![b'\r']),
-        KeyCode::Tab => Some(vec![b'\t']),
-        KeyCode::Backspace => Some(vec![0x7f]),
-        KeyCode::Esc => Some(vec![0x1b]),
-        KeyCode::Up => modified_key(has_alt, has_control, b'1', b'A', true),
-        KeyCode::Down => modified_key(has_alt, has_control, b'1', b'B', true),
-        KeyCode::Right => modified_key(has_alt, has_control, b'1', b'C', true),
-        KeyCode::Left => modified_key(has_alt, has_control, b'1', b'D', true),
-        KeyCode::Home => modified_key(has_alt, has_control, b'1', b'H', true),
-        KeyCode::End => modified_key(has_alt, has_control, b'1', b'F', true),
-        KeyCode::PageUp => modified_key(has_alt, has_control, b'5', b'~', false),
-        KeyCode::PageDown => modified_key(has_alt, has_control, b'6', b'~', false),
-        KeyCode::Delete => modified_key(has_alt, has_control, b'3', b'~', false),
-        KeyCode::Insert => modified_key(has_alt, has_control, b'2', b'~', false),
-        _ => None,
-    }
-}
-
-/// Build a CSI escape sequence with optional modifier for special keys.
-///
-/// `ss3_style`: true for arrow/Home/End keys (CSI 1;mod X), false for
-/// PageUp/Delete/Insert (CSI code;mod ~).
-fn modified_key(alt: bool, ctrl: bool, code: u8, suffix: u8, ss3_style: bool) -> Option<Vec<u8>> {
-    let modifier = match (alt, ctrl) {
-        (true, true) => Some(MOD_ALT_CTRL),
-        (true, false) => Some(MOD_ALT),
-        (false, true) => Some(MOD_CTRL),
-        (false, false) => None,
-    };
-
-    Some(match modifier {
-        Some(m) if ss3_style => vec![0x1b, b'[', code, b';', m, suffix],
-        Some(m) => vec![0x1b, b'[', code, b';', m, suffix],
-        None if ss3_style => vec![0x1b, b'[', suffix],
-        None => vec![0x1b, b'[', code, suffix],
-    })
-}

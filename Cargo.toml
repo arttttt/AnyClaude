@@ -1,3 +1,11 @@
+[workspace]
+members = [".", "crates/term_input"]
+
+[workspace.lints.rust]
+dead_code = "deny"
+unused_imports = "deny"
+unreachable_code = "deny"
+
 [package]
 name = "anyclaude"
 version = "0.3.0"
@@ -6,17 +14,13 @@ edition = "2021"
 [lints]
 workspace = true
 
-[workspace.lints.rust]
-dead_code = "deny"
-unused_imports = "deny"
-unreachable_code = "deny"
-
 [dependencies]
 # PTY & Terminal
 portable-pty = "0.9"
 alacritty_terminal = "0.25"
-crossterm = { version = "0.29", features = ["event-stream"] }
+crossterm = "0.29"
 signal-hook = "0.4"
+term_input = { path = "crates/term_input" }
 
 # TUI
 ratatui = "0.30"

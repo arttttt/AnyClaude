@@ -4,7 +4,6 @@ mod common;
 
 use anyclaude::ui::pty::{PtyIntent, PtyLifecycleState};
 use common::*;
-use crossterm::event::KeyCode;
 
 // -- Restarting state tests --------------------------------------------------
 
@@ -20,8 +19,8 @@ fn on_key_dropped_while_restarting() {
     app.dispatch_pty(PtyIntent::Detach);
     assert!(app.pty_lifecycle.is_restarting());
 
-    // Input should be dropped (not buffered)
-    app.on_key(press_key(KeyCode::Char('a')));
+    // Input should be dropped (not buffered) — send_input is a no-op when not ready and no PTY
+    app.send_input(b"a");
     assert!(app.pty_lifecycle.is_restarting());
 
     // After restart, attach and verify no buffered input
@@ -53,8 +52,8 @@ fn attach_after_restart_clears_buffer() {
 
     // Build up buffer in Attached state
     app.dispatch_pty(PtyIntent::Attach);
-    app.on_key(press_key(KeyCode::Char('x')));
-    app.on_key(press_key(KeyCode::Char('y')));
+    app.send_input(b"x");
+    app.send_input(b"y");
 
     match &app.pty_lifecycle {
         PtyLifecycleState::Attached { buffer } => {
@@ -206,9 +205,9 @@ fn on_pty_output_noop_when_already_ready() {
 // -- keyboard input buffered before ready -------------------------------------
 
 #[test]
-fn on_key_buffered_while_pending() {
+fn send_input_buffered_while_pending() {
     let mut app = make_app();
-    app.on_key(press_key(KeyCode::Char('a')));
+    app.send_input(b"a");
     match &app.pty_lifecycle {
         PtyLifecycleState::Pending { buffer } => {
             assert_eq!(buffer.len(), 1);
@@ -219,10 +218,10 @@ fn on_key_buffered_while_pending() {
 }
 
 #[test]
-fn on_key_buffered_while_attached() {
+fn send_input_buffered_while_attached() {
     let mut app = make_app();
     app.dispatch_pty(PtyIntent::Attach);
-    app.on_key(press_key(KeyCode::Char('x')));
+    app.send_input(b"x");
     match &app.pty_lifecycle {
         PtyLifecycleState::Attached { buffer } => {
             assert_eq!(buffer.len(), 1);

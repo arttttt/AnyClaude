@@ -8,7 +8,6 @@ use anyclaude::config::{Config, ConfigStore};
 use anyclaude::pty::emulator::TerminalEmulator;
 use anyclaude::pty::PtyHandle;
 use anyclaude::ui::app::App;
-use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
 use parking_lot::Mutex;
 use std::net::{SocketAddr, TcpListener};
 use std::path::PathBuf;
@@ -84,14 +83,6 @@ pub fn make_app() -> App {
     App::new(config)
 }
 
-pub fn press_key(code: KeyCode) -> KeyEvent {
-    KeyEvent {
-        code,
-        modifiers: KeyModifiers::empty(),
-        kind: KeyEventKind::Press,
-        state: KeyEventState::empty(),
-    }
-}
 
 // -- PTY mocks ----------------------------------------------------------------
 

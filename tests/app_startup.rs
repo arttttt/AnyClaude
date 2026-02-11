@@ -4,7 +4,6 @@
 mod common;
 
 use common::*;
-use crossterm::event::KeyCode;
 
 // -- negative: conditions not met -> stays Attached ----------------------------
 
@@ -47,8 +46,8 @@ fn transitions_to_ready_cursor_hidden_and_row_nonzero() {
 #[test]
 fn flushes_buffered_input_on_ready() {
     let (mut app, spy_buf, emu) = make_app_with_pty();
-    app.on_key(press_key(KeyCode::Char('h')));
-    app.on_key(press_key(KeyCode::Char('i')));
+    app.send_input(b"h");
+    app.send_input(b"i");
     assert!(!app.is_pty_ready());
     assert!(spy_buf.lock().is_empty());
 
@@ -63,9 +62,9 @@ fn flushes_buffered_input_on_ready() {
 #[test]
 fn flushes_multiple_buffered_entries() {
     let (mut app, spy_buf, emu) = make_app_with_pty();
-    app.on_key(press_key(KeyCode::Char('a')));
+    app.send_input(b"a");
     app.on_paste("bc");
-    app.on_key(press_key(KeyCode::Char('d')));
+    app.send_input(b"d");
 
     emu.lock().process(b"\x1b[?25l\n");
     app.on_pty_output();

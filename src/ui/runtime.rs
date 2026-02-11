@@ -7,14 +7,14 @@ use crate::proxy::ProxyServer;
 use crate::pty::{PtySession, PtySpawnConfig, SessionMode, SpawnParams};
 use crate::shutdown::{ShutdownCoordinator, ShutdownPhase};
 use crate::ui::app::{App, UiCommand};
-use crate::ui::events::{mouse_event_to_pty_bytes, mouse_scroll_direction, AppEvent, EventHandler};
+use crate::ui::events::{AppEvent, EventHandler};
 use crate::ui::history::HistoryEntry;
-use crate::ui::input::{handle_key, InputAction};
+use crate::ui::input::{classify_key, InputAction};
 use crate::ui::layout::body_rect;
 use crate::ui::render::draw;
 use crate::ui::selection::GridPos;
 use crate::ui::terminal_guard::setup_terminal;
-use crossterm::event::{MouseButton, MouseEventKind};
+use term_input::MouseEvent;
 use ratatui::layout::Rect;
 use std::io;
 use std::sync::Arc;
@@ -174,6 +174,9 @@ pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Re
     // When true, a failed --resume restart can be retried with --session-id.
     // Set on PtyRestart, cleared after retry or on successful attach.
     let mut restart_can_retry = false;
+    // Deferred mouse-down anchor: start_selection only on first Drag,
+    // not on Down, to avoid selecting a single character on plain click.
+    let mut mouse_down_pos: Option<GridPos> = None;
 
     loop {
         terminal.draw(|frame| draw(frame, &app))?;
@@ -182,48 +185,60 @@ pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Re
         }
 
         match events.next(tick_rate) {
-            Ok(AppEvent::Input(key)) => {
+            Ok(AppEvent::Key(key)) => {
                 // Reset scrollback and clear selection on any key input
                 app.reset_scrollback();
                 app.clear_selection();
-                let action = handle_key(&mut app, key);
-                match action {
-                    InputAction::None => {}
+                match classify_key(&mut app, &key) {
+                    InputAction::Forward => {
+                        app.send_input(&key.raw);
+                    }
                     InputAction::ImagePaste => {
                         handle_image_paste(&mut app, &mut clipboard);
                     }
+                    InputAction::None => {}
                 }
             }
             Ok(AppEvent::Mouse(mouse)) => {
+                let (col, row) = mouse.position();
                 // 1. Scroll — always handled locally
-                if let Some((scroll_up, lines)) = mouse_scroll_direction(&mouse) {
+                if mouse.is_scroll() {
                     app.clear_selection();
-                    if scroll_up {
-                        app.scroll_up(lines);
-                    } else {
-                        app.scroll_down(lines);
+                    match mouse {
+                        MouseEvent::ScrollUp { .. } => app.scroll_up(3),
+                        MouseEvent::ScrollDown { .. } => app.scroll_down(3),
+                        _ => {}
                     }
                 }
                 // 2. PTY mouse tracking — forward to child process
                 else if app.mouse_tracking() {
-                    if let Some(bytes) = mouse_event_to_pty_bytes(&mouse) {
-                        app.send_input(&bytes);
-                    }
+                    app.send_input(&mouse.to_x10_bytes());
                 }
                 // 3. Wrapper text selection — click+drag
                 else {
-                    match mouse.kind {
-                        MouseEventKind::Down(MouseButton::Left) => {
-                            if let Some(pos) = screen_to_grid(mouse.column, mouse.row) {
-                                app.start_selection(pos);
+                    match mouse {
+                        MouseEvent::Down { button: term_input::MouseButton::Left, .. } => {
+                            app.clear_selection();
+                            mouse_down_pos = screen_to_grid(col, row);
+                        }
+                        MouseEvent::Drag { button: term_input::MouseButton::Left, .. } => {
+                            if let Some(pos) = screen_to_grid(col, row) {
+                                if let Some(anchor) = mouse_down_pos {
+                                    if anchor != pos {
+                                        // Cursor moved to a different cell — start selection
+                                        mouse_down_pos = None;
+                                        app.start_selection(anchor);
+                                        app.update_selection(pos);
+                                    }
+                                    // Same cell — wait for real movement
+                                } else {
+                                    // Selection already started — update end position
+                                    app.update_selection(pos);
+                                }
                             }
                         }
-                        MouseEventKind::Drag(MouseButton::Left) => {
-                            if let Some(pos) = screen_to_grid(mouse.column, mouse.row) {
-                                app.update_selection(pos);
-                            }
-                        }
-                        MouseEventKind::Up(MouseButton::Left) => {
+                        MouseEvent::Up { .. } => {
+                            mouse_down_pos = None;
                             if let Some(text) = app.finish_selection() {
                                 if !text.is_empty() {
                                     if let Some(clip) = &mut clipboard {

@@ -7,7 +7,7 @@ use crossterm::ExecutableCommand;
 use parking_lot::Mutex;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
-use std::io::{self, Stdout};
+use std::io::{self, Write, Stdout};
 use std::sync::Arc;
 
 type CleanupFn = Arc<Mutex<Option<Box<dyn FnOnce() + Send + 'static>>>>;
@@ -54,6 +54,13 @@ impl Drop for TerminalGuard {
 pub fn setup_terminal() -> io::Result<(Terminal<CrosstermBackend<Stdout>>, TerminalGuard)> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
+    // Enable "meta/alt sends escape" — tells terminal to send ESC prefix
+    // when Option/Alt modifies a key (e.g. Option+Backspace → ESC 0x7F).
+    // 1036 = metaSendsEscape, 1039 = altSendsEscape.
+    // Works in most terminals; Warp ignores these in alt-screen mode,
+    // which is handled separately via macOS CGEvent modifier detection.
+    let _ = stdout.write_all(b"\x1b[?1036h\x1b[?1039h");
+    let _ = stdout.flush();
     stdout.execute(EnterAlternateScreen)?;
     stdout.execute(EnableBracketedPaste)?;
     stdout.execute(EnableMouseCapture)?;
@@ -68,6 +75,8 @@ pub fn setup_terminal() -> io::Result<(Terminal<CrosstermBackend<Stdout>>, Termi
         let _ = stdout.execute(DisableMouseCapture);
         let _ = stdout.execute(DisableBracketedPaste);
         let _ = stdout.execute(LeaveAlternateScreen);
+        let _ = stdout.write_all(b"\x1b[?1036l\x1b[?1039l");
+        let _ = stdout.flush();
         let _ = stdout.execute(Show);
     });
     guard.install_panic_hook();

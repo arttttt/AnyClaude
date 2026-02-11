@@ -1,7 +1,9 @@
-use crossterm::event::{self, Event, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
+use term_input::{InputEvent, TtyReader};
 
 use crate::ipc::{BackendInfo, ProxyStatus};
 use crate::metrics::MetricsSnapshot;
@@ -44,8 +46,8 @@ impl PtyError {
 }
 
 pub enum AppEvent {
-    Input(KeyEvent),
-    Mouse(MouseEvent),
+    Key(term_input::KeyInput),
+    Mouse(term_input::MouseEvent),
     Paste(String),
     /// Image paste: path to saved temp file
     ImagePaste(std::path::PathBuf),
@@ -85,31 +87,60 @@ impl EventHandler {
         let event_tx = tx.clone();
 
         thread::spawn(move || {
+            let mut reader = match TtyReader::open() {
+                Ok(r) => r,
+                Err(err) => {
+                    crate::metrics::app_log_error(
+                        "events",
+                        "Failed to open /dev/tty",
+                        &err.to_string(),
+                    );
+                    return;
+                }
+            };
+
+            // Register SIGWINCH handler to detect terminal resize
+            let sigwinch_flag = Arc::new(AtomicBool::new(false));
+            let _ = signal_hook::flag::register(libc::SIGWINCH, Arc::clone(&sigwinch_flag));
+
             let mut last_tick = Instant::now();
             loop {
-                // Check shutdown flag before blocking on poll
                 if shutdown.is_shutting_down() {
                     break;
                 }
 
+                // Check for SIGWINCH (terminal resize)
+                if sigwinch_flag.swap(false, Ordering::Relaxed) {
+                    if let Some((cols, rows)) = query_terminal_size() {
+                        let _ = event_tx.send(AppEvent::Resize(cols, rows));
+                    }
+                }
+
                 // Use short poll timeout to check shutdown flag frequently
-                let timeout = tick_rate.saturating_sub(last_tick.elapsed()).min(Duration::from_millis(50));
-                if event::poll(timeout).unwrap_or(false) {
-                    match event::read() {
-                        Ok(Event::Key(key)) => {
-                            let _ = event_tx.send(AppEvent::Input(key));
-                        }
-                        Ok(Event::Mouse(mouse)) => {
-                            let _ = event_tx.send(AppEvent::Mouse(mouse));
-                        }
-                        Ok(Event::Paste(text)) => {
-                            let _ = event_tx.send(AppEvent::Paste(text));
-                        }
-                        Ok(Event::Resize(cols, rows)) => {
-                            let _ = event_tx.send(AppEvent::Resize(cols, rows));
-                        }
-                        Ok(_) => {}
-                        Err(_) => break,
+                let timeout =
+                    tick_rate.saturating_sub(last_tick.elapsed()).min(Duration::from_millis(50));
+
+                match reader.read(timeout) {
+                    Ok(Some(InputEvent::Key(key))) => {
+                        let _ = event_tx.send(AppEvent::Key(key));
+                    }
+                    Ok(Some(InputEvent::Mouse(mouse))) => {
+                        let _ = event_tx.send(AppEvent::Mouse(mouse));
+                    }
+                    Ok(Some(InputEvent::Paste(text))) => {
+                        let _ = event_tx.send(AppEvent::Paste(text));
+                    }
+                    Ok(None) => {
+                        // Timeout — no event
+                    }
+                    Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => break,
+                    Err(err) => {
+                        crate::metrics::app_log_error(
+                            "events",
+                            "TtyReader error",
+                            &err.to_string(),
+                        );
+                        break;
                     }
                 }
 
@@ -132,47 +163,17 @@ impl EventHandler {
     }
 }
 
-/// Extract scroll direction from mouse event.
-/// Returns Some((up, lines)) where up=true means scroll up (view older content).
-pub fn mouse_scroll_direction(event: &MouseEvent) -> Option<(bool, usize)> {
-    match event.kind {
-        MouseEventKind::ScrollUp => Some((true, 3)),
-        MouseEventKind::ScrollDown => Some((false, 3)),
-        _ => None,
+/// Query terminal size using ioctl TIOCGWINSZ.
+fn query_terminal_size() -> Option<(u16, u16)> {
+    unsafe {
+        let mut ws: libc::winsize = std::mem::zeroed();
+        if libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut ws) == 0
+            && ws.ws_col > 0
+            && ws.ws_row > 0
+        {
+            Some((ws.ws_col, ws.ws_row))
+        } else {
+            None
+        }
     }
-}
-
-/// Convert mouse event to xterm mouse protocol bytes.
-/// Returns Some(bytes) if the event should be sent to the PTY.
-///
-/// X10 mouse protocol format:
-/// - ESC [ M followed by 3 bytes:
-///   - byte 1: button + 32 (0b00=left, 0b01=middle, 0b10=right, 0b11=release)
-///   - byte 2: column + 33
-///   - byte 3: row + 33
-pub fn mouse_event_to_pty_bytes(event: &MouseEvent) -> Option<Vec<u8>> {
-    // Only handle press, release, and drag events (scroll is handled separately)
-    // Skip Moved events (motion without buttons) to avoid garbage in input
-    let button_code = match event.kind {
-        MouseEventKind::Down(button) => match button {
-            MouseButton::Left => 0,
-            MouseButton::Middle => 1,
-            MouseButton::Right => 2,
-        },
-        MouseEventKind::Up(_) => 3, // Button release
-        MouseEventKind::Drag(button) => match button {
-            MouseButton::Left => 32,
-            MouseButton::Middle => 33,
-            MouseButton::Right => 34,
-        },
-        _ => return None, // Scroll and Moved handled separately/not sent
-    };
-
-    // X10 encoding: add 32 to button code to make it printable
-    // add 33 to coordinates (1-based)
-    let encoded_button = (button_code + 32) as u8;
-    let encoded_col = (event.column + 33) as u8;
-    let encoded_row = (event.row + 33) as u8;
-
-    Some(vec![0x1b, b'[', b'M', encoded_button, encoded_col, encoded_row])
 }

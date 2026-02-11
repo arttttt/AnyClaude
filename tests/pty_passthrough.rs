@@ -195,6 +195,87 @@ mod pty_passthrough {
         Ok(())
     }
 
+    /// Verify that ESC+DEL (Option+Backspace) passes through PTY correctly
+    /// even when the child process sets raw mode.
+    #[test]
+    fn esc_del_passes_through_pty() -> Result<(), Box<dyn Error>> {
+        let pty_system = native_pty_system();
+        let pair = pty_system.openpty(PtySize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 0,
+            pixel_height: 0,
+        })?;
+
+        // Use Python to: set raw mode, read 2 bytes, print their hex, exit.
+        let mut cmd = CommandBuilder::new("python3");
+        cmd.args([
+            "-c",
+            concat!(
+                "import sys, os, tty, termios; ",
+                "old = termios.tcgetattr(0); ",
+                "tty.setraw(0); ",
+                "os.write(1, b'READY\\n'); ",
+                "data = os.read(0, 10); ",
+                "termios.tcsetattr(0, termios.TCSADRAIN, old); ",
+                "os.write(1, ('HEX:' + data.hex() + '\\n').encode())",
+            ),
+        ]);
+        cmd.env("TERM", "xterm-256color");
+
+        let mut child = pair.slave.spawn_command(cmd)?;
+        drop(pair.slave);
+
+        let master = pair.master;
+        let mut reader = master.try_clone_reader()?;
+        let mut writer = master.take_writer()?;
+
+        // Wait for READY signal
+        let mut output = Vec::new();
+        let mut buf = [0u8; 256];
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if Instant::now() > deadline {
+                panic!("Timeout waiting for READY from child");
+            }
+            let n = reader.read(&mut buf)?;
+            output.extend_from_slice(&buf[..n]);
+            if String::from_utf8_lossy(&output).contains("READY") {
+                break;
+            }
+        }
+
+        // Send ESC + DEL (Option+Backspace)
+        writer.write_all(&[0x1b, 0x7f])?;
+        writer.flush()?;
+
+        // Read the hex output
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if Instant::now() > deadline {
+                let text = String::from_utf8_lossy(&output);
+                panic!("Timeout waiting for HEX output. Got so far: {}", text);
+            }
+            let n = reader.read(&mut buf)?;
+            output.extend_from_slice(&buf[..n]);
+            let text = String::from_utf8_lossy(&output);
+            if let Some(pos) = text.find("HEX:") {
+                let hex_line = &text[pos..];
+                // ESC=1b, DEL=7f
+                assert!(
+                    hex_line.contains("1b7f"),
+                    "Expected ESC+DEL (1b7f) but got: {}",
+                    hex_line.trim()
+                );
+                break;
+            }
+        }
+
+        drop(writer);
+        let _ = child.wait();
+        Ok(())
+    }
+
     #[test]
     #[ignore]
     fn benchmark_vt_rendering() {

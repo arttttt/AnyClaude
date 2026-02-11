@@ -1,7 +1,7 @@
 use crate::ui::app::{App, PopupKind};
 use crate::ui::history::HistoryIntent;
 use crate::ui::settings::SettingsIntent;
-use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use term_input::{Direction, KeyInput, KeyKind};
 
 /// Action to take after processing a key event.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -10,176 +10,156 @@ pub enum InputAction {
     None,
     /// Request image paste from clipboard.
     ImagePaste,
+    /// Forward raw bytes to PTY.
+    Forward,
 }
 
-pub fn handle_key(app: &mut App, key: KeyEvent) -> InputAction {
-    if key.kind != KeyEventKind::Press {
-        return InputAction::None;
+/// Classify a key input: hotkey, popup navigation, or forward to PTY.
+pub fn classify_key(app: &mut App, key: &KeyInput) -> InputAction {
+    // Global hotkeys (regardless of popup state)
+    match &key.kind {
+        KeyKind::Control('q') => {
+            app.request_quit();
+            return InputAction::None;
+        }
+        KeyKind::Control('v') => {
+            return InputAction::ImagePaste;
+        }
+        _ => {}
     }
 
-    if is_ctrl_char(key, 'q') {
-        app.request_quit();
-        return InputAction::None;
-    }
-
-    // Ctrl+V / Ctrl+Shift+V / Cmd+V: paste with image support
-    // We intercept because terminal can't represent image content as text.
-    // When clipboard has an image, terminal either sends empty paste or key event.
-    if is_ctrl_char(key, 'v') || is_ctrl_shift_char(key, 'v') || is_super_char(key, 'v') {
-        return InputAction::ImagePaste;
-    }
-
+    // Popup-specific handling
     if app.show_popup() {
-        // Handle history dialog keys
-        if matches!(app.popup_kind(), Some(PopupKind::History)) {
-            match key.code {
-                KeyCode::Esc => {
-                    app.close_history_dialog();
-                    return InputAction::None;
-                }
-                KeyCode::Up => {
-                    app.dispatch_history(HistoryIntent::ScrollUp);
-                    return InputAction::None;
-                }
-                KeyCode::Down => {
-                    app.dispatch_history(HistoryIntent::ScrollDown);
-                    return InputAction::None;
-                }
-                _ => {}
-            }
-            if is_ctrl_char(key, 'h') {
-                app.close_history_dialog();
-                return InputAction::None;
-            }
-            return InputAction::None;
-        }
+        return handle_popup_key(app, key);
+    }
 
-        // Handle settings dialog keys
-        if matches!(app.popup_kind(), Some(PopupKind::Settings)) {
-            match key.code {
-                KeyCode::Esc => {
-                    app.request_close_settings();
-                    return InputAction::None;
-                }
-                KeyCode::Up => {
-                    app.dispatch_settings(SettingsIntent::MoveUp);
-                    return InputAction::None;
-                }
-                KeyCode::Down => {
-                    app.dispatch_settings(SettingsIntent::MoveDown);
-                    return InputAction::None;
-                }
-                KeyCode::Char(' ') => {
-                    app.dispatch_settings(SettingsIntent::Toggle);
-                    return InputAction::None;
-                }
-                KeyCode::Enter => {
-                    app.apply_settings();
-                    return InputAction::None;
-                }
-                _ => {}
-            }
-            if is_ctrl_char(key, 'e') {
-                app.close_settings_dialog();
-                return InputAction::None;
-            }
-            return InputAction::None;
-        }
-
-        if matches!(key.code, KeyCode::Esc) {
-            app.close_popup();
-            return InputAction::None;
-        }
-        if is_ctrl_char(key, 'b') {
+    // Non-popup hotkeys
+    match &key.kind {
+        KeyKind::Control('b') => {
             let opened = app.toggle_popup(PopupKind::BackendSwitch);
             if opened {
                 app.request_backends_refresh();
             }
-            return InputAction::None;
+            InputAction::None
         }
-        if is_ctrl_char(key, 's') {
+        KeyKind::Control('s') => {
             let opened = app.toggle_popup(PopupKind::Status);
             if opened {
                 app.request_status_refresh();
                 app.request_metrics_refresh(None);
             }
-            return InputAction::None;
+            InputAction::None
         }
-        if is_ctrl_char(key, 'h') {
-            app.close_popup();
-            return InputAction::None;
+        KeyKind::Control('h') => {
+            app.open_history_dialog();
+            InputAction::None
         }
-        if matches!(app.popup_kind(), Some(PopupKind::BackendSwitch)) {
-            match key.code {
-                KeyCode::Up => {
-                    app.move_backend_selection(-1);
-                    return InputAction::None;
-                }
-                KeyCode::Down => {
-                    app.move_backend_selection(1);
-                    return InputAction::None;
-                }
-                KeyCode::Enter => {
-                    return handle_backend_switch_enter(app);
-                }
-                _ => {}
-            }
-            if let KeyCode::Char(ch) = key.code {
-                if ch.is_ascii_digit() {
-                    let index = ch.to_digit(10).unwrap_or(0) as usize;
-                    if index > 0 {
-                        return handle_backend_switch_by_number(app, index);
-                    }
-                    return InputAction::None;
-                }
-            }
+        KeyKind::Control('e') => {
+            app.open_settings_dialog();
+            InputAction::None
         }
-        return InputAction::None;
+        _ => InputAction::Forward,
     }
+}
 
-    if is_ctrl_char(key, 'b') {
-        let opened = app.toggle_popup(PopupKind::BackendSwitch);
-        if opened {
-            app.request_backends_refresh();
-        }
-        return InputAction::None;
-    }
-    if is_ctrl_char(key, 's') {
-        let opened = app.toggle_popup(PopupKind::Status);
-        if opened {
-            app.request_status_refresh();
-            app.request_metrics_refresh(None);
-        }
-        return InputAction::None;
-    }
-    if is_ctrl_char(key, 'h') {
-        app.open_history_dialog();
-        return InputAction::None;
-    }
-    if is_ctrl_char(key, 'e') {
-        app.open_settings_dialog();
-        return InputAction::None;
-    }
+/// Handle key input when a popup is open.
+fn handle_popup_key(app: &mut App, key: &KeyInput) -> InputAction {
+    let popup = match app.popup_kind() {
+        Some(kind) => kind,
+        None => return InputAction::None,
+    };
 
-    app.on_key(key);
+    match popup {
+        PopupKind::History => handle_history_key(app, key),
+        PopupKind::Settings => handle_settings_key(app, key),
+        PopupKind::BackendSwitch => handle_backend_switch_key(app, key),
+        PopupKind::Status => handle_generic_popup_key(app, key),
+    }
+}
+
+fn handle_history_key(app: &mut App, key: &KeyInput) -> InputAction {
+    match &key.kind {
+        KeyKind::Escape | KeyKind::Control('h') => {
+            app.close_history_dialog();
+        }
+        KeyKind::Arrow(Direction::Up) => {
+            app.dispatch_history(HistoryIntent::ScrollUp);
+        }
+        KeyKind::Arrow(Direction::Down) => {
+            app.dispatch_history(HistoryIntent::ScrollDown);
+        }
+        _ => {}
+    }
     InputAction::None
 }
 
-fn is_ctrl_char(key: KeyEvent, needle: char) -> bool {
-    matches!(key.code, KeyCode::Char(ch) if ch.eq_ignore_ascii_case(&needle))
-        && key.modifiers.contains(KeyModifiers::CONTROL)
-        && !key.modifiers.contains(KeyModifiers::SHIFT)
+fn handle_settings_key(app: &mut App, key: &KeyInput) -> InputAction {
+    match &key.kind {
+        KeyKind::Escape => {
+            app.request_close_settings();
+        }
+        KeyKind::Arrow(Direction::Up) => {
+            app.dispatch_settings(SettingsIntent::MoveUp);
+        }
+        KeyKind::Arrow(Direction::Down) => {
+            app.dispatch_settings(SettingsIntent::MoveDown);
+        }
+        KeyKind::Char(' ') => {
+            app.dispatch_settings(SettingsIntent::Toggle);
+        }
+        KeyKind::Enter => {
+            app.apply_settings();
+        }
+        KeyKind::Control('e') => {
+            app.close_settings_dialog();
+        }
+        _ => {}
+    }
+    InputAction::None
 }
 
-fn is_ctrl_shift_char(key: KeyEvent, needle: char) -> bool {
-    matches!(key.code, KeyCode::Char(ch) if ch.eq_ignore_ascii_case(&needle))
-        && key.modifiers.contains(KeyModifiers::CONTROL)
-        && key.modifiers.contains(KeyModifiers::SHIFT)
+fn handle_backend_switch_key(app: &mut App, key: &KeyInput) -> InputAction {
+    match &key.kind {
+        KeyKind::Escape => {
+            app.close_popup();
+        }
+        KeyKind::Control('b') => {
+            app.close_popup();
+        }
+        KeyKind::Control('s') | KeyKind::Control('h') => {
+            app.close_popup();
+        }
+        KeyKind::Arrow(Direction::Up) => {
+            app.move_backend_selection(-1);
+        }
+        KeyKind::Arrow(Direction::Down) => {
+            app.move_backend_selection(1);
+        }
+        KeyKind::Enter => {
+            return handle_backend_switch_enter(app);
+        }
+        KeyKind::Char(ch) if ch.is_ascii_digit() => {
+            let index = ch.to_digit(10).unwrap_or(0) as usize;
+            if index > 0 {
+                return handle_backend_switch_by_number(app, index);
+            }
+        }
+        _ => {}
+    }
+    InputAction::None
 }
 
-fn is_super_char(key: KeyEvent, needle: char) -> bool {
-    matches!(key.code, KeyCode::Char(ch) if ch.eq_ignore_ascii_case(&needle))
-        && key.modifiers.contains(KeyModifiers::SUPER)
+fn handle_generic_popup_key(app: &mut App, key: &KeyInput) -> InputAction {
+    match &key.kind {
+        KeyKind::Escape => {
+            app.close_popup();
+        }
+        KeyKind::Control('b') | KeyKind::Control('s') | KeyKind::Control('h') => {
+            app.close_popup();
+        }
+        _ => {}
+    }
+    InputAction::None
 }
 
 /// Handle Enter key in backend switch popup.
@@ -191,7 +171,6 @@ fn handle_backend_switch_enter(app: &mut App) -> InputAction {
         return InputAction::None;
     };
 
-    // If already active, just close
     if backend.is_active {
         app.close_popup();
         return InputAction::None;
@@ -221,4 +200,3 @@ fn handle_backend_switch_by_number(app: &mut App, index: usize) -> InputAction {
     }
     InputAction::None
 }
-
