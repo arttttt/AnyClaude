@@ -1,7 +1,8 @@
 # Per-Agent Backend Routing for Agent Teams
 
 **Date**: 2026-02-11
-**Status**: Draft / RFC
+**Updated**: 2026-02-12
+**Status**: Implemented (Phase 1) / In Progress (tmux shim)
 **Parent**: [Agent Teams Integration (Ctrl+T)](agent-teams-integration.md)
 
 ## Problem
@@ -31,24 +32,54 @@ All API requests go through our local proxy, which forwards them to the
 configured backend. This is how we already support multi-backend switching
 (Ctrl+B), metrics, and thinking block management.
 
-### How Agent Teams Spawn
+### How Agent Teams Spawn (Empirically Verified)
 
-Claude Code's lead process spawns teammates as child processes. Each teammate
-inherits the parent's environment, including `ANTHROPIC_BASE_URL`. This means
-**all teammate traffic already flows through our proxy** — we just can't
-distinguish it from the lead's traffic.
+Claude Code supports two teammate modes:
 
-### Teammate Environment Variables
+| Mode | `teammateMode` | How teammates run | Routing possible? |
+|------|---------------|-------------------|-------------------|
+| **In-process** | `"in-process"` (default) | All inside one process | No — no subprocess spawning |
+| **Split panes** | `"tmux"` | Each teammate = separate `claude` process in tmux pane | Yes |
 
-Confirmed from Claude Code binary analysis and official docs. Each teammate
-process has these env vars set before exec:
+With `"auto"` (default), split panes are used only if already inside tmux.
 
-| Variable | Example | Purpose |
-|----------|---------|---------|
-| `CLAUDE_CODE_TEAM_NAME` | `"debug-session"` | Team namespace |
-| `CLAUDE_CODE_AGENT_ID` | `"abc-123"` | Unique agent identifier |
-| `CLAUDE_CODE_AGENT_NAME` | `"investigator-a"` | Display name |
-| `CLAUDE_CODE_AGENT_TYPE` | `"teammate"` | Role (lead has no type or different value) |
+**Critical finding**: in split-pane (tmux) mode, Claude Code uses `tmux send-keys`
+with the **absolute path** to the `claude` binary:
+
+```
+tmux -L claude-swarm-26283 send-keys -t %0 \
+  cd /path/to/project && \
+  CLAUDECODE=1 CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 \
+  /opt/homebrew/Caskroom/claude-code/2.1.39/claude \
+  --agent-id model-auditor@mvi-audit \
+  --agent-name model-auditor \
+  --team-name mvi-audit \
+  --agent-color blue \
+  --parent-session-id 0fc2e873-... \
+  --agent-type Explore \
+  --model claude-opus-4-6 Enter
+```
+
+This means:
+- **PATH shim for `claude` is bypassed** — absolute path, no PATH lookup.
+- **`CLAUDE_CODE_AGENT_TYPE` is NOT set as env var** — it's `--agent-type` CLI flag.
+- **Only `CLAUDECODE=1` and `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` are set as env vars.**
+- The tmux session is separate (`-L claude-swarm-{PID}`) — does not inherit parent env.
+
+### Teammate tmux Protocol (Empirically Verified)
+
+Full lifecycle captured via tmux shim logging:
+
+1. `tmux -V` — version check
+2. `tmux -L claude-swarm-{PID} new-session -d -s claude-swarm -n swarm-view -P -F #{pane_id}` — create detached session
+3. For each teammate:
+   a. `split-window -t %N -v/-h -P -F #{pane_id}` — create pane
+   b. `select-pane -t %N -P bg=default,fg={color}` — styling
+   c. `set-option -p -t %N pane-border-style fg={color}` — border
+   d. `select-pane -t %N -T {agent-name}` — title
+   e. `select-layout -t claude-swarm:swarm-view tiled` — layout
+   f. **`send-keys -t %N cd /path && ENV_VARS /absolute/path/claude --agent-flags Enter`** — launch
+4. Periodic `list-panes`, `has-session`, `list-windows` — health checks
 
 ### Prior Art: HydraTeams
 
@@ -92,17 +123,26 @@ AnyClaude
   |     |
   |     +-- proxy_handler (reads RoutedTo, forwards to correct backend)
   |
-  '-- PTY: PATH={shim_dir}:$PATH claude ...
+  '-- PTY: PATH={shim_dir}:$PATH claude --teammate-mode tmux ...
              |
              '-- lead process (ANTHROPIC_BASE_URL=http://127.0.0.1:PORT)
                    |
-                   '-- spawns teammate
+                   '-- calls tmux send-keys with absolute claude path
                         |
-                        '-- {shim_dir}/claude (shim)
-                             sees CLAUDE_CODE_AGENT_TYPE != ""
-                             sets ANTHROPIC_BASE_URL=http://127.0.0.1:PORT/teammate
-                             exec {real_claude} "$@"
+                        '-- {shim_dir}/tmux (shim) intercepts
+                             parses send-keys command
+                             injects ANTHROPIC_BASE_URL=http://127.0.0.1:PORT/teammate
+                             delegates to real tmux
 ```
+
+**Why tmux shim, not claude shim?**
+
+Claude Code resolves the absolute path to `claude` at startup and passes it
+to `tmux send-keys`. A PATH-based `claude` shim is never found because there
+is no PATH lookup — the absolute path bypasses it entirely.
+
+The tmux shim intercepts the `send-keys` command and injects the teammate
+`ANTHROPIC_BASE_URL` into the environment variables being typed into the pane.
 
 Request flow:
 
@@ -290,44 +330,83 @@ The user never sees routing rules, path prefixes, or middleware details.
 
 ---
 
-## Component 2: PATH Shim
+## Component 2: PATH Shims
 
 ### Purpose
 
 Make teammate processes send requests to `/teammate/v1/messages` instead of
 `/v1/messages`, so the routing layer can distinguish them.
 
-The shim is a `claude` wrapper script placed first in PATH. When Claude Code's
-lead process spawns a teammate, the OS finds our shim first. The shim checks
-for teammate env vars, modifies `ANTHROPIC_BASE_URL` to add the `/teammate`
-prefix, and execs the real `claude` binary.
+Two shims are placed in a temp directory prepended to PATH:
 
-### Shim Script
+| Shim | Purpose | Status |
+|------|---------|--------|
+| `claude` | Defense-in-depth: rewrites `ANTHROPIC_BASE_URL` if `CLAUDE_CODE_AGENT_TYPE` is set | Implemented (but bypassed — see below) |
+| `tmux` | Intercepts `send-keys` commands, injects `ANTHROPIC_BASE_URL` for teammates | Logging phase |
 
-Generated at runtime into a temp directory:
+### Why claude shim alone doesn't work
+
+Claude Code uses `tmux send-keys` with the **absolute path** to the binary
+(e.g. `/opt/homebrew/Caskroom/claude-code/2.1.39/claude`). There is no PATH
+lookup — our `claude` shim is never found.
+
+The `claude` shim is kept as defense-in-depth for future Claude Code versions
+that might use relative paths or different spawn mechanisms.
+
+### tmux Shim — Logging Phase (Current)
+
+The tmux shim currently logs all invocations and delegates to real tmux:
 
 ```bash
 #!/bin/bash
-# AnyClaude routing shim.
-# Intercepts Claude Code subprocess spawns to modify
-# ANTHROPIC_BASE_URL based on environment variables.
+# AnyClaude tmux shim — logging phase.
 
-if [ -n "$CLAUDE_CODE_AGENT_TYPE" ]; then
-  export ANTHROPIC_BASE_URL="http://127.0.0.1:__PORT__/teammate"
-fi
+SHIM_DIR="$(cd "$(dirname "$0")" && pwd)"
+LOG="$SHIM_DIR/tmux_shim.log"
+echo "[$(date '+%H:%M:%S.%N')] tmux $*" >> "$LOG"
 
-exec "__REAL_CLAUDE__" "$@"
+# Find real tmux, skipping our shim directory.
+find_real_tmux() { ... }
+
+REAL_TMUX="$(find_real_tmux)"
+exec "$REAL_TMUX" "$@"
 ```
 
-AnyClaude replaces `__PORT__` and `__REAL_CLAUDE__` before writing the file.
+### tmux Shim — Routing Phase (Next)
 
-`__REAL_CLAUDE__` is resolved at startup by scanning PATH (excluding the
-shim directory) for the real `claude` binary.
+The tmux shim will parse `send-keys` arguments and inject
+`ANTHROPIC_BASE_URL` into the teammate launch command:
 
-### Implementation
+```bash
+# Detect send-keys with claude invocation
+if [[ "$1" == *"send-keys"* ]]; then
+  # Find the last argument (the command being typed)
+  # Inject ANTHROPIC_BASE_URL=http://127.0.0.1:PORT/teammate
+  # before the claude binary path
+fi
+exec "$REAL_TMUX" "$@"
+```
+
+The `send-keys` command from Claude Code has a predictable format:
+```
+tmux -L claude-swarm-{PID} send-keys -t %N \
+  cd /path && ENV1=val1 ENV2=val2 /abs/path/claude --flags Enter
+```
+
+The shim inserts `ANTHROPIC_BASE_URL=http://127.0.0.1:PORT/teammate` into
+the env var list before the claude path.
+
+### Module Structure
+
+```
+src/shim/
+  mod.rs      — TeammateShim (owns temp dir, coordinates both shims)
+  claude.rs   — claude shim script generation + resolve_real_claude()
+  tmux.rs     — tmux shim script generation
+```
 
 ```rust
-// src/shim.rs — self-contained, no dependencies on proxy/axum
+// src/shim/mod.rs — self-contained, no dependencies on proxy/axum
 
 pub struct TeammateShim {
     _dir: tempfile::TempDir,   // auto-cleanup on Drop
@@ -335,91 +414,114 @@ pub struct TeammateShim {
 }
 
 impl TeammateShim {
-    /// Create shim script in a temp directory.
+    /// Create both shim scripts in a temp directory.
     pub fn create(proxy_port: u16) -> Result<Self>;
 
-    /// PATH env var value with shim dir prepended.
-    /// For use with PtySpawnConfig::build(extra_env).
+    /// PATH env var with shim dir prepended.
     pub fn path_env(&self) -> (String, String);
+
+    /// Path to tmux shim log (for debugging).
+    pub fn tmux_log_path(&self) -> PathBuf;
 }
-
-fn resolve_real_claude() -> Result<PathBuf>;
 ```
-
-The shim module has no dependency on the proxy, routing, or axum. It is
-purely a filesystem/process concern: write a script, resolve a binary path,
-provide a PATH env var.
 
 ### Startup Integration
 
 In `runtime.rs`, after the proxy port is known:
 
 ```rust
-// Create shim if routing rules reference "/teammate" prefix
-let shim = if has_teammate_routing(&config) {
-    Some(TeammateShim::create(actual_addr.port())?)
-} else {
-    None
-};
+// Create shims if agent_teams is configured
+let _teammate_shim = if config_store.get().agent_teams.is_some() {
+    match TeammateShim::create(actual_addr.port()) {
+        Ok(shim) => {
+            app_log("runtime", &format!(
+                "Agent team routing enabled, tmux log: {}",
+                shim.tmux_log_path().display(),
+            ));
+            Some(shim)
+        }
+        Err(err) => { app_log("runtime", &format!("...disabled: {err}")); None }
+    }
+} else { None };
 
-// Pass PATH via extra_env — no changes to PtySpawnConfig
-let mut initial_env = app.settings_manager().to_env_vars();
-if let Some(s) = &shim {
-    initial_env.push(s.path_env());
-}
-let initial = spawn_config.build(initial_env, initial_args, SessionMode::Initial);
-// `shim` lives until end of run() — TempDir is not dropped prematurely
+// PATH + --teammate-mode tmux injected at all 3 spawn points
+let shim_env = _teammate_shim.as_ref().map(|s| vec![s.path_env()]).unwrap_or_default();
+let teammate_cli_args = if _teammate_shim.is_some() {
+    vec!["--teammate-mode".into(), "tmux".into()]
+} else { vec![] };
 ```
+
+`--teammate-mode tmux` forces Claude Code to use split-pane mode, ensuring
+each teammate is a separate process that goes through our tmux shim.
 
 ---
 
 ## Implementation Plan
 
-### Phase 1: Routing Layer + Shim (MVP)
+### Phase 1: Routing Layer + Shims (MVP) ✅ DONE
 
 **Goal**: Generic routing layer in proxy. Teammate routing as first rule.
+PATH shims for claude + tmux. `--teammate-mode tmux` injection.
 
-#### New Files
+#### Files Created
 
-| File | Purpose | ~Lines |
-|------|---------|--------|
-| `src/proxy/routing.rs` | `RoutingRule` trait, middleware, `PathPrefixRule`, `RoutedTo` | 80 |
-| `src/shim.rs` | `TeammateShim`, shim script generation, resolve real claude | 50 |
+| File | Purpose |
+|------|---------|
+| `src/proxy/routing.rs` | `RoutingRule` trait, middleware, `PathPrefixRule`, `RoutedTo` |
+| `src/shim/mod.rs` | `TeammateShim` — owns temp dir, coordinates both shims |
+| `src/shim/claude.rs` | Claude shim script + `resolve_real_claude()` |
+| `src/shim/tmux.rs` | tmux shim script (logging phase) |
+| `tests/routing.rs` | 8 tests for routing layer |
+| `tests/shim.rs` | 8 tests for both shims |
 
-#### Modified Files
+#### Files Modified
 
-| File | Change | ~Lines |
-|------|--------|--------|
-| `src/config/types.rs` | Add `AgentTeamsConfig` struct, `agent_teams: Option<AgentTeamsConfig>` field | +10 |
-| `src/proxy/mod.rs` | `pub mod routing;` | +1 |
-| `src/proxy/router.rs` | `build_router()` accepts rules, applies layer | +5 |
-| `src/proxy/router.rs` | `proxy_handler` reads `RoutedTo` from extensions | +3 |
-| `src/proxy/server.rs` | Build routing rule from `agent_teams` config, pass to `build_router` | +8 |
-| `src/ui/runtime.rs` | Create shim, pass PATH via `extra_env` | +8 |
-
-#### Unchanged
-
-- `upstream.rs` — zero changes
-- `ObservabilityHub` — zero changes
-- `ObservabilityPlugin` — zero changes
-- `PtySpawnConfig` — zero changes (PATH goes via existing `extra_env`)
-- `PtySession` — zero changes
-- `BackendState` — zero changes
+| File | Change |
+|------|--------|
+| `src/config/types.rs` | `AgentTeamsConfig` struct, `agent_teams: Option<AgentTeamsConfig>` field |
+| `src/config/loader.rs` | Validation: `teammate_backend` must exist in `[[backends]]` |
+| `src/proxy/mod.rs` | `pub mod routing;` |
+| `src/proxy/router.rs` | `build_router()` accepts rules, applies layer |
+| `src/proxy/router.rs` | `proxy_handler` reads `RoutedTo` from extensions |
+| `src/proxy/server.rs` | Build routing rule from config, pass to `build_router` |
+| `src/ui/runtime.rs` | Create shims, inject PATH + `--teammate-mode tmux` at 3 spawn points |
+| `tests/config_loader.rs` | 3 tests for agent_teams validation |
 
 #### Flow
 
 1. AnyClaude starts, reads config
 2. If `[agent_teams].teammate_backend` is set:
-   a. Create `PathPrefixRule { prefix: "/teammate", backend }` internally
-   b. Resolve real `claude` binary path
-   c. Generate shim script in temp dir
+   a. Validate `teammate_backend` exists in `[[backends]]`
+   b. Create `PathPrefixRule { prefix: "/teammate", backend }` internally
+   c. Resolve real `claude` binary, generate both shim scripts in temp dir
    d. Pass `PATH=shim_dir:$PATH` via `extra_env`
+   e. Pass `--teammate-mode tmux` via `extra_args`
 3. Proxy starts with routing middleware layer (if rules exist)
-4. Lead process starts, requests go to `/v1/messages` → no rule matches
-   → active backend
-5. Lead spawns teammate → teammate runs through shim → requests go to
-   `/teammate/v1/messages` → `PathPrefixRule` matches → strips prefix
-   → forwards `/v1/messages` to teammate backend
+4. Lead starts with `--teammate-mode tmux`, requests go to `/v1/messages`
+   → no rule matches → active backend
+5. Lead spawns teammates via tmux → tmux shim intercepts `send-keys`
+   → (Phase 1b) injects `ANTHROPIC_BASE_URL` with `/teammate` prefix
+   → teammate requests go to `/teammate/v1/messages`
+   → `PathPrefixRule` strips prefix → routes to teammate backend
+
+### Phase 1b: Smart tmux Shim 🔧 IN PROGRESS
+
+**Goal**: tmux shim parses `send-keys` and injects `ANTHROPIC_BASE_URL`
+so teammate traffic goes through the `/teammate` routing path.
+
+**Input data** (from tmux shim log):
+```
+tmux -L claude-swarm-26283 send-keys -t %0 \
+  cd /path && CLAUDECODE=1 CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 \
+  /abs/path/claude --agent-flags Enter
+```
+
+**Approach**: detect `send-keys` subcommand containing a claude invocation,
+inject `ANTHROPIC_BASE_URL=http://127.0.0.1:PORT/teammate` before the
+claude path in the env var list.
+
+**Alternative (future)**: fully synthetic tmux — handle the teammate
+lifecycle without real tmux. Would remove the tmux dependency entirely.
 
 ### Phase 2: Per-Agent Metrics (Free)
 
@@ -480,38 +582,53 @@ is set, just `/teammate`. If `overrides` exist, encode the agent name too.
 | Case | Handling |
 |------|----------|
 | No `[agent_teams]` in config | No middleware applied, zero overhead, current behavior |
-| `teammate_backend` not in `[[backends]]` | Validation error at config load |
+| `teammate_backend` not in `[[backends]]` | Validation error at config load (tested) |
 | Teammate backend same as lead | Works, just no cost difference |
-| Real `claude` not found in PATH | Error at startup with clear message |
+| Real `claude` not found in PATH | Non-fatal warning, routing disabled |
 | Shim dir cleanup on crash | `tempfile::TempDir` auto-cleans on Drop; OS cleans on reboot |
-| Claude Code updates change spawn mechanism | Shim is a no-op if env vars aren't set; graceful degradation |
-| Lead process has `CLAUDE_CODE_AGENT_TYPE` | Verify empirically; if so, shim checks for specific value `"teammate"` |
+| tmux not installed | tmux shim logs error, exits 127 — Claude Code falls back gracefully |
+| Claude Code uses absolute path to claude | Expected behavior — tmux shim handles this, not claude shim |
 | Multiple overrides match | Most specific prefix wins (longer prefix first) |
 | Override references nonexistent backend | Caught at config validation |
+| In-process teammate mode | Forced to tmux mode via `--teammate-mode tmux` CLI arg |
+
+## Answered Questions
+
+1. **Does the lead process have `CLAUDE_CODE_AGENT_TYPE` set?**
+   ✅ **No.** `CLAUDE_CODE_AGENT_TYPE` is not set as an env var at all.
+   Claude Code passes `--agent-type Explore` as a CLI flag to teammates.
+   The only env vars set for teammates are `CLAUDECODE=1` and
+   `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`.
+
+2. **Does `ANTHROPIC_BASE_URL` with a path prefix work with Claude Code?**
+   ✅ **Not yet tested** — requires working tmux shim (Phase 1b).
+   Proxy routing layer is ready to handle `/teammate/v1/messages`.
+
+3. **How does Claude Code spawn teammates?**
+   ✅ **Via `tmux send-keys` with absolute path.** Not via direct process
+   spawn or PATH lookup. See "Teammate tmux Protocol" section above.
+
+4. **Does a PATH-based `claude` shim work?**
+   ❌ **No.** Claude Code uses absolute path in `send-keys`, bypassing PATH.
+   The tmux shim approach is required.
 
 ## Open Questions
 
-1. **Does the lead process have `CLAUDE_CODE_AGENT_TYPE` set?**
-   If yes, we need to distinguish by value (e.g., `"lead"` vs `"teammate"`).
-   If no, the simple `[ -n "$CLAUDE_CODE_AGENT_TYPE" ]` check works.
-   **Action**: Test empirically with `env | grep CLAUDE_CODE` in both contexts.
-
-2. **Does `ANTHROPIC_BASE_URL` with a path prefix work with Claude Code?**
-   Claude Code likely appends `/v1/messages` to the base URL. If the base URL
-   is `http://127.0.0.1:PORT/teammate`, requests go to
-   `http://127.0.0.1:PORT/teammate/v1/messages`. Need to verify.
-   **Action**: Test with a simple proxy that logs request paths.
-
-3. **Thinking block compatibility for teammate backend.**
+1. **Thinking block compatibility for teammate backend.**
    If teammates use a non-Anthropic backend, thinking blocks need translation.
    AnyClaude already handles this via `thinking_compat` backend config.
    Should work out of the box if teammate backend has `thinking_compat = true`.
 
-4. **Model override in teammate prompts.**
-   Users can ask the lead to "use Sonnet for teammates" — Claude Code may
-   set a model field in the API request. If the teammate backend doesn't
-   support that model name, the request fails.
+2. **Model override in teammate prompts.**
+   Claude Code passes `--model claude-opus-4-6` to teammates. If the teammate
+   backend doesn't support that model, the request may fail.
    **Mitigation**: A future routing rule could rewrite the model field.
+
+3. **Synthetic tmux (no real tmux dependency).**
+   The tmux shim could handle the full teammate lifecycle without real tmux:
+   spawn processes directly, manage their I/O, report status. This would
+   remove the tmux dependency but requires significant effort to replicate
+   tmux's pane/session management that Claude Code expects.
 
 ---
 
