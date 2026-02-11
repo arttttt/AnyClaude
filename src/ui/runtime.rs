@@ -5,6 +5,7 @@ use crate::ipc::IpcLayer;
 use crate::metrics::{init_global_logger, DebugLogger};
 use crate::proxy::ProxyServer;
 use crate::pty::{PtySession, PtySpawnConfig, SessionMode, SpawnParams};
+use crate::shim::TeammateShim;
 use crate::shutdown::{ShutdownCoordinator, ShutdownPhase};
 use crate::ui::app::{App, UiCommand};
 use crate::ui::events::{AppEvent, EventHandler};
@@ -65,10 +66,42 @@ pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Re
         .map_err(|err| io::Error::other(err.to_string()))?;
     
     // Try to bind and get the actual port, updating the base URL
-    let (_actual_addr, actual_base_url) = async_runtime.block_on(async {
+    let (actual_addr, actual_base_url) = async_runtime.block_on(async {
         proxy_server.try_bind(&config_store).await
     }).map_err(|err| io::Error::other(err.to_string()))?;
-    
+
+    // Create teammate shim if agent_teams routing is configured.
+    // The shim must stay alive for the entire session (owns a temp directory).
+    let _teammate_shim = if config_store.get().agent_teams.is_some() {
+        match TeammateShim::create(actual_addr.port()) {
+            Ok(shim) => {
+                crate::metrics::app_log("runtime", &format!(
+                    "Agent team routing enabled, shim dir prepended to PATH. tmux log: {}",
+                    shim.tmux_log_path().display(),
+                ));
+                Some(shim)
+            }
+            Err(err) => {
+                // Non-fatal: warn and continue without teammate routing
+                crate::metrics::app_log("runtime", &format!("Agent team routing disabled: {}", err));
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let shim_env: Vec<(String, String)> = _teammate_shim
+        .as_ref()
+        .map(|s| vec![s.path_env()])
+        .unwrap_or_default();
+    // Force tmux teammate mode so each teammate spawns as a separate process
+    // (required for the PATH shim to intercept subprocess launches).
+    let teammate_cli_args: Vec<String> = if _teammate_shim.is_some() {
+        vec!["--teammate-mode".to_string(), "tmux".to_string()]
+    } else {
+        vec![]
+    };
+
     let proxy_handle = proxy_server.handle();
     let backend_state = proxy_server.backend_state();
 
@@ -144,8 +177,10 @@ pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Re
         );
     }
 
-    let initial_env = app.settings_manager().to_env_vars();
-    let initial_args = app.settings_manager().to_cli_args();
+    let mut initial_env = shim_env.clone();
+    initial_env.extend(app.settings_manager().to_env_vars());
+    let mut initial_args = app.settings_manager().to_cli_args();
+    initial_args.extend(teammate_cli_args.iter().cloned());
     let initial = spawn_config.build(initial_env, initial_args, SessionMode::Initial);
     let mut pty_session = PtySession::spawn(
         spawn_config.command().to_string(),
@@ -340,8 +375,10 @@ pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Re
                     if can_retry {
                         // --resume failed (likely no conversation yet).
                         // Retry with --session-id to start fresh session.
-                        let env_vars = app.settings_manager().to_env_vars();
-                        let cli_args = app.settings_manager().to_cli_args();
+                        let mut env_vars = shim_env.clone();
+                        env_vars.extend(app.settings_manager().to_env_vars());
+                        let mut cli_args = app.settings_manager().to_cli_args();
+                        cli_args.extend(teammate_cli_args.iter().cloned());
                         let params = spawn_config.build(env_vars, cli_args, SessionMode::Initial);
                         respawn_pty(
                             &mut app,
@@ -375,7 +412,11 @@ pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Re
                 // resume). The ProcessExit safety net will then retry with
                 // --session-id (SessionMode::Initial).
                 restart_can_retry = true;
-                let params = spawn_config.build(env_vars, cli_args, SessionMode::Resume);
+                let mut combined_env = shim_env.clone();
+                combined_env.extend(env_vars);
+                let mut combined_args = cli_args;
+                combined_args.extend(teammate_cli_args.iter().cloned());
+                let params = spawn_config.build(combined_env, combined_args, SessionMode::Resume);
                 respawn_pty(
                     &mut app,
                     &mut pty_session,
