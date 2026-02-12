@@ -117,7 +117,7 @@ async fn proxy_handler(
             reason: bo.reason,
         });
         bo.backend
-    });
+    }).or(routed.map(|r| r.backend));
 
     match state
         .upstream

@@ -28,6 +28,10 @@ const TEMPLATE: &str = r#"#!/bin/bash
 
 SHIM_DIR="$(cd "$(dirname "$0")" && pwd)"
 LOG="$SHIM_DIR/tmux_shim.log"
+# Persistent log survives TempDir cleanup
+PLOG="$HOME/.config/anyclaude/tmux_shim.log"
+
+slog() { echo "[$(date '+%H:%M:%S.%N')] $1" | tee -a "$LOG" >> "$PLOG"; }
 
 # Find real tmux, skipping our shim directory.
 find_real_tmux() {
@@ -40,7 +44,7 @@ find_real_tmux() {
 
 REAL_TMUX="$(find_real_tmux)"
 if [ -z "$REAL_TMUX" ]; then
-  echo "[$(date '+%H:%M:%S.%N')] ERROR: real tmux not found" >> "$LOG"
+  slog "ERROR: real tmux not found"
   echo "tmux: command not found (anyclaude shim)" >&2
   exit 127
 fi
@@ -65,7 +69,7 @@ for arg in "$@"; do
       args+=("$INJECT_URL")
       args+=("$arg")
       injected=true
-      echo "[$(date '+%H:%M:%S.%N')] INJECT teammate URL (standalone arg)" >> "$LOG"
+      slog "INJECT teammate URL (standalone arg)"
       continue
     fi
     # Case B: claude path embedded in a longer string (confirmed format)
@@ -73,10 +77,12 @@ for arg in "$@"; do
       # Insert env var before the absolute claude path.
       # [^ ]* matches any non-space chars including /, so multi-level paths work.
       # Handle both mid-string (/claude --flags) and end-of-string (/claude$).
-      arg="$(printf '%s' "$arg" | sed -E "s| (/[^ ]*/claude)( |\$)| $INJECT_URL \1\2|")"
+      slog "BEFORE sed: $(printf '%q' "$arg")"
+      arg="$(printf '%s' "$arg" | sed -E "s# (/[^ ]*/claude)( |\$)# $INJECT_URL \1\2#")"
+      slog "AFTER  sed: $(printf '%q' "$arg")"
       args+=("$arg")
       injected=true
-      echo "[$(date '+%H:%M:%S.%N')] INJECT teammate URL (embedded in string)" >> "$LOG"
+      slog "INJECT teammate URL (embedded in string)"
       continue
     fi
   fi
@@ -85,10 +91,10 @@ for arg in "$@"; do
 done
 
 if $injected; then
-  echo "[$(date '+%H:%M:%S.%N')] tmux ${args[*]}" >> "$LOG"
+  slog "EXEC: $(printf '%q ' "${args[@]}")"
   exec "$REAL_TMUX" "${args[@]}"
 else
-  echo "[$(date '+%H:%M:%S.%N')] tmux $*" >> "$LOG"
+  slog "tmux $*"
   exec "$REAL_TMUX" "$@"
 fi
 "#;

@@ -204,9 +204,12 @@ impl UpstreamClient {
                 let mut model_rewritten = false;
                 if let Some(model_val) = json_body.get("model").and_then(|m| m.as_str()) {
                     if let Some(new_model) = backend.resolve_model(model_val) {
-                        crate::metrics::app_log(
+                        self.debug_logger.log_auxiliary(
                             "model_map",
-                            &format!("Rewrote model '{}' → '{}'", model_val, new_model),
+                            None,
+                            None,
+                            Some(&format!("Rewrote model '{}' → '{}'", model_val, new_model)),
+                            None,
                         );
                         json_body["model"] = serde_json::json!(new_model);
                         model_rewritten = true;
