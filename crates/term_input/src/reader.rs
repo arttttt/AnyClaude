@@ -116,7 +116,9 @@ impl TtyReader {
     }
 
     /// On macOS, some terminals (Warp in alt-screen) don't send ESC prefix
-    /// for Option+key. Detect Option via CGEvent and fix up affected keys.
+    /// for Option+key, and most terminals don't send kitty keyboard protocol
+    /// sequences for Shift+Enter unless explicitly enabled.
+    /// Detect modifiers via CGEvent and fix up affected keys.
     fn enrich_with_modifiers(event: InputEvent) -> InputEvent {
         match event {
             InputEvent::Key(ref key) if matches!(key.kind, KeyKind::Backspace) => {
@@ -124,6 +126,19 @@ impl TtyReader {
                     InputEvent::Key(crate::event::KeyInput {
                         raw: vec![0x1b, 0x7f],
                         kind: KeyKind::Alt(Box::new(KeyKind::Backspace)),
+                    })
+                } else {
+                    event
+                }
+            }
+            InputEvent::Key(ref key) if matches!(key.kind, KeyKind::Enter) => {
+                if macos_modifiers::is_shift_held() {
+                    // Shift+Enter: emit CSI 13;2 u (kitty keyboard protocol).
+                    // Claude Code expects this to insert a newline instead of
+                    // submitting the prompt.
+                    InputEvent::Key(crate::event::KeyInput {
+                        raw: b"\x1b[13;2u".to_vec(),
+                        kind: KeyKind::Enter,
                     })
                 } else {
                     event
