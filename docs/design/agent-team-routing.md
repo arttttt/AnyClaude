@@ -504,7 +504,7 @@ PATH shims for claude + tmux. `--teammate-mode tmux` injection.
    → teammate requests go to `/teammate/v1/messages`
    → `PathPrefixRule` strips prefix → routes to teammate backend
 
-### Phase 1b: Smart tmux Shim 🔧 IN PROGRESS
+### Phase 1b: Smart tmux Shim 🔧 NEXT
 
 **Goal**: tmux shim parses `send-keys` and injects `ANTHROPIC_BASE_URL`
 so teammate traffic goes through the `/teammate` routing path.
@@ -516,12 +516,91 @@ tmux -L claude-swarm-26283 send-keys -t %0 \
   /abs/path/claude --agent-flags Enter
 ```
 
-**Approach**: detect `send-keys` subcommand containing a claude invocation,
-inject `ANTHROPIC_BASE_URL=http://127.0.0.1:PORT/teammate` before the
-claude path in the env var list.
+**Approach**: in the bash shim, scan args for `send-keys` subcommand.
+If found, scan remaining args for a token that looks like an absolute
+path to claude (contains `/claude`). Insert
+`ANTHROPIC_BASE_URL=http://127.0.0.1:__PORT__/teammate` before it.
+All other tmux commands — forward unchanged.
 
-**Alternative (future)**: fully synthetic tmux — handle the teammate
-lifecycle without real tmux. Would remove the tmux dependency entirely.
+```bash
+#!/bin/bash
+SHIM_DIR="$(cd "$(dirname "$0")" && pwd)"
+LOG="$SHIM_DIR/tmux_shim.log"
+REAL_TMUX="$(find_real_tmux)"  # same as current shim
+
+# Detect send-keys with claude invocation, inject ANTHROPIC_BASE_URL.
+inject_args() {
+  local out=()
+  local found_send_keys=false
+  local injected=false
+  for arg in "$@"; do
+    if [ "$arg" = "send-keys" ]; then
+      found_send_keys=true
+    fi
+    # Inject before the absolute claude path
+    if $found_send_keys && ! $injected && [[ "$arg" == /* ]] && [[ "$arg" == *claude* ]]; then
+      out+=("ANTHROPIC_BASE_URL=http://127.0.0.1:__PORT__/teammate")
+      injected=true
+    fi
+    out+=("$arg")
+  done
+  echo "${out[@]}"
+}
+
+# Log and execute
+echo "[$(date '+%H:%M:%S.%N')] tmux $*" >> "$LOG"
+
+MODIFIED_ARGS="$(inject_args "$@")"
+exec "$REAL_TMUX" $MODIFIED_ARGS
+```
+
+**Risks**:
+- Argument parsing in bash is fragile with spaces/special chars in paths.
+  Mitigation: Claude Code paths are controlled (no spaces in homebrew paths).
+- Claude Code might change `send-keys` format in future versions.
+  Mitigation: if no claude path found, forward unchanged (graceful degradation).
+
+**Verification**:
+1. Launch with `[agent_teams]` configured
+2. Check debug log for `[ROUTING] Routed POST /teammate/v1/messages -> backend=X`
+3. Check tmux_shim.log for `ANTHROPIC_BASE_URL` injection
+4. Check Ctrl+S status popup — should show requests on both backends
+
+### Phase 1c: Synthetic tmux (Future)
+
+**Goal**: remove real tmux dependency entirely. The tmux shim handles the
+full teammate lifecycle: process spawning, state tracking, fake responses.
+
+**Why**: tmux is not always installed. macOS doesn't ship it. Users
+shouldn't need to `brew install tmux` just for agent teams routing.
+
+**How it works**: the shim maintains internal state and returns fake
+responses that satisfy Claude Code's expectations:
+
+| tmux Command | Synthetic Response |
+|---|---|
+| `-V` | `tmux 3.4` (hardcoded version string) |
+| `new-session -d -s NAME -n WIN -P -F #{pane_id}` | Print `%0`, track session |
+| `split-window -t %N -v -P -F #{pane_id}` | Print `%{N+1}`, track pane |
+| `has-session -t NAME` | Exit 0 if session tracked, 1 otherwise |
+| `list-panes -t ... -F #{pane_id}` | Print tracked pane IDs, one per line |
+| `list-windows -t ... -F #{window_name}` | Print tracked window name |
+| `select-pane`, `set-option`, `select-layout` | No-op (exit 0) |
+| `send-keys -t %N CMD Enter` | Extract CMD, spawn with modified env |
+| `kill-session -t NAME` | Kill tracked processes, cleanup |
+
+For `send-keys` with a claude command, the shim:
+1. Parses the shell command (`cd /path && ENV=val /abs/claude --flags`)
+2. Adds `ANTHROPIC_BASE_URL=http://127.0.0.1:PORT/teammate` to env
+3. Spawns the process in background (`nohup ... &`)
+4. Tracks the PID for cleanup on `kill-session`
+
+**Complexity**: ~150-200 lines of bash. Main challenge is maintaining
+pane ID state and process lifecycle across multiple shim invocations.
+Statefile in `$SHIM_DIR/state.json` or simple lockfile-based tracking.
+
+**When to implement**: after Phase 1b is validated end-to-end. Only if
+tmux dependency proves problematic for users.
 
 ### Phase 2: Per-Agent Metrics (Free)
 
