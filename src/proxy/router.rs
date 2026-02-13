@@ -2,6 +2,7 @@ use axum::body::Body;
 use axum::extract::{RawQuery, State};
 use axum::Extension;
 use axum::http::Request;
+use axum::middleware::Next;
 use axum::response::Response;
 use axum::routing::get;
 use axum::Router;
@@ -9,7 +10,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::backend::BackendState;
-use crate::config::DebugLogLevel;
+use crate::config::{AgentTeamsConfig, DebugLogLevel};
 use crate::proxy::error::ErrorResponse;
 use crate::metrics::{DebugLogger, ObservabilityHub, RequestMeta, RoutingDecision};
 use crate::proxy::health::HealthHandler;
@@ -18,13 +19,22 @@ use crate::proxy::thinking::TransformerRegistry;
 use crate::proxy::timeout::TimeoutConfig;
 use crate::proxy::upstream::UpstreamClient;
 
+/// Fixed backend override for the teammate pipeline.
+///
+/// Set as an axum `Extension` at router build time via `nest("/teammate", ...)`.
+/// Extracted by `proxy_handler` to bypass dynamic backend selection.
+/// Internal to the routing layer — not part of the public API.
+#[derive(Clone)]
+pub struct BackendOverride(pub String);
+
 #[derive(Clone)]
 pub struct RouterEngine {
     health: Arc<HealthHandler>,
     upstream: Arc<UpstreamClient>,
-    backend_state: BackendState,
+    pub(crate) backend_state: BackendState,
     observability: ObservabilityHub,
-    debug_logger: Arc<DebugLogger>,
+    pub(crate) debug_logger: Arc<DebugLogger>,
+    pub(crate) transformer_registry: Arc<TransformerRegistry>,
 }
 
 impl RouterEngine {
@@ -41,34 +51,71 @@ impl RouterEngine {
             upstream: Arc::new(UpstreamClient::new(
                 timeout_config,
                 pool_config,
-                transformer_registry,
                 debug_logger.clone(),
             )),
             backend_state,
             observability,
             debug_logger,
+            transformer_registry,
         }
     }
 }
 
 pub fn build_router(
     engine: RouterEngine,
-    routing_rules: Vec<Box<dyn super::routing::RoutingRule>>,
+    teams: &Option<AgentTeamsConfig>,
 ) -> Router {
+    // Main pipeline: with thinking middleware
+    let main = Router::new()
+        .fallback(proxy_handler)
+        .layer(axum::middleware::from_fn_with_state(
+            engine.clone(),
+            thinking_middleware,
+        ))
+        .with_state(engine.clone());
+
     let mut router = Router::new()
         .route("/health", get(health_handler))
-        .fallback(proxy_handler)
-        .with_state(engine);
+        .with_state(engine.clone());
 
-    if !routing_rules.is_empty() {
-        // Extension must be outermost (added last) so it inserts rules
-        // into the request BEFORE the middleware extracts them.
-        router = router
-            .layer(axum::middleware::from_fn(super::routing::routing_middleware))
-            .layer(Extension(Arc::new(routing_rules)));
+    // Teammate pipeline: no thinking, fixed backend
+    if let Some(config) = teams {
+        let teammate = Router::new()
+            .fallback(proxy_handler)
+            .layer(Extension(BackendOverride(
+                config.teammate_backend.clone(),
+            )))
+            .with_state(engine.clone());
+
+        crate::metrics::app_log(
+            "router",
+            &format!(
+                "Teammate pipeline: /teammate/* → backend={}",
+                config.teammate_backend,
+            ),
+        );
+
+        router = router.nest("/teammate", teammate);
     }
 
-    router
+    router.merge(main)
+}
+
+/// Thinking middleware — creates a ThinkingSession for main agent requests.
+///
+/// Only present in the main pipeline. Not applied to teammate routes.
+async fn thinking_middleware(
+    State(state): State<RouterEngine>,
+    mut req: Request<Body>,
+    next: Next,
+) -> Response {
+    let backend = state.backend_state.get_active_backend();
+    let session = state.transformer_registry.begin_request(
+        &backend,
+        state.debug_logger.clone(),
+    );
+    req.extensions_mut().insert(session);
+    next.run(req).await
 }
 
 async fn health_handler(
@@ -87,11 +134,15 @@ async fn proxy_handler(
     let query_str = query.as_deref().unwrap_or("");
     crate::metrics::app_log("router", &format!("Incoming request: {} {} request_id={}", req.method(), req.uri().path(), request_id));
 
-    let routed = req.extensions().get::<super::routing::RoutedTo>().cloned();
-    let active_backend = routed
-        .as_ref()
-        .map(|r| r.backend.clone())
+    // Backend: from BackendOverride (teammate pipeline) or active backend (main pipeline)
+    let teammate_backend = req.extensions()
+        .get::<BackendOverride>()
+        .map(|bo| bo.0.clone());
+
+    let active_backend = teammate_backend
+        .clone()
         .unwrap_or_else(|| state.backend_state.get_active_backend());
+
     let mut start = state
         .observability
         .start_request(request_id.clone(), &req, &active_backend);
@@ -110,14 +161,25 @@ async fn proxy_handler(
         });
     }
 
-    let backend_override = start.backend_override.take().map(|bo| {
-        start.span.set_backend(bo.backend.clone());
+    // Determine final backend override for forward().
+    // Priority: observability plugin > teammate route > none (use active).
+    let backend_override = if let Some(obs) = start.backend_override.take() {
+        start.span.set_backend(obs.backend.clone());
         start.span.record_mut().routing_decision = Some(RoutingDecision {
-            backend: bo.backend.clone(),
-            reason: bo.reason,
+            backend: obs.backend.clone(),
+            reason: obs.reason,
         });
-        bo.backend
-    }).or(routed.map(|r| r.backend));
+        Some(obs.backend)
+    } else if let Some(teammate) = teammate_backend {
+        start.span.set_backend(teammate.clone());
+        start.span.record_mut().routing_decision = Some(RoutingDecision {
+            backend: teammate.clone(),
+            reason: "teammate route".to_string(),
+        });
+        Some(teammate)
+    } else {
+        None
+    };
 
     match state
         .upstream
