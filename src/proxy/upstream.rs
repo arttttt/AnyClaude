@@ -12,7 +12,7 @@ use crate::metrics::{
 };
 use crate::proxy::error::ProxyError;
 use crate::proxy::pool::PoolConfig;
-use crate::proxy::thinking::{TransformContext, TransformerRegistry};
+use crate::proxy::thinking::ThinkingSession;
 use crate::proxy::timeout::TimeoutConfig;
 use std::sync::Arc;
 
@@ -20,7 +20,6 @@ pub struct UpstreamClient {
     client: Client,
     timeout_config: TimeoutConfig,
     pool_config: PoolConfig,
-    transformer_registry: Arc<TransformerRegistry>,
     debug_logger: Arc<DebugLogger>,
     request_parser: RequestParser,
     response_parser: ResponseParser,
@@ -30,7 +29,6 @@ impl UpstreamClient {
     pub fn new(
         timeout_config: TimeoutConfig,
         pool_config: PoolConfig,
-        transformer_registry: Arc<TransformerRegistry>,
         debug_logger: Arc<DebugLogger>,
     ) -> Self {
         let client = Client::builder()
@@ -44,7 +42,6 @@ impl UpstreamClient {
             client,
             timeout_config,
             pool_config,
-            transformer_registry,
             debug_logger,
             request_parser: RequestParser::new(),
             response_parser: ResponseParser::new(),
@@ -59,9 +56,6 @@ impl UpstreamClient {
         span: RequestSpan,
         observability: ObservabilityHub,
     ) -> Result<Response<Body>, ProxyError> {
-        // Get the current active backend configuration at request time
-        // This ensures the entire request uses the same backend, even if
-        // a switch happens mid-request
         let backend = match backend_override.as_deref() {
             Some(backend_id) => backend_state
                 .get_backend_config(backend_id)
@@ -94,7 +88,12 @@ impl UpstreamClient {
         observability: ObservabilityHub,
     ) -> Result<Response<Body>, ProxyError> {
         span.set_backend(backend.name.clone());
-        let (parts, body) = req.into_parts();
+        let (mut parts, body) = req.into_parts();
+
+        // Extract ThinkingSession from extensions (set by thinking_middleware).
+        // Present for main agent requests, absent for teammate requests.
+        let thinking = parts.extensions.remove::<ThinkingSession>();
+
         let method = parts.method;
         let uri = parts.uri;
         let headers = parts.headers;
@@ -177,7 +176,7 @@ impl UpstreamClient {
             );
         }
 
-        // Apply thinking transformer
+        // Body transform pipeline
         let mut body_bytes = body_bytes;
         let needs_thinking_compat = backend.needs_thinking_compat();
 
@@ -185,13 +184,6 @@ impl UpstreamClient {
         // body read, which kills SSE streams mid-generation. For streaming requests
         // we rely on connect_timeout (Client-level) + idle_timeout (ObservedStream).
         let mut is_streaming_request = false;
-
-        // Notify thinking registry about current backend (increments session on switch)
-        self.transformer_registry
-            .notify_backend_for_thinking(&backend.name);
-        // Capture session ID now — the on_complete callback may fire after a subsequent
-        // request has already incremented the session via notify_backend_for_thinking.
-        let thinking_session_id = self.transformer_registry.current_thinking_session();
 
         if request_content_type.contains("application/json") {
             if let Ok(mut json_body) = serde_json::from_slice::<serde_json::Value>(&body_bytes) {
@@ -242,51 +234,14 @@ impl UpstreamClient {
                     }
                 }
 
-                // Filter out thinking blocks from other sessions
-                let cache_before = self.transformer_registry.thinking_cache_stats();
-                let filtered = self.transformer_registry.filter_thinking_blocks(&mut json_body);
-                if filtered > 0 || cache_before.total > 0 {
-                    self.debug_logger.log_auxiliary(
-                        "thinking_filter",
-                        None, None,
-                        Some(&format!(
-                            "Filter: cache={} blocks, removed={} from request",
-                            cache_before.total, filtered,
-                        )),
-                        None,
-                    );
-                }
-
-                let context = TransformContext::new(
-                    backend.name.clone(),
-                    span.request_id().to_string(),
-                    path_and_query,
-                );
-
-                let transformer = self.transformer_registry.transformer();
-                let mut transformer_changed = false;
-
-                match transformer.transform_request(&mut json_body, &context) {
-                    Ok(result) => {
-                        transformer_changed = result.changed;
-                        if result.changed {
-                            crate::metrics::app_log("upstream", &format!(
-                                "Applied transformer '{}' for backend '{}'",
-                                transformer.name(), backend.name
-                            ));
-                        }
-                    }
-                    Err(e) => {
-                        crate::metrics::app_log_error(
-                            "upstream",
-                            "Failed to apply transformer",
-                            &e.to_string(),
-                        );
-                    }
+                // Filter thinking blocks (main agent only — ThinkingSession present)
+                let mut filtered = 0u32;
+                if let Some(ref session) = thinking {
+                    filtered = session.filter(&mut json_body);
                 }
 
                 // Re-serialize body if any transformation occurred
-                if model_rewritten || thinking_converted || filtered > 0 || transformer_changed {
+                if model_rewritten || thinking_converted || filtered > 0 {
                     if thinking_converted {
                         let thinking_json = json_body.get("thinking")
                             .map(|t| t.to_string())
@@ -482,51 +437,25 @@ impl UpstreamClient {
                 None
             };
 
-            // Create callback to capture response for thinking registration
-            let registry = Arc::clone(&self.transformer_registry);
-            let cb_debug_logger = Arc::clone(&self.debug_logger);
-            let on_complete: crate::metrics::ResponseCompleteCallback = Box::new(move |bytes| {
-                // Parse SSE events once, reuse for diagnostics and registration
-                let events = crate::sse::parse_sse_events(bytes);
-                let thinking_stats = crate::sse::analyze_thinking_stream(&events);
-                cb_debug_logger.log_auxiliary(
-                    "sse_callback",
-                    None, None,
-                    Some(&format!(
-                        "SSE callback: {} bytes, {} events, thinking: {}",
-                        bytes.len(),
-                        events.len(),
-                        thinking_stats,
-                    )),
-                    None,
-                );
-
-                // Register thinking blocks synchronously to avoid race condition:
-                // next request's filter must see these blocks in the registry.
-                let before = registry.thinking_cache_stats();
-                registry.register_thinking_from_sse_stream(&events, thinking_session_id);
-                let after = registry.thinking_cache_stats();
-                let registered = after.total.saturating_sub(before.total);
-                cb_debug_logger.log_auxiliary(
-                    "sse_callback",
-                    None, None,
-                    Some(&format!(
-                        "Registered {} new thinking blocks (cache: {} → {})",
-                        registered, before.total, after.total,
-                    )),
-                    None,
-                );
-
+            // Register thinking blocks from SSE stream (main agent only)
+            let on_complete = thinking.map(|session| {
+                Box::new(move |bytes: &[u8]| {
+                    let events = crate::sse::parse_sse_events(bytes);
+                    session.register_from_sse(&events);
+                }) as crate::metrics::ResponseCompleteCallback
             });
 
-            let observed = ObservedStream::new(
+            let mut observed = ObservedStream::new(
                 stream,
                 span,
                 observability,
                 self.timeout_config.idle,
                 response_preview,
-            )
-            .with_on_complete(on_complete);
+            );
+
+            if let Some(cb) = on_complete {
+                observed = observed.with_on_complete(cb);
+            }
 
             Ok(response_builder.body(Body::from_stream(observed))?)
         } else {
@@ -541,9 +470,10 @@ impl UpstreamClient {
                 }
             };
 
-            // Register thinking blocks from non-streaming response
-            self.transformer_registry
-                .register_thinking_from_response(&body_bytes, thinking_session_id);
+            // Register thinking blocks from non-streaming response (main agent only)
+            if let Some(ref session) = thinking {
+                session.register_from_response(&body_bytes);
+            }
 
             if debug_level >= DebugLogLevel::Verbose {
                 let mut analysis = self.response_parser.parse_response(&body_bytes);
@@ -673,14 +603,11 @@ pub fn patch_anthropic_beta_header(value: &str) -> String {
 
 impl Default for UpstreamClient {
     fn default() -> Self {
-        let registry = Arc::new(TransformerRegistry::new());
         let debug_logger = Arc::new(DebugLogger::new(Default::default()));
         Self::new(
             TimeoutConfig::default(),
             PoolConfig::default(),
-            registry,
             debug_logger,
         )
     }
 }
-
