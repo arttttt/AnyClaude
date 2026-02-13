@@ -1,4 +1,4 @@
-//! Tests for the teammate PATH shims (claude + tmux).
+//! Tests for the teammate PATH shim (tmux).
 
 mod common;
 
@@ -33,35 +33,6 @@ fn path_env_prepends_shim_dir() {
     assert!(value.contains(':'), "PATH should contain separator");
     let first_dir = value.split(':').next().unwrap();
     assert!(Path::new(first_dir).exists(), "shim directory should exist");
-}
-
-// ── Claude shim ──────────────────────────────────────────────────────
-
-#[test]
-fn claude_shim_exists() {
-    let shim = match TeammateShim::create(12345) {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-    let dir = shim_dir(&shim);
-    assert!(Path::new(&dir).join("claude").exists());
-}
-
-#[test]
-fn claude_shim_contains_port_and_agent_type_check() {
-    let shim = match TeammateShim::create(9999) {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-
-    let dir = shim_dir(&shim);
-    let script = std::fs::read_to_string(Path::new(&dir).join("claude")).unwrap();
-
-    assert!(script.contains("9999"), "script should contain the port");
-    assert!(
-        script.contains("CLAUDE_CODE_AGENT_TYPE"),
-        "script should check CLAUDE_CODE_AGENT_TYPE"
-    );
 }
 
 // ── tmux shim ────────────────────────────────────────────────────────

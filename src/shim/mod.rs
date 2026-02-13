@@ -1,13 +1,11 @@
-//! PATH shims for intercepting Claude Code teammate process spawns.
+//! PATH shim for intercepting Claude Code teammate process spawns.
 //!
-//! Two shims are placed in a temp directory prepended to PATH:
-//!
-//! - [`claude`] shim — rewrites `ANTHROPIC_BASE_URL` for teammate traffic.
-//! - [`tmux`] shim — logs and intercepts tmux calls from Claude Code.
+//! A tmux shim is placed in a temp directory prepended to PATH.
+//! It intercepts `send-keys` commands that launch teammate claude processes
+//! and injects `ANTHROPIC_BASE_URL` pointing to the `/teammate` proxy route.
 //!
 //! Self-contained: no dependencies on proxy, axum, or routing internals.
 
-mod claude;
 mod tmux;
 
 use std::path::{Path, PathBuf};
@@ -27,7 +25,6 @@ impl TeammateShim {
         let dir = tempfile::tempdir()
             .context("failed to create temp directory for teammate shims")?;
 
-        claude::install(dir.path(), proxy_port)?;
         tmux::install(dir.path(), proxy_port)?;
 
         let dir_path = dir.path().to_owned();
