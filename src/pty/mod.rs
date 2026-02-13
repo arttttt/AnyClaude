@@ -12,4 +12,4 @@ pub use emulator::{CursorState, TermCell, TermColor, TerminalEmulator};
 pub use handle::PtyHandle;
 pub use manager::PtyManager;
 pub use session::PtySession;
-pub use spawn_config::{PtySpawnConfig, SessionMode, SpawnParams};
+pub use spawn_config::{PtySpawnConfig, SessionMode, SpawnParams, encode_project_path};

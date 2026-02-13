@@ -15,6 +15,9 @@ pub struct Config {
     #[serde(default)]
     pub claude_settings: HashMap<String, bool>,
     pub backends: Vec<Backend>,
+    /// Agent Teams routing configuration.
+    #[serde(default)]
+    pub agent_teams: Option<AgentTeamsConfig>,
 }
 
 /// Default settings for the application.
@@ -225,12 +228,28 @@ pub struct Backend {
     /// Default: 10000.
     #[serde(default)]
     pub thinking_budget_tokens: Option<u32>,
+    /// Model name to use for opus-family requests on this backend.
+    #[serde(default)]
+    pub model_opus: Option<String>,
+    /// Model name to use for sonnet-family requests on this backend.
+    #[serde(default)]
+    pub model_sonnet: Option<String>,
+    /// Model name to use for haiku-family requests on this backend.
+    #[serde(default)]
+    pub model_haiku: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackendPricing {
     pub input_per_million: f64,
     pub output_per_million: f64,
+}
+
+/// Agent Teams routing configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentTeamsConfig {
+    /// Backend name for teammate requests (must exist in [[backends]]).
+    pub teammate_backend: String,
 }
 
 impl Default for Backend {
@@ -244,6 +263,9 @@ impl Default for Backend {
             pricing: None,
             thinking_compat: None,
             thinking_budget_tokens: None,
+            model_opus: None,
+            model_sonnet: None,
+            model_haiku: None,
         }
     }
 }
@@ -272,6 +294,7 @@ impl Default for Config {
             debug_logging: DebugLoggingConfig::default(),
             claude_settings: HashMap::new(),
             backends: vec![Backend::default()],
+            agent_teams: None,
         }
     }
 }
@@ -322,48 +345,6 @@ impl Default for DebugLogRotation {
 
 
 
-
-impl DebugLoggingConfig {
-    pub fn apply_env_overrides(&mut self) {
-        if let Ok(value) = std::env::var("CLAUDE_WRAPPER_DEBUG_LEVEL") {
-            if let Some(level) = DebugLogLevel::parse(&value) {
-                self.level = level;
-            }
-        }
-
-        if let Ok(value) = std::env::var("CLAUDE_WRAPPER_DEBUG_FORMAT") {
-            if let Some(format) = DebugLogFormat::parse(&value) {
-                self.format = format;
-            }
-        }
-
-        if let Ok(value) = std::env::var("CLAUDE_WRAPPER_DEBUG_DEST") {
-            if let Some(dest) = DebugLogDestination::parse(&value) {
-                self.destination = dest;
-            }
-        }
-
-        if let Ok(value) = std::env::var("CLAUDE_WRAPPER_DEBUG_FILE") {
-            if !value.trim().is_empty() {
-                self.file_path = value;
-            }
-        }
-
-        if let Ok(value) = std::env::var("CLAUDE_WRAPPER_DEBUG_BODY_PREVIEW_BYTES") {
-            if let Ok(parsed) = value.parse::<usize>() {
-                self.body_preview_bytes = parsed;
-            }
-        }
-
-        if let Ok(value) = std::env::var("CLAUDE_WRAPPER_DEBUG_FULL_BODY") {
-            self.full_body = value == "1" || value.to_lowercase() == "true";
-        }
-
-        if let Ok(value) = std::env::var("CLAUDE_WRAPPER_DEBUG_PRETTY_PRINT") {
-            self.pretty_print = value == "1" || value.to_lowercase() == "true";
-        }
-    }
-}
 
 impl DebugLogLevel {
     pub fn parse(value: &str) -> Option<Self> {

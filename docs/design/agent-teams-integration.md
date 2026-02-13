@@ -3,6 +3,7 @@
 **Date**: 2026-02-08
 **Status**: Draft / RFC
 **Depends on**: [Settings Menu (Ctrl+E)](settings-menu.md)
+**See also**: [Per-Agent Backend Routing](agent-team-routing.md) — detailed design for routing teammates through cheaper backends
 
 ## Motivation
 

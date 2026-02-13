@@ -54,6 +54,9 @@ fn test_credential_resolution_passthrough() {
         pricing: None,
         thinking_compat: None,
         thinking_budget_tokens: None,
+        model_opus: None,
+        model_sonnet: None,
+        model_haiku: None,
     };
 
     assert!(matches!(

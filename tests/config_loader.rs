@@ -1,6 +1,6 @@
 use anyclaude::config::{
-    build_auth_header, AuthType, Backend, Config, ConfigError, CredentialStatus,
-    DebugLoggingConfig, Defaults, ProxyConfig, TerminalConfig,
+    build_auth_header, AgentTeamsConfig, AuthType, Backend, Config, ConfigError,
+    CredentialStatus, DebugLoggingConfig, Defaults, ProxyConfig, TerminalConfig,
 };
 use std::collections::HashMap;
 
@@ -55,6 +55,7 @@ fn test_validation_fails_empty_backends() {
         debug_logging: DebugLoggingConfig::default(),
         claude_settings: HashMap::new(),
         backends: vec![],
+        agent_teams: None,
     };
 
     let result = config.validate();
@@ -87,6 +88,7 @@ fn test_validation_fails_missing_active_backend() {
         debug_logging: DebugLoggingConfig::default(),
         claude_settings: HashMap::new(),
         backends: vec![Backend::default()],
+        agent_teams: None,
     };
 
     let result = config.validate();
@@ -165,6 +167,9 @@ fn test_backend_is_configured_with_api_key() {
         pricing: None,
         thinking_compat: None,
         thinking_budget_tokens: None,
+        model_opus: None,
+        model_sonnet: None,
+        model_haiku: None,
     };
 
     assert!(backend.is_configured());
@@ -182,6 +187,9 @@ fn test_backend_not_configured_without_api_key() {
         pricing: None,
         thinking_compat: None,
         thinking_budget_tokens: None,
+        model_opus: None,
+        model_sonnet: None,
+        model_haiku: None,
     };
 
     assert!(!backend.is_configured());
@@ -199,6 +207,9 @@ fn test_backend_passthrough_always_configured() {
         pricing: None,
         thinking_compat: None,
         thinking_budget_tokens: None,
+        model_opus: None,
+        model_sonnet: None,
+        model_haiku: None,
     };
 
     assert!(backend.is_configured());
@@ -220,6 +231,9 @@ fn test_build_auth_header_api_key() {
         pricing: None,
         thinking_compat: None,
         thinking_budget_tokens: None,
+        model_opus: None,
+        model_sonnet: None,
+        model_haiku: None,
     };
 
     let header = build_auth_header(&backend);
@@ -242,6 +256,9 @@ fn test_build_auth_header_bearer() {
         pricing: None,
         thinking_compat: None,
         thinking_budget_tokens: None,
+        model_opus: None,
+        model_sonnet: None,
+        model_haiku: None,
     };
 
     let header = build_auth_header(&backend);
@@ -279,7 +296,11 @@ fn test_validation_fails_unconfigured_active_backend() {
             pricing: None,
             thinking_compat: None,
             thinking_budget_tokens: None,
+            model_opus: None,
+            model_sonnet: None,
+            model_haiku: None,
         }],
+        agent_teams: None,
     };
 
     let result = config.validate();
@@ -292,6 +313,82 @@ fn test_validation_fails_unconfigured_active_backend() {
         }
         _ => panic!("Expected ValidationError"),
     }
+}
+
+/// Test validation fails when agent_teams.teammate_backend references a nonexistent backend.
+#[test]
+fn test_validation_fails_invalid_teammate_backend() {
+    let config = Config {
+        defaults: Defaults::default(),
+        proxy: ProxyConfig::default(),
+        terminal: TerminalConfig::default(),
+        debug_logging: DebugLoggingConfig::default(),
+        claude_settings: HashMap::new(),
+        backends: vec![Backend::default()],
+        agent_teams: Some(AgentTeamsConfig {
+            teammate_backend: "nonexistent".to_string(),
+        }),
+    };
+
+    let result = config.validate();
+    assert!(result.is_err());
+
+    match result.unwrap_err() {
+        ConfigError::ValidationError { message } => {
+            assert!(message.contains("nonexistent"), "got: {message}");
+            assert!(message.contains("not found"), "got: {message}");
+        }
+        other => panic!("Expected ValidationError, got: {other:?}"),
+    }
+}
+
+/// Test validation fails when TOML config has agent_teams with nonexistent backend.
+/// This tests the real user flow: write TOML → parse → validate.
+#[test]
+fn test_validation_fails_invalid_teammate_backend_from_toml() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"
+[defaults]
+active = "claude"
+timeout_seconds = 30
+
+[[backends]]
+name = "claude"
+display_name = "Claude"
+base_url = "https://api.anthropic.com"
+auth_type = "passthrough"
+
+[agent_teams]
+teammate_backend = "nonexistent"
+"#,
+    )
+    .unwrap();
+
+    let result = Config::load_from(&path);
+    assert!(result.is_err(), "should reject nonexistent teammate_backend");
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("nonexistent"), "got: {err}");
+}
+
+/// Test validation passes when agent_teams.teammate_backend references an existing backend.
+#[test]
+fn test_validation_passes_valid_teammate_backend() {
+    let config = Config {
+        defaults: Defaults::default(),
+        proxy: ProxyConfig::default(),
+        terminal: TerminalConfig::default(),
+        debug_logging: DebugLoggingConfig::default(),
+        claude_settings: HashMap::new(),
+        backends: vec![Backend::default()],
+        agent_teams: Some(AgentTeamsConfig {
+            teammate_backend: "claude".to_string(),
+        }),
+    };
+
+    assert!(config.validate().is_ok());
 }
 
 /// Test configured_backends only returns backends with valid credentials.
@@ -322,6 +419,9 @@ fn test_configured_backends_filters_correctly() {
                 pricing: None,
                 thinking_compat: None,
                 thinking_budget_tokens: None,
+                model_opus: None,
+                model_sonnet: None,
+                model_haiku: None,
             },
             Backend {
                 name: "unconfigured".to_string(),
@@ -332,6 +432,9 @@ fn test_configured_backends_filters_correctly() {
                 pricing: None,
                 thinking_compat: None,
                 thinking_budget_tokens: None,
+                model_opus: None,
+                model_sonnet: None,
+                model_haiku: None,
             },
             Backend {
                 name: "passthrough".to_string(),
@@ -342,8 +445,12 @@ fn test_configured_backends_filters_correctly() {
                 pricing: None,
                 thinking_compat: None,
                 thinking_budget_tokens: None,
+                model_opus: None,
+                model_sonnet: None,
+                model_haiku: None,
             },
         ],
+        agent_teams: None,
     };
 
     let configured = config.configured_backends();
@@ -353,5 +460,95 @@ fn test_configured_backends_filters_correctly() {
     assert!(configured.iter().any(|b| b.name == "configured"));
     assert!(configured.iter().any(|b| b.name == "passthrough"));
     assert!(!configured.iter().any(|b| b.name == "unconfigured"));
+}
+
+// ============================================================================
+// Model Map Tests
+// ============================================================================
+
+fn glm_backend() -> Backend {
+    Backend {
+        name: "glm".to_string(),
+        display_name: "GLM".to_string(),
+        base_url: "https://open.bigmodel.cn/api/paas/v4".to_string(),
+        auth_type_str: "bearer".to_string(),
+        api_key: Some("key".to_string()),
+        pricing: None,
+        thinking_compat: None,
+        thinking_budget_tokens: None,
+        model_opus: Some("glm-4.7".to_string()),
+        model_sonnet: Some("glm-4.7".to_string()),
+        model_haiku: Some("glm-4.5-air".to_string()),
+    }
+}
+
+#[test]
+fn resolve_model_opus_family() {
+    let b = glm_backend();
+    assert_eq!(b.resolve_model("claude-opus-4-6"), Some("glm-4.7"));
+}
+
+#[test]
+fn resolve_model_sonnet_family() {
+    let b = glm_backend();
+    assert_eq!(b.resolve_model("claude-sonnet-4-5-20250929"), Some("glm-4.7"));
+}
+
+#[test]
+fn resolve_model_haiku_family() {
+    let b = glm_backend();
+    assert_eq!(b.resolve_model("claude-haiku-4-5-20251001"), Some("glm-4.5-air"));
+}
+
+#[test]
+fn resolve_model_bedrock_id() {
+    let b = glm_backend();
+    assert_eq!(b.resolve_model("us.anthropic.claude-opus-4-5-v1:0"), Some("glm-4.7"));
+}
+
+#[test]
+fn resolve_model_unknown_passthrough() {
+    let b = glm_backend();
+    assert_eq!(b.resolve_model("gpt-4o"), None);
+}
+
+#[test]
+fn resolve_model_no_map() {
+    let b = Backend::default();
+    assert_eq!(b.resolve_model("claude-opus-4-6"), None);
+}
+
+#[test]
+fn resolve_model_partial_map() {
+    let b = Backend {
+        model_opus: Some("mapped-opus".to_string()),
+        ..Backend::default()
+    };
+    assert_eq!(b.resolve_model("claude-opus-4-6"), Some("mapped-opus"));
+    assert_eq!(b.resolve_model("claude-sonnet-4-5-20250929"), None);
+    assert_eq!(b.resolve_model("claude-haiku-4-5-20251001"), None);
+}
+
+#[test]
+fn resolve_model_toml_parsing() {
+    let toml_content = r#"
+[defaults]
+active = "glm"
+timeout_seconds = 30
+
+[[backends]]
+name = "glm"
+display_name = "GLM"
+base_url = "https://open.bigmodel.cn/api/paas/v4"
+auth_type = "bearer"
+api_key = "test-key"
+model_opus = "glm-4.7"
+model_haiku = "glm-4.5-air"
+"#;
+    let config: Config = toml::from_str(toml_content).expect("Should parse");
+    let b = &config.backends[0];
+    assert_eq!(b.resolve_model("claude-opus-4-6"), Some("glm-4.7"));
+    assert_eq!(b.resolve_model("claude-sonnet-4-5-20250929"), None);
+    assert_eq!(b.resolve_model("claude-haiku-4-5-20251001"), Some("glm-4.5-air"));
 }
 

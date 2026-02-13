@@ -40,6 +40,9 @@ fn test_config() -> Config {
                 pricing: None,
                 thinking_compat: None,
                 thinking_budget_tokens: None,
+                model_opus: None,
+                model_sonnet: None,
+                model_haiku: None,
             },
             Backend {
                 name: "beta".to_string(),
@@ -50,8 +53,12 @@ fn test_config() -> Config {
                 pricing: None,
                 thinking_compat: None,
                 thinking_budget_tokens: None,
+                model_opus: None,
+                model_sonnet: None,
+                model_haiku: None,
             },
         ],
+        agent_teams: None,
     }
 }
 

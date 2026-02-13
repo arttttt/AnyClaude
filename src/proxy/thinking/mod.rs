@@ -1,28 +1,29 @@
-//! Thinking block transformation system.
+//! Thinking block lifecycle management.
 //!
-//! This module provides the thinking block handling infrastructure for proxying
-//! requests to different backends.
+//! Tracks thinking blocks across backend switches. When the active backend
+//! changes, old thinking blocks become invalid (signatures don't match).
+//! The registry tracks blocks by session and filters invalid ones from requests.
 //!
 //! # Architecture
 //!
-//! - **NativeTransformer**: Passthrough transformer (no-op)
-//! - **ThinkingRegistry**: Cross-provider block tracking, filters invalid blocks per session
-//! - **TransformerRegistry**: Manages transformer + ThinkingRegistry
+//! - **ThinkingRegistry**: Core block tracking (session-based filter + cleanup)
+//! - **TransformerRegistry**: Thread-safe wrapper around ThinkingRegistry
+//! - **ThinkingSession**: Per-request handle for the thinking lifecycle
 
-mod context;
-mod error;
-mod native;
 mod registry;
-pub use context::{TransformContext, TransformResult};
-pub use error::TransformError;
-pub use native::NativeTransformer;
 pub use registry::{fast_hash, safe_suffix, safe_truncate, BlockInfo, CacheStats, ThinkingRegistry};
+
+use std::sync::Arc;
 
 use parking_lot::Mutex;
 
-/// Registry that manages the thinking transformer and ThinkingRegistry.
+use crate::metrics::DebugLogger;
+
+/// Thread-safe wrapper around ThinkingRegistry.
+///
+/// Shared across all requests via `Arc`. Individual requests obtain
+/// a [`ThinkingSession`] via [`begin_request`](TransformerRegistry::begin_request).
 pub struct TransformerRegistry {
-    transformer: NativeTransformer,
     /// Registry for tracking thinking blocks by session
     thinking_registry: Mutex<ThinkingRegistry>,
 }
@@ -30,68 +31,44 @@ pub struct TransformerRegistry {
 impl TransformerRegistry {
     /// Create a new registry.
     pub fn new() -> Self {
-        crate::metrics::app_log("thinking", "Creating NativeTransformer (passthrough)");
+        crate::metrics::app_log("thinking", "Creating TransformerRegistry");
         Self {
-            transformer: NativeTransformer::new(),
             thinking_registry: Mutex::new(ThinkingRegistry::new()),
         }
     }
 
-    /// Get a reference to the transformer.
-    pub fn transformer(&self) -> &NativeTransformer {
-        &self.transformer
+    /// Begin a new request's thinking lifecycle.
+    ///
+    /// Atomically notifies the registry about the current backend
+    /// (incrementing the session if the backend changed) and captures
+    /// the session ID. Returns a [`ThinkingSession`] handle that owns
+    /// the session ID for filter and registration operations.
+    ///
+    /// This combines `notify_backend_for_thinking` + `current_thinking_session`
+    /// into a single lock acquisition, eliminating the race condition where
+    /// another thread could increment the session between the two calls.
+    pub fn begin_request(
+        self: &Arc<Self>,
+        backend: &str,
+        debug_logger: Arc<DebugLogger>,
+    ) -> ThinkingSession {
+        let mut reg = self.thinking_registry.lock();
+        reg.on_backend_switch(backend);
+        let session_id = reg.current_session();
+        ThinkingSession {
+            registry: Arc::clone(self),
+            session_id,
+            debug_logger,
+        }
     }
 
-    // ========================================================================
-    // Thinking Registry methods
-    // ========================================================================
-
-    /// Notify the thinking registry about a backend switch.
+    /// Notify about a backend switch (e.g. from IPC command).
     ///
-    /// This increments the internal session ID, invalidating thinking blocks
-    /// from previous sessions.
-    pub fn notify_backend_for_thinking(&self, backend_name: &str) {
-        let mut registry = self.thinking_registry.lock();
-        registry.on_backend_switch(backend_name);
-    }
-
-    /// Register thinking blocks from a response body.
-    ///
-    /// Extracts thinking blocks and records them with the given session ID.
-    /// The session_id should be captured at request time to avoid races
-    /// with concurrent backend switches.
-    pub fn register_thinking_from_response(&self, response_body: &[u8], session_id: u64) {
-        let mut registry = self.thinking_registry.lock();
-        registry.register_from_response(response_body, session_id);
-    }
-
-    /// Register thinking blocks from pre-parsed SSE events.
-    ///
-    /// Accumulates thinking deltas and registers complete thinking blocks.
-    /// The session_id should be captured at request time to avoid races
-    /// with concurrent backend switches.
-    pub fn register_thinking_from_sse_stream(&self, events: &[crate::sse::SseEvent], session_id: u64) {
-        let mut registry = self.thinking_registry.lock();
-        registry.register_from_sse_stream(events, session_id);
-    }
-
-    /// Filter thinking blocks in a request body.
-    ///
-    /// This is the main entry point for request processing. It performs:
-    /// 1. Confirm: Mark blocks present in request as confirmed
-    /// 2. Cleanup: Remove old/orphaned blocks from cache
-    /// 3. Filter: Remove invalid blocks from request body
-    ///
-    /// Returns the number of blocks removed from the request.
-    pub fn filter_thinking_blocks(&self, body: &mut serde_json::Value) -> u32 {
-        let mut registry = self.thinking_registry.lock();
-        registry.filter_request(body)
-    }
-
-    /// Get the current thinking session ID.
-    pub fn current_thinking_session(&self) -> u64 {
-        let registry = self.thinking_registry.lock();
-        registry.current_session()
+    /// Increments the thinking session if the backend changed,
+    /// invalidating blocks from the previous backend.
+    pub fn notify_backend_switch(&self, backend: &str) {
+        let mut reg = self.thinking_registry.lock();
+        reg.on_backend_switch(backend);
     }
 
     /// Get cache statistics for monitoring.
@@ -110,5 +87,109 @@ impl Default for TransformerRegistry {
 impl std::fmt::Debug for TransformerRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TransformerRegistry").finish()
+    }
+}
+
+/// Per-request handle for the thinking block lifecycle.
+///
+/// Created by [`TransformerRegistry::begin_request`] in the thinking middleware,
+/// placed into request extensions, and consumed by `do_forward()`.
+///
+/// Holds a captured `session_id` that remains stable for the entire
+/// request-response cycle, even if other requests trigger backend switches
+/// concurrently.
+/// Clone required by `http::Extensions::insert()`.
+/// Cheap: all fields are `Arc` or `u64`.
+#[derive(Clone)]
+pub struct ThinkingSession {
+    registry: Arc<TransformerRegistry>,
+    session_id: u64,
+    debug_logger: Arc<DebugLogger>,
+}
+
+impl std::fmt::Debug for ThinkingSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ThinkingSession")
+            .field("session_id", &self.session_id)
+            .finish()
+    }
+}
+
+impl ThinkingSession {
+    /// Filter invalid thinking blocks from a request body.
+    ///
+    /// Returns the number of blocks removed.
+    pub fn filter(&self, body: &mut serde_json::Value) -> u32 {
+        let mut reg = self.registry.thinking_registry.lock();
+        let cache_size = reg.cache_stats().total;
+        let filtered = reg.filter_request(body);
+        if filtered > 0 || cache_size > 0 {
+            self.debug_logger.log_auxiliary(
+                "thinking_filter",
+                None,
+                None,
+                Some(&format!(
+                    "Filter: cache={} blocks, removed={} from request",
+                    cache_size, filtered,
+                )),
+                None,
+            );
+        }
+        filtered
+    }
+
+    /// Register thinking blocks from a completed SSE stream.
+    pub fn register_from_sse(&self, events: &[crate::sse::SseEvent]) {
+        let thinking_stats = crate::sse::analyze_thinking_stream(events);
+        self.debug_logger.log_auxiliary(
+            "sse_callback",
+            None,
+            None,
+            Some(&format!(
+                "SSE callback: {} events, thinking: {}",
+                events.len(),
+                thinking_stats,
+            )),
+            None,
+        );
+
+        let mut reg = self.registry.thinking_registry.lock();
+        let before = reg.cache_stats().total;
+        reg.register_from_sse_stream(events, self.session_id);
+        let after = reg.cache_stats().total;
+        drop(reg);
+        let registered = after.saturating_sub(before);
+        self.debug_logger.log_auxiliary(
+            "sse_callback",
+            None,
+            None,
+            Some(&format!(
+                "Registered {} new thinking blocks (cache: {} → {})",
+                registered, before, after,
+            )),
+            None,
+        );
+    }
+
+    /// Register thinking blocks from a non-streaming response body.
+    pub fn register_from_response(&self, response_body: &[u8]) {
+        if response_body.is_empty() {
+            return;
+        }
+        if serde_json::from_slice::<serde_json::Value>(response_body).is_err() {
+            self.debug_logger.log_auxiliary(
+                "thinking_registry",
+                None,
+                None,
+                Some(&format!(
+                    "Failed to parse response body as JSON ({} bytes), skipping thinking registration",
+                    response_body.len(),
+                )),
+                None,
+            );
+            return;
+        }
+        let mut reg = self.registry.thinking_registry.lock();
+        reg.register_from_response(response_body, self.session_id);
     }
 }

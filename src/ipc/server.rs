@@ -39,7 +39,7 @@ impl IpcServer {
                         .switch_backend(&backend_id)
                         .map(|_| backend_state.get_active_backend());
                     if result.is_ok() {
-                        transformer_registry.notify_backend_for_thinking(&backend_id);
+                        transformer_registry.notify_backend_switch(&backend_id);
                     }
                     if respond_to.send(result).is_err() {
                         app_log("ipc","IPC: SwitchBackend response dropped (receiver gone)");

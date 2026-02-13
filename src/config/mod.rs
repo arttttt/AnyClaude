@@ -19,7 +19,7 @@ pub use credentials::{AuthType, CredentialStatus, SecureString};
 pub use loader::{save_claude_settings, ConfigError};
 pub use store::ConfigStore;
 pub use types::{
-    Backend, BackendPricing, Config, DebugLogDestination, DebugLogFormat, DebugLogLevel,
-    DebugLogRotation, DebugLogRotationMode, DebugLoggingConfig, Defaults, ProxyConfig,
-    TerminalConfig,
+    AgentTeamsConfig, Backend, BackendPricing, Config, DebugLogDestination, DebugLogFormat,
+    DebugLogLevel, DebugLogRotation, DebugLogRotationMode, DebugLoggingConfig, Defaults,
+    ProxyConfig, TerminalConfig,
 };

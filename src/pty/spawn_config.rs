@@ -219,24 +219,6 @@ fn read_session_from_sessions_index(home: &std::path::Path, cwd: &str) -> Option
 /// Encode a project path for the `.claude/projects/` directory.
 ///
 /// `/Users/artem/Projects/Foo` → `-Users-artem-Projects-Foo`
-fn encode_project_path(path: &str) -> String {
+pub fn encode_project_path(path: &str) -> String {
     path.replace('/', "-")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn encode_replaces_slashes() {
-        assert_eq!(
-            encode_project_path("/Users/artem/Projects/Foo"),
-            "-Users-artem-Projects-Foo"
-        );
-    }
-
-    #[test]
-    fn encode_empty_path() {
-        assert_eq!(encode_project_path(""), "");
-    }
 }

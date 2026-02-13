@@ -6,7 +6,7 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 
 use crate::backend::BackendState;
-use crate::config::ConfigStore;
+use crate::config::{AgentTeamsConfig, ConfigStore};
 use crate::metrics::{DebugLogger, ObservabilityHub};
 use crate::proxy::connection::ConnectionCounter;
 use crate::proxy::pool::PoolConfig;
@@ -21,6 +21,7 @@ pub struct ProxyServer {
     /// Populated by try_bind(), consumed by run().
     listener: Option<TcpListener>,
     router: RouterEngine,
+    agent_teams: Option<AgentTeamsConfig>,
     shutdown: Arc<ShutdownManager>,
     backend_state: BackendState,
     observability: ObservabilityHub,
@@ -33,9 +34,10 @@ impl ProxyServer {
         config: ConfigStore,
         debug_logger: Arc<DebugLogger>,
     ) -> Result<Self, crate::backend::BackendError> {
-        let timeout_config = TimeoutConfig::from(&config.get().defaults);
-        let pool_config = PoolConfig::from(&config.get().defaults);
-        let backend_state = BackendState::from_config(config.get())?;
+        let cfg = config.get();
+        let timeout_config = TimeoutConfig::from(&cfg.defaults);
+        let pool_config = PoolConfig::from(&cfg.defaults);
+        let backend_state = BackendState::from_config(cfg.clone())?;
         let observability = ObservabilityHub::new(1000)
             .with_plugins(vec![debug_logger.clone()]);
         let transformer_registry = Arc::new(TransformerRegistry::new());
@@ -48,9 +50,10 @@ impl ProxyServer {
             transformer_registry.clone(),
         );
         Ok(Self {
-            addr: SocketAddr::from(([127, 0, 0, 1], 0)), // Will be determined at bind time
+            addr: SocketAddr::from(([127, 0, 0, 1], 0)),
             listener: None,
             router,
+            agent_teams: cfg.agent_teams.clone(),
             shutdown: Arc::new(ShutdownManager::new()),
             backend_state,
             observability,
@@ -142,7 +145,7 @@ impl ProxyServer {
 
         crate::metrics::app_log("proxy", &format!("Starting proxy server on {}", self.addr));
 
-        let app = build_router(self.router.clone());
+        let app = build_router(self.router.clone(), &self.agent_teams);
         let make_service = app.into_make_service();
         let make_service = ConnectionCounter::new(make_service, self.shutdown.clone());
 

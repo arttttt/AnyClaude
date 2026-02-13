@@ -1,6 +1,6 @@
 mod common;
 
-use anyclaude::pty::{PtySpawnConfig, SessionMode};
+use anyclaude::pty::{PtySpawnConfig, SessionMode, encode_project_path};
 
 fn config(base_args: Vec<&str>) -> PtySpawnConfig {
     PtySpawnConfig::new(
@@ -243,4 +243,29 @@ fn continue_preserves_next_arg_on_resume() {
     assert!(p.args.contains(&"opus".to_string()));
     assert!(!p.args.contains(&"--continue".to_string()));
     assert!(p.args.contains(&"--resume".to_string()));
+}
+
+// -- encode_project_path ------------------------------------------------------
+
+#[test]
+fn encode_replaces_slashes_with_dashes() {
+    assert_eq!(
+        encode_project_path("/Users/artem/Projects/Foo"),
+        "-Users-artem-Projects-Foo"
+    );
+}
+
+#[test]
+fn encode_root_path() {
+    assert_eq!(encode_project_path("/"), "-");
+}
+
+#[test]
+fn encode_no_slashes() {
+    assert_eq!(encode_project_path("plain"), "plain");
+}
+
+#[test]
+fn encode_empty_string() {
+    assert_eq!(encode_project_path(""), "");
 }

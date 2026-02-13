@@ -39,6 +39,7 @@ fn test_config(backend: Backend, bind_addr: &str) -> Config {
         debug_logging: DebugLoggingConfig::default(),
         claude_settings: HashMap::new(),
         backends: vec![backend],
+        agent_teams: None,
     }
 }
 
@@ -52,6 +53,9 @@ fn create_backend(name: &str, base_url: &str) -> Backend {
         pricing: None,
         thinking_compat: None,
         thinking_budget_tokens: None,
+        model_opus: None,
+        model_sonnet: None,
+        model_haiku: None,
     }
 }
 

@@ -124,4 +124,21 @@ impl Backend {
         self.thinking_compat.unwrap_or(false)
     }
 
+    /// Resolve model ID via family-based mapping.
+    ///
+    /// Matches the request model against Anthropic family keywords (opus/sonnet/haiku)
+    /// and returns the backend-specific model name if configured.
+    /// Returns `None` when no mapping applies (passthrough).
+    pub fn resolve_model(&self, original: &str) -> Option<&str> {
+        if original.contains("opus") {
+            self.model_opus.as_deref()
+        } else if original.contains("sonnet") {
+            self.model_sonnet.as_deref()
+        } else if original.contains("haiku") {
+            self.model_haiku.as_deref()
+        } else {
+            None
+        }
+    }
+
 }

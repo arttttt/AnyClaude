@@ -30,6 +30,9 @@ fn create_test_config() -> Config {
                 pricing: None,
                 thinking_compat: None,
                 thinking_budget_tokens: None,
+                model_opus: None,
+                model_sonnet: None,
+                model_haiku: None,
             },
             Backend {
                 name: "backend2".to_string(),
@@ -40,8 +43,12 @@ fn create_test_config() -> Config {
                 pricing: None,
                 thinking_compat: None,
                 thinking_budget_tokens: None,
+                model_opus: None,
+                model_sonnet: None,
+                model_haiku: None,
             },
         ],
+        agent_teams: None,
     }
 }
 
@@ -182,6 +189,9 @@ fn test_update_config() {
         pricing: None,
         thinking_compat: None,
         thinking_budget_tokens: None,
+        model_opus: None,
+        model_sonnet: None,
+        model_haiku: None,
     });
 
     state.update_config(new_config).unwrap();

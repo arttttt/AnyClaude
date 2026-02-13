@@ -6,6 +6,7 @@ pub mod ipc;
 pub mod metrics;
 pub mod proxy;
 pub mod pty;
+pub mod shim;
 pub mod shutdown;
 pub mod sse;
 pub mod ui;

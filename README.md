@@ -19,8 +19,10 @@ AnyClaude solves this:
 ## Features
 
 - **Hot-Swap Backends** — Switch between providers without restarting Claude
+- **Agent Teams** — Route teammate agents to a separate backend (experimental)
 - **Thinking Block Filtering** — Automatic filtering of previous backend's thinking blocks on switch
 - **Adaptive Thinking Conversion** — Convert adaptive thinking to enabled format for non-Anthropic backends (`thinking_compat`)
+- **Model Mapping** — Remap model names per backend (`model_opus`, `model_sonnet`, `model_haiku`)
 - **Transparent Proxy** — Routes API requests through active backend
 - **Backend History** — View switch history with `Ctrl+H`
 - **Debug Logging** — Request/response logging with configurable detail levels
@@ -33,17 +35,23 @@ AnyClaude solves this:
 └──────────────┬──────────────┘
                │
         ┌──────▼──────┐
-        │ Claude Code │
+        │ Claude Code │ (main agent + teammate agents)
         └──────┬──────┘
                │ ANTHROPIC_BASE_URL
         ┌──────▼──────┐
         │ Local Proxy │
-        └──────┬──────┘
-               │
-     ┌─────────┼─────────┐
-     ▼         ▼         ▼
- Backend1  Backend2   Backend3
+        └──┬───────┬──┘
+           │       │
+      /v1/*│       │/teammate/v1/*
+           │       │
+     ┌─────▼──┐  ┌─▼──────────┐
+     │ Active │  │  Teammate   │
+     │Backend │  │  Backend    │
+     └────────┘  └─────────────┘
 ```
+
+The main agent's requests go through the active backend (switchable via `Ctrl+B`).
+Teammate agents are routed to a fixed backend via the `/teammate` path prefix.
 
 ## Installation
 
@@ -64,6 +72,18 @@ cargo build --release
 anyclaude
 ```
 
+Override default backend at startup:
+
+```bash
+anyclaude --backend kimi
+```
+
+Pass arguments through to Claude Code:
+
+```bash
+anyclaude -- --model claude-sonnet-4-5-20250929
+```
+
 The wrapper automatically:
 1. Starts a local proxy (port auto-assigned starting from configured `bind_addr`)
 2. Sets `ANTHROPIC_BASE_URL` environment variable
@@ -77,6 +97,7 @@ The wrapper automatically:
 | `Ctrl+B` | Backend switcher popup |
 | `Ctrl+S` | Status/metrics popup |
 | `Ctrl+H` | Backend switch history |
+| `Ctrl+E` | Settings dialog |
 | `Ctrl+Q` | Quit |
 | `1-9` | Quick-select backend (in switcher) |
 
@@ -151,8 +172,11 @@ display_name = "Alternative Provider"
 base_url = "https://your-provider.com/api"
 auth_type = "bearer"
 api_key = "your-api-key"
-thinking_compat = true            # Convert adaptive→enabled thinking for this backend
-thinking_budget_tokens = 10000    # Default thinking budget for adaptive→enabled conversion
+thinking_compat = true            # Convert adaptive->enabled thinking for this backend
+thinking_budget_tokens = 10000    # Budget for conversion (default: 10000)
+model_opus = "custom-opus-model"  # Remap opus-family model requests
+model_sonnet = "custom-sonnet"    # Remap sonnet-family model requests
+model_haiku = "custom-haiku"      # Remap haiku-family model requests
 
 [[backends]]
 name = "custom"
@@ -163,6 +187,10 @@ auth_type = "passthrough"         # Forward original auth headers
 [backends.pricing]
 input_per_million = 3.00          # Cost per million input tokens
 output_per_million = 15.00        # Cost per million output tokens
+
+# Route teammate agents to a different backend (experimental)
+[agent_teams]
+teammate_backend = "alternative"  # Must match a [[backends]] name
 ```
 
 ### Authentication Types
@@ -172,6 +200,40 @@ output_per_million = 15.00        # Cost per million output tokens
 | `api_key` | `x-api-key: <value>` | Anthropic API |
 | `bearer` | `Authorization: Bearer <value>` | Most providers |
 | `passthrough` | Forwards original headers | OAuth flows, custom auth |
+
+### Model Mapping
+
+Backends can remap Anthropic model names to provider-specific ones. The proxy matches the request model against family keywords (`opus`, `sonnet`, `haiku`) and substitutes the configured name.
+
+```toml
+[[backends]]
+name = "my-provider"
+base_url = "https://api.example.com"
+auth_type = "bearer"
+api_key = "key"
+model_opus = "provider-large"     # claude-opus-4-6 -> provider-large
+model_sonnet = "provider-medium"  # claude-sonnet-4-5 -> provider-medium
+model_haiku = "provider-small"    # claude-haiku-4-5 -> provider-small
+```
+
+Only configured families are remapped. Omitted families pass through unchanged.
+
+### Agent Teams (Experimental)
+
+Route Claude Code's teammate agents to a separate backend. Useful when you want the main agent on one provider and teammates on a cheaper/different one.
+
+Requires Claude Code's experimental agent teams feature. Enable it via `Ctrl+E` > Settings in the TUI.
+
+```toml
+[agent_teams]
+teammate_backend = "alternative"  # Backend name for teammate requests
+```
+
+How it works:
+- The main agent's requests go to the active backend (switchable via `Ctrl+B`)
+- Teammate agents are intercepted via PATH shims and routed through `/teammate/*` to the fixed `teammate_backend`
+- Thinking block filtering is skipped for teammates (fixed backend, no session management needed)
+- Backend switching does not affect teammate routing
 
 ### Thinking Block Handling
 
@@ -185,12 +247,12 @@ AnyClaude tracks all thinking blocks by content hash and automatically filters o
 
 #### 2. Adaptive thinking conversion (`thinking_compat`)
 
-Claude Code (Opus 4.6) uses **adaptive thinking** — `"thinking": {"type": "adaptive"}`, where the model decides when and how much to think. The native Anthropic API supports this, but non-Anthropic backends don't. They require the explicit format: `"thinking": {"type": "enabled", "budget_tokens": N}`.
+Claude Code uses **adaptive thinking** — `"thinking": {"type": "adaptive"}`, where the model decides when and how much to think. The native Anthropic API supports this, but non-Anthropic backends don't. They require the explicit format: `"thinking": {"type": "enabled", "budget_tokens": N}`.
 
 Set `thinking_compat = true` on non-Anthropic backends to enable conversion:
 
-- **Request body:** `adaptive` → `enabled` with a configurable token budget
-- **Header:** `anthropic-beta: adaptive-thinking-*` → `interleaved-thinking-2025-05-14`
+- **Request body:** `adaptive` -> `enabled` with a configurable token budget
+- **Header:** `anthropic-beta: adaptive-thinking-*` -> `interleaved-thinking-2025-05-14`
 
 ```toml
 [[backends]]
@@ -198,7 +260,7 @@ name = "alternative"
 base_url = "https://your-provider.com/api"
 auth_type = "bearer"
 api_key = "your-api-key"
-thinking_compat = true            # Convert adaptive→enabled thinking
+thinking_compat = true            # Convert adaptive->enabled thinking
 thinking_budget_tokens = 10000    # Budget for conversion (default: 10000)
 ```
 
@@ -243,7 +305,7 @@ Requires [just](https://github.com/casey/just) task runner.
 
 | Command | Description |
 |---------|-------------|
-| `just check` | Run clippy + tests |
+| `just check` | Run lints, clippy, and tests |
 | `just release 0.3.0` | Bump version, update CHANGELOG, commit, tag |
 | `just changelog` | Regenerate CHANGELOG.md |
 

@@ -12,6 +12,9 @@ fn make_backend(auth_type: &str, api_key: Option<&str>) -> Backend {
         pricing: None,
         thinking_compat: None,
         thinking_budget_tokens: None,
+        model_opus: None,
+        model_sonnet: None,
+        model_haiku: None,
     }
 }
 
