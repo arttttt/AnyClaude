@@ -73,7 +73,8 @@ pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Re
     // Create teammate shim if agent_teams routing is configured.
     // The shim must stay alive for the entire session (owns a temp directory).
     let _teammate_shim = if config_store.get().agent_teams.is_some() {
-        match TeammateShim::create(actual_addr.port()) {
+        let log_enabled = config_store.get().debug_logging.level != crate::config::DebugLogLevel::Off;
+        match TeammateShim::create(actual_addr.port(), log_enabled) {
             Ok(shim) => {
                 crate::metrics::app_log("runtime", &format!(
                     "Agent team routing enabled, shim dir prepended to PATH. tmux log: {}",

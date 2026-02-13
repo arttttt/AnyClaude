@@ -20,12 +20,14 @@ pub struct TeammateShim {
 }
 
 impl TeammateShim {
-    /// Create shim scripts (claude + tmux) in a temp directory.
-    pub fn create(proxy_port: u16) -> Result<Self> {
+    /// Create the tmux shim script in a temp directory.
+    ///
+    /// `log_enabled` controls whether the shim writes to tmux_shim.log.
+    pub fn create(proxy_port: u16, log_enabled: bool) -> Result<Self> {
         let dir = tempfile::tempdir()
             .context("failed to create temp directory for teammate shims")?;
 
-        tmux::install(dir.path(), proxy_port)?;
+        tmux::install(dir.path(), proxy_port, log_enabled)?;
 
         let dir_path = dir.path().to_owned();
         Ok(Self { _dir: dir, dir_path })

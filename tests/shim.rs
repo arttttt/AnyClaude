@@ -16,14 +16,14 @@ fn shim_dir(shim: &TeammateShim) -> String {
 fn create_succeeds_or_returns_error() {
     // In CI/dev environments claude may or may not be installed.
     // Just verify the function doesn't panic.
-    let _ = TeammateShim::create(12345);
+    let _ = TeammateShim::create(12345, true);
 }
 
 // ── PATH env ─────────────────────────────────────────────────────────
 
 #[test]
 fn path_env_prepends_shim_dir() {
-    let shim = match TeammateShim::create(12345) {
+    let shim = match TeammateShim::create(12345, true) {
         Ok(s) => s,
         Err(_) => return,
     };
@@ -39,7 +39,7 @@ fn path_env_prepends_shim_dir() {
 
 #[test]
 fn tmux_shim_exists() {
-    let shim = match TeammateShim::create(12345) {
+    let shim = match TeammateShim::create(12345, true) {
         Ok(s) => s,
         Err(_) => return,
     };
@@ -49,7 +49,7 @@ fn tmux_shim_exists() {
 
 #[test]
 fn tmux_shim_is_executable() {
-    let shim = match TeammateShim::create(12345) {
+    let shim = match TeammateShim::create(12345, true) {
         Ok(s) => s,
         Err(_) => return,
     };
@@ -66,7 +66,7 @@ fn tmux_shim_is_executable() {
 
 #[test]
 fn tmux_shim_contains_log_and_shim_dir() {
-    let shim = match TeammateShim::create(12345) {
+    let shim = match TeammateShim::create(12345, true) {
         Ok(s) => s,
         Err(_) => return,
     };
@@ -80,7 +80,7 @@ fn tmux_shim_contains_log_and_shim_dir() {
 
 #[test]
 fn tmux_shim_contains_port_and_injection_logic() {
-    let shim = match TeammateShim::create(7777) {
+    let shim = match TeammateShim::create(7777, true) {
         Ok(s) => s,
         Err(_) => return,
     };
@@ -103,7 +103,7 @@ fn tmux_shim_contains_port_and_injection_logic() {
 
 #[test]
 fn tmux_log_path_points_to_shim_dir() {
-    let shim = match TeammateShim::create(12345) {
+    let shim = match TeammateShim::create(12345, true) {
         Ok(s) => s,
         Err(_) => return,
     };

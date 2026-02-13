@@ -27,11 +27,15 @@ const TEMPLATE: &str = r#"#!/bin/bash
 # the absolute claude path so teammate requests hit the /teammate route.
 
 SHIM_DIR="$(cd "$(dirname "$0")" && pwd)"
+LOG_ENABLED=__LOG_ENABLED__
 LOG="$SHIM_DIR/tmux_shim.log"
 # Persistent log survives TempDir cleanup
 PLOG="$HOME/.config/anyclaude/tmux_shim.log"
 
-slog() { echo "[$(date '+%H:%M:%S.%N')] $1" | tee -a "$LOG" >> "$PLOG"; }
+slog() {
+  $LOG_ENABLED || return
+  echo "[$(date '+%H:%M:%S.%N')] $1" | tee -a "$LOG" >> "$PLOG"
+}
 
 # Find real tmux, skipping our shim directory.
 find_real_tmux() {
@@ -100,7 +104,9 @@ fi
 "#;
 
 /// Install the tmux shim script into `dir`.
-pub fn install(dir: &Path, proxy_port: u16) -> Result<()> {
-    let script = TEMPLATE.replace("__PORT__", &proxy_port.to_string());
+pub fn install(dir: &Path, proxy_port: u16, log_enabled: bool) -> Result<()> {
+    let script = TEMPLATE
+        .replace("__PORT__", &proxy_port.to_string())
+        .replace("__LOG_ENABLED__", if log_enabled { "true" } else { "false" });
     write_executable(dir, "tmux", &script)
 }
