@@ -246,20 +246,6 @@ fn on_paste_buffered_while_not_ready() {
 }
 
 #[test]
-fn on_image_paste_buffered_while_not_ready() {
-    let mut app = make_app();
-    app.dispatch_pty(PtyIntent::Attach);
-    app.on_image_paste(std::path::Path::new("/tmp/anyclaude/paste_123.png"));
-    match &app.pty_lifecycle {
-        PtyLifecycleState::Attached { buffer } => {
-            assert_eq!(buffer.len(), 1);
-            assert!(String::from_utf8_lossy(&buffer[0]).contains("/tmp/anyclaude/paste_123.png"));
-        }
-        other => panic!("Expected Attached, got {:?}", std::mem::discriminant(other)),
-    }
-}
-
-#[test]
 fn send_input_buffers_while_not_ready() {
     let mut app = make_app();
     app.dispatch_pty(PtyIntent::Attach);
