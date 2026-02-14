@@ -16,9 +16,9 @@ pub fn layout_regions(area: Rect) -> (Rect, Rect, Rect) {
         height: footer_height,
     };
     let body = Rect {
-        x: area.x,
+        x: area.x + 1,
         y: area.y + header_height,
-        width: area.width,
+        width: area.width.saturating_sub(2),
         height: area.height.saturating_sub(header_height + footer_height),
     };
     (header, body, footer)
