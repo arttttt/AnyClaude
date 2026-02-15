@@ -1,6 +1,7 @@
 pub mod connection;
 pub mod error;
 pub mod health;
+pub mod model_rewrite;
 pub mod pool;
 pub mod router;
 pub mod server;
