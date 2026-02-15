@@ -20,7 +20,7 @@ pub use redaction::{redact_body, redact_body_preview, redact_headers};
 pub use request_parser::{RequestAnalysis, RequestParser};
 pub use response_parser::ResponseParser;
 pub use span::{RequestSpan, RequestStart};
-pub use stream::{ObservedStream, ResponseCompleteCallback, ResponsePreview, StreamError};
+pub use stream::{ChunkRewriter, ObservedStream, ResponseCompleteCallback, ResponsePreview, StreamError};
 pub use types::{
     BackendMetrics, BackendOverride, MetricsSnapshot, PostResponseContext, PreRequestContext,
     RequestMeta, RequestRecord, ResponseAnalysis, ResponseMeta, RoutingDecision,
