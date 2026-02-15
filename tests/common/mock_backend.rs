@@ -64,7 +64,17 @@ impl MockResponse {
     pub fn sse(events: &[&str]) -> Self {
         let body: String = events
             .iter()
-            .map(|e| format!("data: {}\n\n", e))
+            .map(|e| {
+                // Extract event type from JSON for realistic Anthropic SSE format.
+                // Real streams include `event: <type>\n` before `data: {...}\n\n`.
+                let event_type = serde_json::from_str::<serde_json::Value>(e)
+                    .ok()
+                    .and_then(|v| v.get("type").and_then(|t| t.as_str()).map(String::from));
+                match event_type {
+                    Some(t) => format!("event: {}\ndata: {}\n\n", t, e),
+                    None => format!("data: {}\n\n", e),
+                }
+            })
             .collect();
         Self {
             status: 200,
@@ -72,6 +82,12 @@ impl MockResponse {
             body: body.into_bytes(),
             delay_ms: 0,
         }
+    }
+
+    pub fn sse_with_status(status: u16, events: &[&str]) -> Self {
+        let mut resp = Self::sse(events);
+        resp.status = status;
+        resp
     }
 
     pub fn with_delay(mut self, ms: u64) -> Self {

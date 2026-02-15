@@ -15,6 +15,9 @@ use super::types::ResponseMeta;
 /// Callback type for response completion notification.
 pub type ResponseCompleteCallback = Box<dyn Fn(&[u8]) + Send + Sync>;
 
+/// Callback that rewrites a chunk, returning modified bytes (or original if unchanged).
+pub type ChunkRewriter = Box<dyn FnMut(Bytes) -> Bytes + Send>;
+
 /// Stream wrapper that adds observability and idle timeout to SSE streams.
 ///
 /// If no data is received within `idle_timeout`, the stream returns an error
@@ -30,6 +33,8 @@ pub struct ObservedStream<S> {
     on_complete: Option<ResponseCompleteCallback>,
     /// Buffer to accumulate all response bytes for the callback.
     response_buffer: Vec<u8>,
+    /// Optional chunk rewriter applied to each chunk before forwarding to client.
+    chunk_rewriter: Option<ChunkRewriter>,
 }
 
 pub struct ResponsePreview {
@@ -99,12 +104,19 @@ impl<S> ObservedStream<S> {
             response_preview,
             on_complete: None,
             response_buffer: Vec::new(),
+            chunk_rewriter: None,
         }
     }
 
     /// Set a callback to be called with full response bytes when stream completes.
     pub fn with_on_complete(mut self, callback: ResponseCompleteCallback) -> Self {
         self.on_complete = Some(callback);
+        self
+    }
+
+    /// Set a chunk rewriter that transforms each chunk before forwarding to client.
+    pub fn with_chunk_rewriter(mut self, rewriter: ChunkRewriter) -> Self {
+        self.chunk_rewriter = Some(rewriter);
         self
     }
 
@@ -166,6 +178,12 @@ where
             Poll::Ready(Some(Ok(bytes))) => {
                 // Reset deadline on successful data receipt
                 self.reset_deadline();
+                // Apply chunk rewriter if present (e.g. reverse model mapping)
+                let bytes = if let Some(ref mut rewriter) = self.chunk_rewriter {
+                    (rewriter)(bytes)
+                } else {
+                    bytes
+                };
                 if let Some(span) = &mut self.span {
                     span.mark_first_byte();
                     span.add_response_bytes(bytes.len());

@@ -11,6 +11,7 @@ use crate::metrics::{
     RequestParser, RequestSpan, ResponseMeta, ResponseParser, ResponsePreview,
 };
 use crate::proxy::error::ProxyError;
+use crate::proxy::model_rewrite::ModelMapping;
 use crate::proxy::pool::PoolConfig;
 use crate::proxy::thinking::ThinkingSession;
 use crate::proxy::timeout::TimeoutConfig;
@@ -184,6 +185,7 @@ impl UpstreamClient {
         // body read, which kills SSE streams mid-generation. For streaming requests
         // we rely on connect_timeout (Client-level) + idle_timeout (ObservedStream).
         let mut is_streaming_request = false;
+        let mut model_mapping: Option<ModelMapping> = None;
 
         if request_content_type.contains("application/json") {
             if let Ok(mut json_body) = serde_json::from_slice::<serde_json::Value>(&body_bytes) {
@@ -192,7 +194,8 @@ impl UpstreamClient {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
 
-                // Rewrite model field via family-based mapping
+                // Rewrite model field via family-based mapping.
+                // Capture original model name for reverse mapping in responses.
                 let mut model_rewritten = false;
                 if let Some(model_val) = json_body.get("model").and_then(|m| m.as_str()) {
                     if let Some(new_model) = backend.resolve_model(model_val) {
@@ -203,6 +206,10 @@ impl UpstreamClient {
                             Some(&format!("Rewrote model '{}' → '{}'", model_val, new_model)),
                             None,
                         );
+                        model_mapping = Some(ModelMapping {
+                            backend: new_model.to_string(),
+                            original: model_val.to_string(),
+                        });
                         json_body["model"] = serde_json::json!(new_model);
                         model_rewritten = true;
                     }
@@ -421,6 +428,11 @@ impl UpstreamClient {
         let mut response_builder = Response::builder().status(status);
 
         for (name, value) in response_headers.iter() {
+            // Strip Content-Length when reverse model mapping is active — the body
+            // size changes after rewriting model names, making the original value stale.
+            if model_mapping.is_some() && name == CONTENT_LENGTH {
+                continue;
+            }
             response_builder = response_builder.header(name, value);
         }
 
@@ -455,6 +467,13 @@ impl UpstreamClient {
 
             if let Some(cb) = on_complete {
                 observed = observed.with_on_complete(cb);
+            }
+
+            // Reverse model mapping: rewrite model in message_start back to original
+            if let Some(mapping) = model_mapping {
+                observed = observed.with_chunk_rewriter(
+                    crate::proxy::model_rewrite::make_reverse_model_rewriter(mapping),
+                );
             }
 
             Ok(response_builder.body(Body::from_stream(observed))?)
@@ -526,6 +545,13 @@ impl UpstreamClient {
                     backend.name, status, truncated
                 ));
             }
+
+            // Reverse model mapping for non-streaming responses
+            let body_bytes = if let Some(ref mapping) = model_mapping {
+                crate::proxy::model_rewrite::reverse_model_in_response(&body_bytes, mapping)
+            } else {
+                body_bytes
+            };
 
             span.add_response_bytes(body_bytes.len());
             observability.finish_request(span);
