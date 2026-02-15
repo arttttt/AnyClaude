@@ -8,7 +8,7 @@ unreachable_code = "deny"
 
 [package]
 name = "anyclaude"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2021"
 
 [lints]

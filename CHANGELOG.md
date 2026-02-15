@@ -2,6 +2,65 @@
 
 All notable changes to AnyClaude are documented in this file.
 
+## [0.4.0] - 2026-02-15
+
+### Bug Fixes
+
+- Generate realistic SSE format in MockResponse::sse()
+- Align body content with header/footer by adding 1-column side padding
+- Forward Ctrl+V to CC instead of intercepting clipboard images
+- Respect debug logging config in tmux shim
+- Propagate routing decision to upstream forwarding
+- Detect Shift+Enter via macOS CGEvent for newline insertion
+
+### Documentation
+
+- Add design document for reverse model mapping
+- Add commit rules to AGENTS.md
+- Add argument handling redesign documentation
+- Update shim doc comment to reference args pipeline
+- Update README with agent teams, model mapping, and CLI options
+- Design thinking pipeline isolation for multi-agent sessions
+- Update design doc with Phase 1b completion and model map
+- Add Phase 1b/1c design for smart and synthetic tmux shims
+- Update routing design with empirical tmux findings
+- Revise routing design — generic routing layer + simple config
+- Add per-agent backend routing design for Agent Teams
+
+### Features
+
+- Add double-click word selection
+- Wire reverse model mapping into upstream proxy pipeline
+- Add model_rewrite module for reverse model mapping
+- Add ChunkRewriter to ObservedStream for response transformation
+- Add args pipeline module for declarative argument handling
+- Separate main and teammate pipelines via axum nest
+- Add per-backend model family mapping (model_opus/sonnet/haiku)
+- Smart tmux shim injects ANTHROPIC_BASE_URL for teammates
+- Wire shims and --teammate-mode tmux into PTY spawn
+- Add PATH shims for teammate routing (claude + tmux)
+- Add proxy routing layer for path-based backend selection
+- Add AgentTeamsConfig with teammate_backend validation
+
+### Refactor
+
+- Remove dead code replaced by args pipeline
+- Integrate args pipeline into runtime
+- Remove dead image paste code
+- Remove redundant claude PATH shim
+- Remove debug logging env var overrides
+- Wire new pipeline architecture into server and IPC
+- Extract ThinkingSession from request extensions in upstream
+- Introduce ThinkingSession as per-request handle
+- Remove dead code from thinking pipeline
+- Make encode_project_path pub, restore tests
+
+### Testing
+
+- Add 32 tests for reverse model mapping
+- Add integration tests for args pipeline
+- Add pipeline isolation and ThinkingSession tests
+
 ## [0.3.1] - 2026-02-11
 
 ### Bug Fixes
@@ -21,6 +80,7 @@ All notable changes to AnyClaude are documented in this file.
 
 ### Chore
 
+- Release v0.3.1
 - Enforce no inline #[cfg(test)] in src/ via lint
 - Remove .DS_Store from tracking
 
