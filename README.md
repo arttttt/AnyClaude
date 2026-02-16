@@ -234,7 +234,7 @@ teammate_backend = "alternative"  # Backend name for teammate requests
 How it works:
 - The main agent's requests go to the active backend (switchable via `Ctrl+B`)
 - Teammate agents are intercepted via PATH shims and routed through `/teammate/*` to the fixed `teammate_backend`
-- Thinking block filtering is skipped for teammates (fixed backend, no session management needed)
+- Thinking block filtering is not applied to teammates (teammate pipeline doesn't include thinking middleware)
 - Backend switching does not affect teammate routing
 
 ### Thinking Block Handling
