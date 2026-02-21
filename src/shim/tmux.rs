@@ -78,12 +78,22 @@ for arg in "$@"; do
     fi
     # Case B: claude path embedded in a longer string (confirmed format)
     if [[ "$arg" == *"/claude "* ]] || [[ "$arg" == *"/claude" ]]; then
-      # Insert env var before the absolute claude path.
-      # [^ ]* matches any non-space chars including /, so multi-level paths work.
-      # Handle both mid-string (/claude --flags) and end-of-string (/claude$).
-      slog "BEFORE sed: $(printf '%q' "$arg")"
-      arg="$(printf '%s' "$arg" | sed -E "s# (/[^ ]*/claude)( |\$)# $INJECT_URL \1\2#")"
-      slog "AFTER  sed: $(printf '%q' "$arg")"
+      # Claude Code may pass its own ANTHROPIC_BASE_URL in the command.
+      # We must REPLACE it (not add a second one) to avoid the original
+      # overwriting ours depending on variable order.
+      # Uses bash regex (=~) — no sed subprocess or escaping issues.
+      slog "BEFORE inject: $(printf '%q' "$arg")"
+      if [[ "$arg" =~ ^(.*)ANTHROPIC_BASE_URL=[^[:space:]]+(.*) ]]; then
+        # Replace existing ANTHROPIC_BASE_URL value with our /teammate URL.
+        arg="${BASH_REMATCH[1]}$INJECT_URL${BASH_REMATCH[2]}"
+      elif [[ "$arg" =~ ^(.*[[:space:]])(/[^[:space:]]*/claude)([[:space:]].*|$) ]]; then
+        # No existing ANTHROPIC_BASE_URL — inject before claude path.
+        arg="${BASH_REMATCH[1]}$INJECT_URL ${BASH_REMATCH[2]}${BASH_REMATCH[3]}"
+      elif [[ "$arg" =~ ^(/[^[:space:]]*/claude)([[:space:]].*|$) ]]; then
+        # Claude path at the very start of the string (no leading space).
+        arg="$INJECT_URL ${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
+      fi
+      slog "AFTER  inject: $(printf '%q' "$arg")"
       args+=("$arg")
       injected=true
       slog "INJECT teammate URL (embedded in string)"
