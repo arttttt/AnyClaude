@@ -2,7 +2,7 @@
 
 use anyclaude::args::{
     classify, flag_registry, build_restart_params, build_spawn_params,
-    ClassifiedArg, EnvSet, SessionMode,
+    ArgAssembler, ClassifiedArg, EnvSet, SessionMode, SessionResolution, SessionSource,
 };
 use anyclaude::config::ClaudeSettingsManager;
 use anyclaude::pty::encode_project_path;
@@ -11,20 +11,9 @@ fn raw_args(args: Vec<&str>) -> Vec<String> {
     args.into_iter().map(String::from).collect()
 }
 
-fn build_initial(raw_args: &[String]) -> anyclaude::args::SpawnParams {
+fn build_spawn(raw_args: &[String]) -> anyclaude::args::SpawnParams {
     build_spawn_params(
         raw_args,
-        SessionMode::Initial,
-        "http://localhost:3000",
-        &ClaudeSettingsManager::new(),
-        None,
-    )
-}
-
-fn build_resume(raw_args: &[String]) -> anyclaude::args::SpawnParams {
-    build_spawn_params(
-        raw_args,
-        SessionMode::Resume,
         "http://localhost:3000",
         &ClaudeSettingsManager::new(),
         None,
@@ -132,7 +121,7 @@ fn env_set_chaining() {
 #[test]
 fn initial_adds_session_id() {
     let args = raw_args(vec!["--model", "opus"]);
-    let p = build_initial(&args);
+    let p = build_spawn(&args);
     assert!(p.args.contains(&"--session-id".to_string()));
     assert!(p.args.contains(&"--model".to_string()));
     assert!(p.args.contains(&"opus".to_string()));
@@ -141,21 +130,21 @@ fn initial_adds_session_id() {
 #[test]
 fn initial_env_contains_base_url() {
     let args = raw_args(vec![]);
-    let p = build_initial(&args);
+    let p = build_spawn(&args);
     assert!(p.env.iter().any(|(k, v)| k == "ANTHROPIC_BASE_URL" && v == "http://localhost:3000"));
 }
 
 #[test]
 fn initial_session_id_is_valid_uuid() {
     let args = raw_args(vec![]);
-    let p = build_initial(&args);
+    let p = build_spawn(&args);
     assert!(uuid::Uuid::parse_str(&p.session_id).is_ok());
 }
 
 #[test]
 fn initial_command_is_claude() {
     let args = raw_args(vec![]);
-    let p = build_initial(&args);
+    let p = build_spawn(&args);
     assert_eq!(p.command, "claude");
 }
 
@@ -163,8 +152,9 @@ fn initial_command_is_claude() {
 
 #[test]
 fn resume_uses_session_id() {
-    let args = raw_args(vec!["--model", "opus"]);
-    let p = build_resume(&args);
+    // Must pass --resume to get SessionMode::Resume
+    let args = raw_args(vec!["--resume", "session123", "--model", "opus"]);
+    let p = build_spawn(&args);
     assert!(p.args.contains(&"--resume".to_string()));
     assert!(p.args.contains(&"--model".to_string()));
     assert!(p.args.contains(&"opus".to_string()));
@@ -172,11 +162,11 @@ fn resume_uses_session_id() {
 
 #[test]
 fn resume_appends_extra_args() {
-    let args = raw_args(vec!["--model", "opus"]);
+    // Must pass --resume to get SessionMode::Resume
+    let args = raw_args(vec!["--resume", "session123", "--model", "opus"]);
     let extra = vec!["--verbose".to_string()];
     let p = build_restart_params(
         &args,
-        SessionMode::Resume,
         "http://localhost:3000",
         &ClaudeSettingsManager::new(),
         None,
@@ -189,8 +179,9 @@ fn resume_appends_extra_args() {
 
 #[test]
 fn empty_base_args_resume() {
-    let args = raw_args(vec![]);
-    let p = build_resume(&args);
+    // Must pass --resume to get SessionMode::Resume
+    let args = raw_args(vec!["--resume", "session123"]);
+    let p = build_spawn(&args);
     assert!(p.args.contains(&"--resume".to_string()));
 }
 
@@ -202,7 +193,6 @@ fn restart_merges_extra_env() {
     let extra_env = vec![("FOO".to_string(), "1".to_string())];
     let p = build_restart_params(
         &args,
-        SessionMode::Resume,
         "http://localhost:3000",
         &ClaudeSettingsManager::new(),
         None,
@@ -218,7 +208,7 @@ fn restart_merges_extra_env() {
 #[test]
 fn user_session_id_adopted() {
     let args = raw_args(vec!["--session-id", "my-custom-id", "--model", "opus"]);
-    let p = build_initial(&args);
+    let p = build_spawn(&args);
     assert_eq!(p.session_id, "my-custom-id");
     assert!(p.args.contains(&"--model".to_string()));
     assert!(p.args.contains(&"opus".to_string()));
@@ -227,7 +217,7 @@ fn user_session_id_adopted() {
 #[test]
 fn user_resume_id_adopted() {
     let args = raw_args(vec!["--resume", "existing-session", "--model", "opus"]);
-    let p = build_initial(&args);
+    let p = build_spawn(&args);
     assert_eq!(p.session_id, "existing-session");
     assert!(p.args.contains(&"--model".to_string()));
     assert!(p.args.contains(&"opus".to_string()));
@@ -236,7 +226,7 @@ fn user_resume_id_adopted() {
 #[test]
 fn user_resume_id_on_restart() {
     let args = raw_args(vec!["--resume", "existing-session", "--model", "opus"]);
-    let p = build_resume(&args);
+    let p = build_spawn(&args);
     assert!(p.args.contains(&"--model".to_string()));
     assert!(p.args.contains(&"opus".to_string()));
     assert!(p.args.contains(&"--resume".to_string()));
@@ -247,7 +237,7 @@ fn user_resume_id_on_restart() {
 #[test]
 fn continue_preserves_next_arg() {
     let args = raw_args(vec!["--continue", "--model", "opus"]);
-    let p = build_initial(&args);
+    let p = build_spawn(&args);
     assert!(p.args.contains(&"--model".to_string()));
     assert!(p.args.contains(&"opus".to_string()));
     assert!(!p.args.contains(&"--continue".to_string()));
@@ -256,7 +246,7 @@ fn continue_preserves_next_arg() {
 #[test]
 fn continue_preserves_next_arg_on_resume() {
     let args = raw_args(vec!["--continue", "--model", "opus"]);
-    let p = build_resume(&args);
+    let p = build_spawn(&args);
     assert!(p.args.contains(&"--model".to_string()));
     assert!(p.args.contains(&"opus".to_string()));
     assert!(!p.args.contains(&"--continue".to_string()));
@@ -268,7 +258,7 @@ fn continue_preserves_next_arg_on_resume() {
 #[test]
 fn session_id_value_stripped_from_base_args() {
     let args = raw_args(vec!["--session-id", "old-id", "--model", "opus"]);
-    let p = build_initial(&args);
+    let p = build_spawn(&args);
     assert_eq!(p.session_id, "old-id");
     assert!(p.args.contains(&"--model".to_string()));
     assert!(p.args.contains(&"opus".to_string()));
@@ -277,7 +267,7 @@ fn session_id_value_stripped_from_base_args() {
 #[test]
 fn resume_value_stripped_from_base_args() {
     let args = raw_args(vec!["--resume", "old-id", "--model", "opus"]);
-    let p = build_resume(&args);
+    let p = build_spawn(&args);
     assert!(p.args.contains(&"--model".to_string()));
     assert!(p.args.contains(&"opus".to_string()));
 }
@@ -287,21 +277,21 @@ fn resume_value_stripped_from_base_args() {
 #[test]
 fn no_warnings_without_session_flags() {
     let args = raw_args(vec!["--model", "opus"]);
-    let p = build_initial(&args);
+    let p = build_spawn(&args);
     assert!(p.warnings.iter().all(|w| !w.contains("session")));
 }
 
 #[test]
 fn no_warnings_with_session_id() {
     let args = raw_args(vec!["--session-id", "my-id"]);
-    let p = build_initial(&args);
+    let p = build_spawn(&args);
     assert!(p.warnings.is_empty());
 }
 
 #[test]
 fn no_warnings_with_resume() {
     let args = raw_args(vec!["--resume", "my-id"]);
-    let p = build_initial(&args);
+    let p = build_spawn(&args);
     assert!(p.warnings.is_empty());
 }
 
@@ -310,7 +300,7 @@ fn no_warnings_with_resume() {
 #[test]
 fn session_id_without_value_generates_uuid() {
     let args = raw_args(vec!["--session-id", "--model", "opus"]);
-    let p = build_initial(&args);
+    let p = build_spawn(&args);
     assert_ne!(p.session_id, "--model");
     assert!(uuid::Uuid::parse_str(&p.session_id).is_ok());
     assert!(!p.warnings.is_empty());
@@ -321,7 +311,7 @@ fn session_id_without_value_generates_uuid() {
 #[test]
 fn resume_without_value_generates_uuid() {
     let args = raw_args(vec!["--resume", "--model", "opus"]);
-    let p = build_initial(&args);
+    let p = build_spawn(&args);
     assert_ne!(p.session_id, "--model");
     assert!(uuid::Uuid::parse_str(&p.session_id).is_ok());
     assert!(!p.warnings.is_empty());
@@ -330,7 +320,7 @@ fn resume_without_value_generates_uuid() {
 #[test]
 fn session_id_as_last_arg_generates_uuid() {
     let args = raw_args(vec!["--model", "opus", "--session-id"]);
-    let p = build_initial(&args);
+    let p = build_spawn(&args);
     assert!(uuid::Uuid::parse_str(&p.session_id).is_ok());
     assert!(!p.warnings.is_empty());
     assert!(p.args.contains(&"--model".to_string()));
@@ -342,7 +332,7 @@ fn session_id_as_last_arg_generates_uuid() {
 #[test]
 fn session_id_and_resume_last_wins() {
     let args = raw_args(vec!["--session-id", "id-1", "--resume", "id-2"]);
-    let p = build_initial(&args);
+    let p = build_spawn(&args);
     assert_eq!(p.session_id, "id-2");
     assert!(!p.warnings.is_empty());
 }
@@ -350,7 +340,7 @@ fn session_id_and_resume_last_wins() {
 #[test]
 fn session_id_and_continue_explicit_wins() {
     let args = raw_args(vec!["--session-id", "my-id", "--continue"]);
-    let p = build_initial(&args);
+    let p = build_spawn(&args);
     assert_eq!(p.session_id, "my-id");
     assert!(!p.warnings.is_empty());
 }
@@ -360,7 +350,7 @@ fn session_id_and_continue_explicit_wins() {
 #[test]
 fn unknown_flag_warning() {
     let args = raw_args(vec!["--unknown-flag"]);
-    let p = build_initial(&args);
+    let p = build_spawn(&args);
     assert!(p.warnings.iter().any(|w| w.contains("unknown flag")));
     assert!(p.args.contains(&"--unknown-flag".to_string()));
 }
@@ -370,7 +360,7 @@ fn unknown_flag_warning() {
 #[test]
 fn positional_args_preserved() {
     let args = raw_args(vec!["file1.txt", "file2.txt"]);
-    let p = build_initial(&args);
+    let p = build_spawn(&args);
     assert!(p.args.contains(&"file1.txt".to_string()));
     assert!(p.args.contains(&"file2.txt".to_string()));
 }
@@ -381,8 +371,8 @@ fn positional_args_preserved() {
 fn different_spawns_get_different_ids() {
     let args1 = raw_args(vec![]);
     let args2 = raw_args(vec![]);
-    let p1 = build_initial(&args1);
-    let p2 = build_initial(&args2);
+    let p1 = build_spawn(&args1);
+    let p2 = build_spawn(&args2);
     assert_ne!(p1.session_id, p2.session_id);
 }
 
@@ -409,4 +399,50 @@ fn encode_no_slashes() {
 #[test]
 fn encode_empty_string() {
     assert_eq!(encode_project_path(""), "");
+}
+
+// -- assembler session mode mapping ------------------------------------------
+
+#[test]
+fn continue_resolved_session_uses_resume() {
+    // When --continue resolves an existing session (ContinueLast),
+    // the assembler should produce --resume, not --session-id.
+    // This tests the key fix: ContinueLast source -> Resume mode -> --resume flag
+    let session = SessionResolution {
+        session_id: "existing-session-id".to_string(),
+        source: SessionSource::ContinueLast,
+        warnings: vec![],
+    };
+
+    // Test Resume mode (derived from ContinueLast source)
+    let args_resume = ArgAssembler::new()
+        .with_session(&session, SessionMode::Resume)
+        .build();
+    assert!(
+        args_resume.contains(&"--resume".to_string()),
+        "Resume mode should produce --resume flag"
+    );
+    assert!(
+        !args_resume.contains(&"--session-id".to_string()),
+        "Resume mode should NOT produce --session-id flag"
+    );
+    assert!(args_resume.contains(&"existing-session-id".to_string()));
+
+    // Test Initial mode (for comparison - derived from ExplicitId/Generated)
+    let session_new = SessionResolution {
+        session_id: "new-session-id".to_string(),
+        source: SessionSource::Generated,
+        warnings: vec![],
+    };
+    let args_initial = ArgAssembler::new()
+        .with_session(&session_new, SessionMode::Initial)
+        .build();
+    assert!(
+        args_initial.contains(&"--session-id".to_string()),
+        "Initial mode should produce --session-id flag"
+    );
+    assert!(
+        !args_initial.contains(&"--resume".to_string()),
+        "Initial mode should NOT produce --resume flag"
+    );
 }

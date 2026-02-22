@@ -1,4 +1,4 @@
-use crate::args::{build_restart_params, build_spawn_params, SessionMode, SpawnParams};
+use crate::args::{build_restart_params, build_spawn_params, SpawnParams};
 use crate::clipboard::ClipboardHandler;
 use crate::config::{save_claude_settings, Config, ConfigStore};
 use crate::error::{ErrorCategory, ErrorSeverity};
@@ -162,7 +162,6 @@ pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Re
     // Build spawn parameters via the args pipeline
     let spawn = build_spawn_params(
         &base_raw_args,
-        SessionMode::Initial,
         &base_proxy_url,
         app.settings_manager(),
         _teammate_shim.as_ref(),
@@ -391,7 +390,6 @@ pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Re
                         // Retry with --session-id to start fresh session.
                         let params = build_spawn_params(
                             &base_raw_args,
-                            SessionMode::Initial,
                             &base_proxy_url,
                             app.settings_manager(),
                             _teammate_shim.as_ref(),
@@ -425,11 +423,10 @@ pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Re
                 // Always try --resume first. If the session hasn't had any
                 // interaction yet, --resume will fail (no conversation to
                 // resume). The ProcessExit safety net will then retry with
-                // --session-id (SessionMode::Initial).
+                // --session-id (derived from ExplicitId/Generated source).
                 restart_can_retry = true;
                 let params = build_restart_params(
                     &base_raw_args,
-                    SessionMode::Resume,
                     &base_proxy_url,
                     app.settings_manager(),
                     _teammate_shim.as_ref(),

@@ -4,7 +4,7 @@ use crate::args::assembler::ArgAssembler;
 use crate::args::classifier::classify;
 use crate::args::env_builder::EnvSet;
 use crate::args::registry::flag_registry;
-use crate::args::session::resolve_session;
+use crate::args::session::{resolve_session, SessionSource};
 use crate::args::SessionMode;
 use crate::config::ClaudeSettingsManager;
 use crate::shim::TeammateShim;
@@ -31,7 +31,6 @@ pub struct SpawnParams {
 /// # Arguments
 ///
 /// * `raw_args` - Raw arguments from the user (after wrapper flags like `--backend` are stripped)
-/// * `mode` - Whether this is an initial spawn or a resume
 /// * `proxy_url` - The proxy URL to inject as ANTHROPIC_BASE_URL
 /// * `settings` - Settings manager for CLI flags and env vars
 /// * `shim` - Optional teammate shim for PATH override and --teammate-mode
@@ -41,7 +40,6 @@ pub struct SpawnParams {
 /// A `SpawnParams` struct ready to pass to `PtySession::spawn()`.
 pub fn build_spawn_params(
     raw_args: &[String],
-    mode: SessionMode,
     proxy_url: &str,
     settings: &ClaudeSettingsManager,
     shim: Option<&TeammateShim>,
@@ -54,6 +52,12 @@ pub fn build_spawn_params(
     // Stage 2: Resolve session
     let session = resolve_session(&classified.args);
 
+    // Determine SessionMode based on SessionSource
+    let session_mode = match session.source {
+        SessionSource::ContinueLast | SessionSource::ResumeId => SessionMode::Resume,
+        SessionSource::ExplicitId | SessionSource::Generated => SessionMode::Initial,
+    };
+
     // Stage 3: Build environment
     let env = EnvSet::new()
         .with_proxy_url(proxy_url)
@@ -63,7 +67,7 @@ pub fn build_spawn_params(
 
     // Stage 4: Assemble arguments
     let args = ArgAssembler::from_passthrough(&classified.args)
-        .with_session(&session, mode)
+        .with_session(&session, session_mode)
         .with_settings(settings)
         .with_teammate_mode(shim)
         .build();
@@ -87,7 +91,6 @@ pub fn build_spawn_params(
 /// from the settings UI, merging them with the base configuration.
 pub fn build_restart_params(
     raw_args: &[String],
-    mode: SessionMode,
     proxy_url: &str,
     settings: &ClaudeSettingsManager,
     shim: Option<&TeammateShim>,
@@ -102,6 +105,12 @@ pub fn build_restart_params(
     // Stage 2: Resolve session
     let session = resolve_session(&classified.args);
 
+    // Determine SessionMode based on SessionSource
+    let session_mode = match session.source {
+        SessionSource::ContinueLast | SessionSource::ResumeId => SessionMode::Resume,
+        SessionSource::ExplicitId | SessionSource::Generated => SessionMode::Initial,
+    };
+
     // Stage 3: Build environment (with extra)
     let env = EnvSet::new()
         .with_proxy_url(proxy_url)
@@ -112,7 +121,7 @@ pub fn build_restart_params(
 
     // Stage 4: Assemble arguments (with extra)
     let args = ArgAssembler::from_passthrough(&classified.args)
-        .with_session(&session, mode)
+        .with_session(&session, session_mode)
         .with_settings(settings)
         .with_teammate_mode(shim)
         .with_extra(extra_args)
