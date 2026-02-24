@@ -28,8 +28,6 @@ pub async fn handle_response(
     backend: Backend,
     thinking: Option<ThinkingSession>,
     model_mapping: Option<ModelMapping>,
-    _is_streaming_request: bool,
-    _request_content_type: String,
     config: &PipelineConfig,
     ctx: &mut PipelineContext,
 ) -> Result<Response<Body>, ProxyError> {
@@ -134,6 +132,7 @@ pub async fn handle_response(
             Err(e) => {
                 let err = ProxyError::Internal(format!("Failed to read response body: {}", e));
                 ctx.observability.finish_error(ctx.span.clone(), Some(err.status_code().as_u16()));
+                ctx.span_finalized = true;
                 return Err(err);
             }
         };
@@ -213,6 +212,7 @@ pub async fn handle_response(
 
         ctx.span.add_response_bytes(body_bytes.len());
         ctx.observability.finish_request(ctx.span.clone());
+        ctx.span_finalized = true;
 
         Ok(response_builder.body(Body::from(body_bytes))?)
     }

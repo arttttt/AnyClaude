@@ -66,9 +66,6 @@ pub struct RequestTiming {
 
 impl Clone for RequestTiming {
     fn clone(&self) -> Self {
-        // Instant doesn't implement Clone, so we use the current time as a fallback.
-        // This is acceptable for our use case since cloned spans are used for
-        // observability tracking where exact timing isn't critical.
         Self {
             started_instant: self.started_instant,
             first_byte_instant: self.first_byte_instant,

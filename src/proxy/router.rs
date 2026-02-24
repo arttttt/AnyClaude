@@ -13,6 +13,8 @@ use crate::backend::BackendState;
 use crate::config::{AgentTeamsConfig, DebugLogLevel};
 use crate::proxy::error::ErrorResponse;
 use crate::metrics::{DebugLogger, ObservabilityHub, RequestMeta};
+#[cfg(not(feature = "unified-pipeline"))]
+use crate::metrics::RoutingDecision;
 use crate::proxy::health::HealthHandler;
 use crate::proxy::pool::PoolConfig;
 use crate::proxy::thinking::TransformerRegistry;
@@ -179,13 +181,13 @@ async fn proxy_handler(
         });
     }
 
-    // Backend override: teammate route only (plugin override handled by pipeline)
-    let backend_override = teammate_backend;
-
     // Use unified pipeline when feature is enabled
     #[cfg(feature = "unified-pipeline")]
     {
         use crate::proxy::pipeline::execute_pipeline;
+
+        // Pipeline handles all routing internally (plugin, teammate, marker, active)
+        let backend_override = teammate_backend;
 
         let pipeline_config = match &state.pipeline_config {
             Some(config) => config.clone(),
@@ -216,6 +218,26 @@ async fn proxy_handler(
     // Use legacy upstream client when feature is disabled
     #[cfg(not(feature = "unified-pipeline"))]
     {
+        // Determine final backend override for forward().
+        // Priority: observability plugin > teammate route > none (use active).
+        let backend_override = if let Some(obs) = start.backend_override {
+            start.span.set_backend(obs.backend.clone());
+            start.span.record_mut().routing_decision = Some(RoutingDecision {
+                backend: obs.backend.clone(),
+                reason: obs.reason,
+            });
+            Some(obs.backend)
+        } else if let Some(teammate) = teammate_backend {
+            start.span.set_backend(teammate.clone());
+            start.span.record_mut().routing_decision = Some(RoutingDecision {
+                backend: teammate.clone(),
+                reason: "teammate route".to_string(),
+            });
+            Some(teammate)
+        } else {
+            None
+        };
+
         match state
             .upstream
             .forward(

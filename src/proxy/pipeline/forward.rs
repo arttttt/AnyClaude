@@ -32,6 +32,7 @@ pub async fn forward_with_retry(
             reason: "api_key is not set".to_string(),
         };
         ctx.observability.finish_error(ctx.span.clone(), Some(err.status_code().as_u16()));
+        ctx.span_finalized = true;
         return Err(err);
     }
 
@@ -105,6 +106,7 @@ pub async fn forward_with_retry(
                     let mut span = ctx.span.clone();
                     span.mark_timed_out();
                     ctx.observability.finish_error(span, Some(timeout_err.status_code().as_u16()));
+                    ctx.span_finalized = true;
                     return Err(timeout_err);
                 }
 
@@ -113,6 +115,7 @@ pub async fn forward_with_retry(
                     source: err,
                 };
                 ctx.observability.finish_error(ctx.span.clone(), Some(conn_err.status_code().as_u16()));
+                ctx.span_finalized = true;
                 return Err(conn_err);
             }
         }

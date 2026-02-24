@@ -15,7 +15,7 @@ use serde_json::json;
 
 use anyclaude::backend::BackendState;
 use anyclaude::config::{Backend, Config, DebugLogDestination, DebugLogFormat, DebugLogLevel, DebugLoggingConfig, Defaults};
-use anyclaude::metrics::{BackendOverride, DebugLogger, ObservabilityHub, RequestMeta, RequestRecord, RequestSpan};
+use anyclaude::metrics::{BackendOverride, DebugLogger, ObservabilityHub, RequestRecord, RequestSpan};
 use anyclaude::proxy::pipeline::{self, PipelineContext, PipelineConfig};
 use anyclaude::proxy::pool::PoolConfig;
 use anyclaude::proxy::thinking::TransformerRegistry;
@@ -415,58 +415,14 @@ fn test_resolve_backend_priority_teammate_over_marker() {
 // =============================================================================
 
 #[test]
-fn test_create_thinking_main_request() {
+fn test_create_thinking_always_creates_session() {
+    // create_thinking always returns Some — teammate detection is
+    // handled by execute_pipeline (which skips calling create_thinking
+    // when backend_override is present).
     let config = create_test_config();
     let backend_state = BackendState::from_config(config).unwrap();
     let transformer_registry = Arc::new(TransformerRegistry::new());
     let mut ctx = create_test_context();
-
-    // Set up context as a main request (not /teammate path)
-    ctx.span.record_mut().request_meta = Some(RequestMeta {
-        method: "POST".to_string(),
-        path: "/v1/messages".to_string(),
-        query: None,
-        headers: None,
-        body_preview: None,
-    });
-
-    let backend = backend_state.get_backend_config("test").unwrap();
-    let session = pipeline::create_thinking(&transformer_registry, &backend, &mut ctx);
-
-    assert!(session.is_some());
-}
-
-#[test]
-fn test_create_thinking_teammate_request() {
-    let config = create_test_config();
-    let backend_state = BackendState::from_config(config).unwrap();
-    let transformer_registry = Arc::new(TransformerRegistry::new());
-    let mut ctx = create_test_context();
-
-    // Set up context as a teammate request
-    ctx.span.record_mut().request_meta = Some(RequestMeta {
-        method: "POST".to_string(),
-        path: "/teammate/some-agent".to_string(),
-        query: None,
-        headers: None,
-        body_preview: None,
-    });
-
-    let backend = backend_state.get_backend_config("test").unwrap();
-    let session = pipeline::create_thinking(&transformer_registry, &backend, &mut ctx);
-
-    assert!(session.is_none());
-}
-
-#[test]
-fn test_create_thinking_no_request_meta() {
-    let config = create_test_config();
-    let backend_state = BackendState::from_config(config).unwrap();
-    let transformer_registry = Arc::new(TransformerRegistry::new());
-    let mut ctx = create_test_context();
-
-    // No request meta set - should default to main request
-    ctx.span.record_mut().request_meta = None;
 
     let backend = backend_state.get_backend_config("test").unwrap();
     let session = pipeline::create_thinking(&transformer_registry, &backend, &mut ctx);
@@ -951,13 +907,9 @@ fn test_build_headers_no_anthropic_beta_patch_for_anthropic() {
 /// - **Circular backend references**: Not possible - backend names are flat
 ///
 /// ## Stage 3: create_thinking
-/// - **Path detection edge cases**:
-///   - "/teammate" -> teammate (no thinking)
-///   - "/teammate/" -> teammate (no thinking)
-///   - "/teammate/agent" -> teammate (no thinking)
-///   - "/teammates" -> NOT teammate (has thinking) - prefix only
-///   - "/api/teammate" -> NOT teammate (has thinking)
-/// - **No request_meta in span**: Defaults to creating thinking session (main path)
+/// - **Teammate detection**: Based on `backend_override.is_some()` in execute_pipeline,
+///   NOT on path prefix. The path check was unreliable since axum nest() strips prefixes.
+/// - **create_thinking always returns Some**: Caller decides whether to call it.
 ///
 /// ## Stage 4: transform_body
 /// - **Model rewrite precedence**: Family detection (opus/sonnet/haiku) is case-sensitive
@@ -989,45 +941,10 @@ fn test_build_headers_no_anthropic_beta_patch_for_anthropic() {
 /// - **Zero-byte response**: Empty body forwarded correctly
 /// - **Invalid UTF-8 in SSE**: Handled by bytes-based processing
 
-#[test]
-fn test_corner_case_teammate_path_prefix_only() {
-    // "/teammate" prefix detection is exact
-    let config = create_test_config();
-    let backend_state = BackendState::from_config(config).unwrap();
-    let transformer_registry = Arc::new(TransformerRegistry::new());
-    let mut ctx = create_test_context();
-
-    // Paths that start with "/teammate"
-    // NOTE: The implementation uses starts_with("/teammate") which means
-    // "/teammates" IS treated as a teammate path. This is a known edge case.
-    let paths = vec![
-        ("/teammate", true),      // exact - is teammate
-        ("/teammate/", true),     // with trailing slash - is teammate
-        ("/teammate/agent", true), // has path after - is teammate
-        ("/teammates", true),     // extra 's' - IS teammate (starts_with behavior)
-        ("/api/teammate", false), // different prefix - NOT teammate
-        ("/teammate-agent", true), // hyphenated but still starts_with - IS teammate
-    ];
-
-    for (path, is_teammate) in paths {
-        ctx.span.record_mut().request_meta = Some(RequestMeta {
-            method: "POST".to_string(),
-            path: path.to_string(),
-            query: None,
-            headers: None,
-            body_preview: None,
-        });
-
-        let backend = backend_state.get_backend_config("test").unwrap();
-        let session = pipeline::create_thinking(&transformer_registry, &backend, &mut ctx);
-
-        if is_teammate {
-            assert!(session.is_none(), "Path {} should be teammate (no thinking)", path);
-        } else {
-            assert!(session.is_some(), "Path {} should NOT be teammate (has thinking)", path);
-        }
-    }
-}
+// Teammate detection is now based on backend_override presence in
+// execute_pipeline, not path-based. The old path prefix check was
+// unreliable because axum nest() strips the /teammate prefix before
+// proxy_handler runs. See execute_pipeline in mod.rs.
 
 #[test]
 fn test_corner_case_model_family_detection_case_sensitive() {

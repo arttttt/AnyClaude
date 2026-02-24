@@ -41,6 +41,9 @@ pub struct PipelineContext {
     pub observability: ObservabilityHub,
     /// Debug logger for auxiliary logging
     pub debug_logger: Arc<DebugLogger>,
+    /// Whether the observability span has been finalized
+    /// (finish_request or finish_error already called by a late stage).
+    pub(crate) span_finalized: bool,
 }
 
 impl PipelineContext {
@@ -49,6 +52,7 @@ impl PipelineContext {
             span,
             observability,
             debug_logger,
+            span_finalized: false,
         }
     }
 }
@@ -96,12 +100,41 @@ impl PipelineConfig {
 ///
 /// This is the main entry point for the unified pipeline. It orchestrates
 /// all 7 stages in sequence and handles error propagation.
+///
+/// Observability lifecycle: stages 6-7 call `finish_error`/`finish_request`
+/// internally for late errors. For early errors (stages 1-5), this function
+/// ensures `finish_error` is called before returning.
 pub async fn execute_pipeline(
     req: Request<Body>,
     config: &PipelineConfig,
     ctx: &mut PipelineContext,
     backend_override: Option<String>,
     plugin_override: Option<BackendOverride>,
+) -> Result<Response<Body>, crate::proxy::error::ProxyError> {
+    let is_teammate = backend_override.is_some();
+
+    match execute_pipeline_inner(req, config, ctx, backend_override, plugin_override, is_teammate).await {
+        Ok(response) => Ok(response),
+        Err(e) => {
+            // Late stages (forward, response) set span_finalized=true when they
+            // call finish_error/finish_request. For early errors (stages 1-5),
+            // finalize the span here to avoid dangling spans.
+            if !ctx.span_finalized {
+                ctx.observability.finish_error(ctx.span.clone(), Some(e.status_code().as_u16()));
+                ctx.span_finalized = true;
+            }
+            Err(e)
+        }
+    }
+}
+
+async fn execute_pipeline_inner(
+    req: Request<Body>,
+    config: &PipelineConfig,
+    ctx: &mut PipelineContext,
+    backend_override: Option<String>,
+    plugin_override: Option<BackendOverride>,
+    is_teammate: bool,
 ) -> Result<Response<Body>, crate::proxy::error::ProxyError> {
     // Stage 1: Extract request
     let extracted = extract::extract_request(req, ctx).await?;
@@ -116,11 +149,16 @@ pub async fn execute_pipeline(
     )?;
 
     // Stage 3: Create thinking session (after routing, before transform)
-    let thinking_session = thinking::create_thinking(
-        &config.transformer_registry,
-        &backend,
-        ctx,
-    );
+    // Teammate requests (those with backend_override) skip thinking.
+    let thinking_session = if is_teammate {
+        None
+    } else {
+        thinking::create_thinking(
+            &config.transformer_registry,
+            &backend,
+            ctx,
+        )
+    };
 
     // Stage 4: Transform body
     let (transformed_body, is_streaming, model_mapping) = transform::transform_body(
@@ -160,8 +198,6 @@ pub async fn execute_pipeline(
         backend,
         thinking_session,
         model_mapping,
-        is_streaming,
-        extracted.content_type,
         config,
         ctx,
     ).await?;
