@@ -5,7 +5,7 @@ use std::io::{self, IsTerminal};
 use anyclaude::config::Config;
 
 #[derive(Parser)]
-#[command(name = "anyclaude")]
+#[command(name = "anyclaude", version)]
 #[command(about = "TUI wrapper for Claude Code with multi-backend support")]
 struct Cli {
     /// Override default backend (see config for available backends)
