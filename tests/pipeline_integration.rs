@@ -5,8 +5,6 @@
 //! - Teammate pipeline (subagent requests)
 //! - Subagent routing via marker models
 
-#![cfg(feature = "unified-pipeline")]
-
 mod common;
 
 use std::sync::Arc;

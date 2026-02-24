@@ -2,8 +2,6 @@
 //!
 //! Tests each stage independently plus full pipeline integration.
 
-#![cfg(feature = "unified-pipeline")]
-
 mod common;
 
 use std::sync::Arc;

@@ -13,7 +13,6 @@ edition = "2021"
 
 [features]
 default = []
-unified-pipeline = []
 
 [lints]
 workspace = true

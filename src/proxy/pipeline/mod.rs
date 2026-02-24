@@ -1,8 +1,7 @@
 //! 7-stage linear pipeline for proxy request processing.
 //!
-//! This module implements a unified pipeline architecture behind the `unified-pipeline`
-//! feature flag. The pipeline replaces the legacy middleware-based approach with
-//! explicit linear stages.
+//! The pipeline processes each request through explicit linear stages:
+//! extract → routing → thinking → transform → headers → forward → response.
 
 use axum::body::Body;
 use axum::http::{Request, Response};

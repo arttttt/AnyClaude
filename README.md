@@ -234,7 +234,7 @@ teammate_backend = "alternative"  # Backend name for teammate requests
 How it works:
 - The main agent's requests go to the active backend (switchable via `Ctrl+B`)
 - Teammate agents are intercepted via PATH shims and routed through `/teammate/*` to the fixed `teammate_backend`
-- Thinking block filtering is not applied to teammates (teammate pipeline doesn't include thinking middleware)
+- Thinking block filtering is not applied to teammate requests
 - Backend switching does not affect teammate routing
 
 ### Thinking Block Handling
@@ -303,13 +303,14 @@ max_files = 5                      # Keep 5 rotated files
 
 ## Development
 
-Requires [just](https://github.com/casey/just) task runner.
-
-| Command | Description |
-|---------|-------------|
-| `just check` | Run lints, clippy, and tests |
-| `just release 0.4.0` | Bump version, update CHANGELOG, commit, tag |
-| `just changelog` | Regenerate CHANGELOG.md |
+```bash
+./build.sh              # Build release binary
+./build.sh debug        # Build debug binary
+./build.sh test         # Run tests
+./build.sh clean        # Clean build artifacts
+./build.sh install      # Build and install to ~/.cargo/bin
+./build.sh release-tag  # Build release without dev version stamp
+```
 
 ## License
 

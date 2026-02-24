@@ -13,17 +13,11 @@ use crate::backend::BackendState;
 use crate::config::{AgentTeamsConfig, DebugLogLevel};
 use crate::proxy::error::ErrorResponse;
 use crate::metrics::{DebugLogger, ObservabilityHub, RequestMeta};
-#[cfg(not(feature = "unified-pipeline"))]
-use crate::metrics::RoutingDecision;
 use crate::proxy::health::HealthHandler;
+use crate::proxy::pipeline::{PipelineConfig, PipelineContext};
 use crate::proxy::pool::PoolConfig;
 use crate::proxy::thinking::TransformerRegistry;
 use crate::proxy::timeout::TimeoutConfig;
-#[cfg(not(feature = "unified-pipeline"))]
-use crate::proxy::upstream::UpstreamClient;
-
-#[cfg(feature = "unified-pipeline")]
-use crate::proxy::pipeline::{PipelineConfig, PipelineContext};
 
 /// Fixed backend override for the teammate pipeline.
 ///
@@ -36,13 +30,9 @@ pub struct BackendOverride(pub String);
 #[derive(Clone)]
 pub struct RouterEngine {
     health: Arc<HealthHandler>,
-    #[cfg(not(feature = "unified-pipeline"))]
-    upstream: Arc<UpstreamClient>,
     pub(crate) backend_state: BackendState,
     observability: ObservabilityHub,
     pub(crate) debug_logger: Arc<DebugLogger>,
-    pub(crate) transformer_registry: Arc<TransformerRegistry>,
-    #[cfg(feature = "unified-pipeline")]
     pipeline_config: Option<PipelineConfig>,
     pub(crate) session_token: Option<String>,
 }
@@ -57,7 +47,6 @@ impl RouterEngine {
         transformer_registry: Arc<TransformerRegistry>,
         session_token: Option<String>,
     ) -> Self {
-        #[cfg(feature = "unified-pipeline")]
         let pipeline_config = Some(PipelineConfig::new(
             backend_state.clone(),
             transformer_registry.clone(),
@@ -67,44 +56,18 @@ impl RouterEngine {
 
         Self {
             health: Arc::new(HealthHandler::new()),
-            #[cfg(not(feature = "unified-pipeline"))]
-            upstream: Arc::new(UpstreamClient::new(
-                timeout_config,
-                pool_config,
-                debug_logger.clone(),
-            )),
             backend_state,
             observability,
             debug_logger,
-            transformer_registry,
-            #[cfg(feature = "unified-pipeline")]
             pipeline_config,
             session_token,
         }
     }
 }
 
-/// Thinking middleware — creates a ThinkingSession for main agent requests.
-///
-/// Only present in the main pipeline. Not applied to teammate routes.
-async fn thinking_middleware(
-    State(state): State<RouterEngine>,
-    mut req: Request<Body>,
-    next: Next,
-) -> Response {
-    let backend = state.backend_state.get_active_backend();
-    let session = state.transformer_registry.begin_request(
-        &backend,
-        state.debug_logger.clone(),
-    );
-    req.extensions_mut().insert(session);
-    next.run(req).await
-}
-
 /// Auth middleware — validates session token for proxy requests.
 ///
 /// Rejects requests without valid x-session-token header when session_token is configured.
-/// Skips validation for health endpoint.
 async fn auth_middleware(
     State(state): State<RouterEngine>,
     req: Request<Body>,
@@ -131,13 +94,9 @@ pub fn build_router(
     engine: RouterEngine,
     teams: &Option<AgentTeamsConfig>,
 ) -> Router {
-    // Main pipeline: with auth and thinking middleware
+    // Main pipeline: auth middleware only (thinking is handled inside the pipeline)
     let main = Router::new()
         .fallback(proxy_handler)
-        .layer(axum::middleware::from_fn_with_state(
-            engine.clone(),
-            thinking_middleware,
-        ))
         .layer(axum::middleware::from_fn_with_state(
             engine.clone(),
             auth_middleware,
@@ -148,7 +107,7 @@ pub fn build_router(
         .route("/health", get(health_handler))
         .with_state(engine.clone());
 
-    // Teammate pipeline: auth middleware, no thinking, fixed backend
+    // Teammate pipeline: auth middleware, fixed backend
     if let Some(config) = teams {
         let teammate = Router::new()
             .fallback(proxy_handler)
@@ -187,6 +146,8 @@ async fn proxy_handler(
     RawQuery(query): RawQuery,
     req: Request<Body>,
 ) -> Response {
+    use crate::proxy::pipeline::execute_pipeline;
+
     let request_id = Uuid::new_v4().to_string();
     let query_str = query.as_deref().unwrap_or("");
     crate::metrics::app_log("router", &format!("Incoming request: {} {} request_id={}", req.method(), req.uri().path(), request_id));
@@ -218,79 +179,30 @@ async fn proxy_handler(
         });
     }
 
-    // Use unified pipeline when feature is enabled
-    #[cfg(feature = "unified-pipeline")]
-    {
-        use crate::proxy::pipeline::execute_pipeline;
+    let backend_override = teammate_backend;
 
-        // Pipeline handles all routing internally (plugin, teammate, marker, active)
-        let backend_override = teammate_backend;
-
-        let pipeline_config = match &state.pipeline_config {
-            Some(config) => config.clone(),
-            None => {
-                let err = crate::proxy::error::ProxyError::Internal(
-                    "Pipeline config not initialized".to_string()
-                );
-                crate::metrics::app_log_error("router", &format!("Request failed: request_id={}", request_id), &format!("{} ({})", err, err.error_type()));
-                return ErrorResponse::from_error(&err, &request_id);
-            }
-        };
-
-        let mut pipeline_ctx = PipelineContext::new(
-            start.span,
-            state.observability.clone(),
-            state.debug_logger.clone(),
-        );
-
-        match execute_pipeline(req, &pipeline_config, &mut pipeline_ctx, backend_override, start.backend_override).await {
-            Ok(resp) => resp,
-            Err(e) => {
-                crate::metrics::app_log_error("router", &format!("Request failed: request_id={}", request_id), &format!("{} ({})", e, e.error_type()));
-                ErrorResponse::from_error(&e, &request_id)
-            }
+    let pipeline_config = match &state.pipeline_config {
+        Some(config) => config.clone(),
+        None => {
+            let err = crate::proxy::error::ProxyError::Internal(
+                "Pipeline config not initialized".to_string()
+            );
+            crate::metrics::app_log_error("router", &format!("Request failed: request_id={}", request_id), &format!("{} ({})", err, err.error_type()));
+            return ErrorResponse::from_error(&err, &request_id);
         }
-    }
+    };
 
-    // Use legacy upstream client when feature is disabled
-    #[cfg(not(feature = "unified-pipeline"))]
-    {
-        // Determine final backend override for forward().
-        // Priority: observability plugin > teammate route > none (use active).
-        let backend_override = if let Some(obs) = start.backend_override {
-            start.span.set_backend(obs.backend.clone());
-            start.span.record_mut().routing_decision = Some(RoutingDecision {
-                backend: obs.backend.clone(),
-                reason: obs.reason,
-            });
-            Some(obs.backend)
-        } else if let Some(teammate) = teammate_backend {
-            start.span.set_backend(teammate.clone());
-            start.span.record_mut().routing_decision = Some(RoutingDecision {
-                backend: teammate.clone(),
-                reason: "teammate route".to_string(),
-            });
-            Some(teammate)
-        } else {
-            None
-        };
+    let mut pipeline_ctx = PipelineContext::new(
+        start.span,
+        state.observability.clone(),
+        state.debug_logger.clone(),
+    );
 
-        match state
-            .upstream
-            .forward(
-                req,
-                &state.backend_state,
-                backend_override,
-                start.span,
-                state.observability.clone(),
-            )
-            .await
-        {
-            Ok(resp) => resp,
-            Err(e) => {
-                crate::metrics::app_log_error("router", &format!("Request failed: request_id={}", request_id), &format!("{} ({})", e, e.error_type()));
-                ErrorResponse::from_error(&e, &request_id)
-            }
+    match execute_pipeline(req, &pipeline_config, &mut pipeline_ctx, backend_override, start.backend_override).await {
+        Ok(resp) => resp,
+        Err(e) => {
+            crate::metrics::app_log_error("router", &format!("Request failed: request_id={}", request_id), &format!("{} ({})", e, e.error_type()));
+            ErrorResponse::from_error(&e, &request_id)
         }
     }
 }

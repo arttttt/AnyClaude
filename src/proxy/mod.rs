@@ -8,9 +8,6 @@ pub mod server;
 pub mod shutdown;
 pub mod thinking;
 pub mod timeout;
-pub mod upstream;
-
-#[cfg(feature = "unified-pipeline")]
 pub mod pipeline;
 
 pub use server::{ProxyHandle, ProxyServer};

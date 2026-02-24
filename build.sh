@@ -3,12 +3,11 @@
 # Build script for anyclaude
 #
 # Usage:
-#   ./build.sh              - Build release binary (unified pipeline)
-#   ./build.sh debug        - Build debug binary (unified pipeline)
+#   ./build.sh              - Build release binary
+#   ./build.sh debug        - Build debug binary
 #   ./build.sh clean        - Clean build artifacts
-#   ./build.sh test         - Run tests (unified pipeline)
-#   ./build.sh install      - Build and install to ~/.cargo/bin (unified pipeline)
-#   ./build.sh legacy       - Build release binary WITHOUT unified pipeline
+#   ./build.sh test         - Run tests
+#   ./build.sh install      - Build and install to ~/.cargo/bin
 #   ./build.sh release-tag  - Build release without dev version stamp
 #
 
@@ -45,9 +44,6 @@ check_rust() {
     fi
     info "Rust toolchain found: $(rustc --version)"
 }
-
-# Feature flags
-FEATURES="--features unified-pipeline"
 
 # --- Version stamping ---
 # For non-release builds, stamp the version in Cargo.toml with git info:
@@ -91,23 +87,15 @@ trap restore_version EXIT
 # Build release binary
 build_release() {
     stamp_version
-    info "Building release binary (unified pipeline)..."
-    cargo build --release $FEATURES
+    info "Building release binary..."
+    cargo build --release
     info "Build complete: target/release/anyclaude"
 }
 
 # Build tagged release (no dev stamp)
 build_release_tag() {
     info "Version: ${BASE_VERSION} (release)"
-    info "Building release binary (unified pipeline)..."
-    cargo build --release $FEATURES
-    info "Build complete: target/release/anyclaude"
-}
-
-# Build release binary without unified pipeline (legacy)
-build_legacy() {
-    stamp_version
-    info "Building release binary (legacy pipeline)..."
+    info "Building release binary..."
     cargo build --release
     info "Build complete: target/release/anyclaude"
 }
@@ -115,8 +103,8 @@ build_legacy() {
 # Build debug binary
 build_debug() {
     stamp_version
-    info "Building debug binary (unified pipeline)..."
-    cargo build $FEATURES
+    info "Building debug binary..."
+    cargo build
     info "Build complete: target/debug/anyclaude"
 }
 
@@ -129,16 +117,16 @@ clean() {
 
 # Run tests
 run_tests() {
-    info "Running tests (unified pipeline)..."
-    cargo test $FEATURES
+    info "Running tests..."
+    cargo test
     info "Tests complete"
 }
 
 # Install binary to ~/.cargo/bin
 install_binary() {
     stamp_version
-    info "Building and installing (unified pipeline)..."
-    cargo install --path . $FEATURES
+    info "Building and installing..."
+    cargo install --path .
     info "Installed to ~/.cargo/bin/anyclaude"
 }
 
@@ -153,9 +141,6 @@ main() {
         release-tag)
             build_release_tag
             ;;
-        legacy)
-            build_legacy
-            ;;
         debug)
             build_debug
             ;;
@@ -169,7 +154,7 @@ main() {
             install_binary
             ;;
         *)
-            echo "Usage: $0 {release|release-tag|debug|clean|test|install|legacy}"
+            echo "Usage: $0 {release|release-tag|debug|clean|test|install}"
             exit 1
             ;;
     esac
