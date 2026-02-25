@@ -153,6 +153,17 @@ pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Re
         None
     };
 
+    // Inject shim PATH into spawn.env so the first Claude process also uses the shim.
+    // (build_spawn_params was called with shim=None because the shim didn't exist yet.)
+    if let Some(ref shim) = _teammate_shim {
+        let (key, value) = shim.path_env();
+        if let Some(existing) = spawn.env.iter_mut().find(|(k, _)| k == &key) {
+            existing.1 = value;
+        } else {
+            spawn.env.push((key, value));
+        }
+    }
+
     let proxy_handle = proxy_server.handle();
     let backend_state = proxy_server.backend_state();
 
