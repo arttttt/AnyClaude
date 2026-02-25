@@ -1,0 +1,45 @@
+# cargo-deny configuration
+# Docs: https://embarkstudios.github.io/cargo-deny/
+
+[advisories]
+# Deny all advisories by default
+version = 2
+# Fail on any vulnerability
+unsound = "deny"
+yanked = "warn"
+ignore = []
+
+[licenses]
+# List of allowed licenses
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-DFS-2016",
+    "OpenSSL",
+    "MPL-2.0",
+]
+# Deny anything not explicitly allowed
+default = "deny"
+unlicensed = "deny"
+copyleft = "warn"
+allow-osi-fsf-free = "neither"
+confidence-threshold = 0.8
+
+[sources]
+# Allow crates from crates.io (default registry)
+unknown-registry = "deny"
+unknown-git = "deny"
+
+[sources.allow-org]
+# Allow private git repositories from specific orgs if needed
+# github = ["your-org"]
+
+[bans]
+# Deny specific crates or versions
+multiple-versions = "warn"
+wildcards = "allow"
+highlight = "all"

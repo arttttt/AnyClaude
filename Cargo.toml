@@ -66,5 +66,9 @@ anyhow = "1.0.100"
 # Temporary files
 tempfile = "3.24"
 
-[dev-dependencies]
-tempfile = "3.24"
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
