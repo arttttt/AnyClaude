@@ -107,17 +107,16 @@ pub fn build_router(
         .route("/health", get(health_handler))
         .with_state(engine.clone());
 
-    // Teammate pipeline: auth middleware, fixed backend
+    // TODO: restore auth_middleware for teammate pipeline once session token
+    //        is reliably propagated to teammate processes (e.g. via env or CLI flag
+    //        instead of tmux shim injection).
+    // Teammate pipeline: no session auth (token injection into tmux is unreliable), fixed backend
     if let Some(config) = teams {
         let teammate = Router::new()
             .fallback(proxy_handler)
             .layer(Extension(BackendOverride(
                 config.teammate_backend.clone(),
             )))
-            .layer(axum::middleware::from_fn_with_state(
-                engine.clone(),
-                auth_middleware,
-            ))
             .with_state(engine.clone());
 
         crate::metrics::app_log(
