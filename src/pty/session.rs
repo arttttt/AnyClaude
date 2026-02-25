@@ -98,7 +98,9 @@ impl PtySession {
         // Give child a chance to exit gracefully with SIGTERM
         #[cfg(unix)]
         if let Some(pid) = self.child.process_id() {
-            // SAFETY: kill() is safe to call with valid pid
+            // SAFETY: kill() with SIGTERM is safe to call here because we obtained the pid
+            // from the child process handle, guaranteeing it was valid at spawn time.
+            // Sending SIGTERM to a potentially-exited process is harmless (returns ESRCH).
             unsafe {
                 libc::kill(pid as i32, libc::SIGTERM);
             }

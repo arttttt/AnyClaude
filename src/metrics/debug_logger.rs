@@ -259,20 +259,14 @@ fn ensure_file_writer(
 fn format_console(event: &DebugLogEvent, level: DebugLogLevel, use_color: bool) -> String {
     let timestamp = format_timestamp(event.timestamp);
     let (method, path, query) = match event.request_meta.as_ref() {
-        Some(meta) => (meta.method.clone(), meta.path.clone(), meta.query.clone()),
-        None => ("-".to_string(), "-".to_string(), None),
+        Some(meta) => (meta.method.as_str(), meta.path.as_str(), meta.query.as_deref()),
+        None => ("-", "-", None),
     };
-    let path_with_query = match query.as_deref() {
+    let path_with_query = match query {
         Some(value) if !value.is_empty() => format!("{}?{}", path, value),
-        _ => path.clone(),
+        _ => path.to_string(),
     };
-    let status = event.status.map_or("-".to_string(), |s| s.to_string());
-    let status_display = if use_color {
-        colorize_status(&status, event.status)
-    } else {
-        status.clone()
-    };
-    let latency = event.latency_ms.map_or("-".to_string(), |v| v.to_string());
+    let (status_display, latency) = format_status_line(event.status, event.latency_ms, use_color);
 
     let mut line = format!(
         "{} {} {} backend={} status={} latency_ms={}",
@@ -334,13 +328,7 @@ fn format_console(event: &DebugLogEvent, level: DebugLogLevel, use_color: bool) 
 
 fn format_auxiliary_console(event: &AuxiliaryLogEvent, use_color: bool) -> String {
     let timestamp = format_timestamp(event.timestamp);
-    let status = event.status.map_or("-".to_string(), |s| s.to_string());
-    let status_display = if use_color {
-        colorize_status(&status, event.status)
-    } else {
-        status.clone()
-    };
-    let latency = event.latency_ms.map_or("-".to_string(), |v| v.to_string());
+    let (status_display, latency) = format_status_line(event.status, event.latency_ms, use_color);
 
     // Header with separator for visibility
     let separator = if use_color {
@@ -368,7 +356,7 @@ fn format_auxiliary_console(event: &AuxiliaryLogEvent, use_color: bool) -> Strin
         let err_display = if use_color {
             format!("\x1b[31m{}\x1b[0m", err)
         } else {
-            err.clone()
+            err.to_string()
         };
         line.push_str(&format!("\n  error: {}", err_display));
     }
@@ -421,6 +409,24 @@ fn colorize_status(value: &str, status: Option<u16>) -> String {
         return value.to_string();
     }
     format!("\x1b[{}m{}\x1b[0m", color, value)
+}
+
+/// Format timestamp, status, and latency for console output.
+/// Returns a tuple of (status_display, latency) strings.
+fn format_status_line(status: Option<u16>, latency_ms: Option<u64>, use_color: bool) -> (String, String) {
+    let latency = latency_ms.map_or("-".to_string(), |v| v.to_string());
+
+    let status_display = if use_color {
+        // When colorizing, format the status number directly without intermediate string
+        match status {
+            Some(s) => colorize_status(&s.to_string(), status),
+            None => "-".to_string(),
+        }
+    } else {
+        status.map_or("-".to_string(), |s| s.to_string())
+    };
+
+    (status_display, latency)
 }
 
 fn format_json(event: &DebugLogEvent, level: DebugLogLevel) -> String {

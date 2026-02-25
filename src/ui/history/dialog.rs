@@ -86,6 +86,10 @@ fn chrono_local_offset_secs() -> i64 {
     #[cfg(unix)]
     {
         use std::mem::MaybeUninit;
+        // SAFETY: localtime_r is thread-safe (unlike localtime) and writes into the
+        // caller-provided MaybeUninit buffer. The result is valid because localtime_r
+        // always succeeds for valid time_t values, and tm_gmtoff is read only after
+        // the struct is fully initialized by localtime_r.
         unsafe {
             let now = libc::time(std::ptr::null_mut());
             let mut tm = MaybeUninit::<libc::tm>::uninit();

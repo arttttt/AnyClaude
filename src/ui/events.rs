@@ -165,6 +165,9 @@ impl EventHandler {
 
 /// Query terminal size using ioctl TIOCGWINSZ.
 fn query_terminal_size() -> Option<(u16, u16)> {
+    // SAFETY: ioctl with TIOCGWINSZ is safe when called with a valid file descriptor
+    // (STDOUT_FILENO) and a properly-sized winsize struct. The zeroed struct is valid
+    // for winsize as all fields are integer types.
     unsafe {
         let mut ws: libc::winsize = std::mem::zeroed();
         if libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut ws) == 0
