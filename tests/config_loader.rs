@@ -327,6 +327,7 @@ fn test_validation_fails_invalid_teammate_backend() {
         backends: vec![Backend::default()],
         agent_teams: Some(AgentTeamsConfig {
             teammate_backend: "nonexistent".to_string(),
+            subagent_backend: None,
         }),
     };
 
@@ -385,6 +386,7 @@ fn test_validation_passes_valid_teammate_backend() {
         backends: vec![Backend::default()],
         agent_teams: Some(AgentTeamsConfig {
             teammate_backend: "claude".to_string(),
+            subagent_backend: None,
         }),
     };
 

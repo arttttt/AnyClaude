@@ -138,6 +138,16 @@ impl Config {
                     ),
                 });
             }
+            if let Some(ref sb) = at.subagent_backend {
+                if !self.backends.iter().any(|b| b.name == *sb) {
+                    return Err(ConfigError::ValidationError {
+                        message: format!(
+                            "agent_teams.subagent_backend '{}' not found in configured backends",
+                            sb
+                        ),
+                    });
+                }
+            }
         }
 
         Ok(())

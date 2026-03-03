@@ -250,6 +250,11 @@ pub struct BackendPricing {
 pub struct AgentTeamsConfig {
     /// Backend name for teammate requests (must exist in [[backends]]).
     pub teammate_backend: String,
+    /// Backend for subagents of the main client (optional).
+    /// Used as initial value for SubagentBackend runtime state.
+    /// Does NOT affect teammates — CC does not propagate this env var.
+    #[serde(default)]
+    pub subagent_backend: Option<String>,
 }
 
 impl Default for Backend {
