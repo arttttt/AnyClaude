@@ -35,6 +35,7 @@ pub struct SpawnParams {
 /// * `session_token` - The session token to inject via ANTHROPIC_CUSTOM_HEADERS
 /// * `settings` - Settings manager for CLI flags and env vars
 /// * `shim` - Optional teammate shim for PATH override and --teammate-mode
+/// * `subagent_routing` - Whether to enable subagent routing via CLAUDE_CODE_SUBAGENT_MODEL
 ///
 /// # Returns
 ///
@@ -45,6 +46,7 @@ pub fn build_spawn_params(
     session_token: &str,
     settings: &ClaudeSettingsManager,
     shim: Option<&TeammateShim>,
+    subagent_routing: bool,
 ) -> SpawnParams {
     let registry = flag_registry();
 
@@ -66,6 +68,7 @@ pub fn build_spawn_params(
         .with_session_token(session_token)
         .with_settings(settings)
         .with_shim(shim)
+        .with_subagent_routing(subagent_routing)
         .build();
 
     // Stage 4: Assemble arguments
@@ -98,6 +101,7 @@ pub fn build_restart_params(
     session_token: &str,
     settings: &ClaudeSettingsManager,
     shim: Option<&TeammateShim>,
+    subagent_routing: bool,
     extra_env: Vec<(String, String)>,
     extra_args: Vec<String>,
 ) -> SpawnParams {
@@ -121,6 +125,7 @@ pub fn build_restart_params(
         .with_session_token(session_token)
         .with_settings(settings)
         .with_shim(shim)
+        .with_subagent_routing(subagent_routing)
         .with_extra(extra_env)
         .build();
 

@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use tokio::net::TcpListener;
 
-use crate::backend::BackendState;
+use crate::backend::{BackendState, SubagentBackend};
 use crate::config::{AgentTeamsConfig, ConfigStore};
 use crate::metrics::{DebugLogger, ObservabilityHub};
 use crate::proxy::connection::ConnectionCounter;
@@ -24,6 +24,7 @@ pub struct ProxyServer {
     agent_teams: Option<AgentTeamsConfig>,
     shutdown: Arc<ShutdownManager>,
     backend_state: BackendState,
+    subagent_backend: SubagentBackend,
     observability: ObservabilityHub,
     debug_logger: Arc<DebugLogger>,
     transformer_registry: Arc<TransformerRegistry>,
@@ -39,6 +40,13 @@ impl ProxyServer {
         let timeout_config = TimeoutConfig::from(&cfg.defaults);
         let pool_config = PoolConfig::from(&cfg.defaults);
         let backend_state = BackendState::from_config(cfg.clone())?;
+
+        // Initialize subagent backend from config
+        let subagent_initial = cfg.agent_teams
+            .as_ref()
+            .and_then(|at| at.subagent_backend.clone());
+        let subagent_backend = SubagentBackend::new(subagent_initial);
+
         let observability = ObservabilityHub::new(1000)
             .with_plugins(vec![debug_logger.clone()]);
         let transformer_registry = Arc::new(TransformerRegistry::new());
@@ -46,6 +54,7 @@ impl ProxyServer {
             timeout_config,
             pool_config,
             backend_state.clone(),
+            subagent_backend.clone(),
             observability.clone(),
             debug_logger.clone(),
             transformer_registry.clone(),
@@ -58,6 +67,7 @@ impl ProxyServer {
             agent_teams: cfg.agent_teams.clone(),
             shutdown: Arc::new(ShutdownManager::new()),
             backend_state,
+            subagent_backend,
             observability,
             debug_logger,
             transformer_registry,
@@ -113,6 +123,10 @@ impl ProxyServer {
 
     pub fn backend_state(&self) -> BackendState {
         self.backend_state.clone()
+    }
+
+    pub fn subagent_backend(&self) -> SubagentBackend {
+        self.subagent_backend.clone()
     }
 
     pub fn observability(&self) -> ObservabilityHub {

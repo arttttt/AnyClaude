@@ -30,6 +30,7 @@ fn spawn_env_contains_provided_proxy_url() {
         "test-session-token",
         &ClaudeSettingsManager::new(),
         None, // no shim
+        false, // subagent_routing
     );
 
     let anthropic_url = params
@@ -57,6 +58,7 @@ fn restart_env_contains_provided_proxy_url() {
         "test-session-token",
         &ClaudeSettingsManager::new(),
         None,
+        false, // subagent_routing
         vec![], // no extra env
         vec![], // no extra args
     );
@@ -90,6 +92,7 @@ fn restart_merges_extra_env_preserves_proxy_url() {
         "test-session-token",
         &ClaudeSettingsManager::new(),
         None,
+        false, // subagent_routing
         extra_env,
         vec![],
     );
@@ -165,6 +168,7 @@ fn shim_script_port_matches_spawn_env_port() {
         "test-session-token",
         &ClaudeSettingsManager::new(),
         Some(&shim),
+        false, // subagent_routing
     );
 
     // Verify env contains the proxy URL
@@ -234,6 +238,7 @@ fn fallback_port_reflected_in_spawn_env() {
         "test-session-token",
         &ClaudeSettingsManager::new(),
         None,
+        false, // subagent_routing
     );
 
     let anthropic_url = params
@@ -268,6 +273,7 @@ fn restart_maintains_port_consistency_after_fallback() {
         "test-session-token",
         &ClaudeSettingsManager::new(),
         None,
+        false, // subagent_routing
         vec![],
         vec![],
     );
@@ -302,6 +308,7 @@ fn initial_and_resume_modes_both_have_proxy_url() {
         "test-session-token",
         &ClaudeSettingsManager::new(),
         None,
+        false, // subagent_routing
     );
 
     // Resume mode (with --resume flag)
@@ -312,6 +319,7 @@ fn initial_and_resume_modes_both_have_proxy_url() {
         "test-session-token",
         &ClaudeSettingsManager::new(),
         None,
+        false, // subagent_routing
     );
 
     // Both should have the proxy URL
@@ -464,6 +472,7 @@ fn spawn_params_with_empty_args() {
         "test-session-token",
         &ClaudeSettingsManager::new(),
         None,
+        false, // subagent_routing
     );
 
     // Should still have the proxy URL in env
@@ -492,6 +501,7 @@ fn restart_params_with_empty_everything() {
         "test-session-token",
         &ClaudeSettingsManager::new(),
         None,
+        false, // subagent_routing
         vec![], // empty extra env
         vec![], // empty extra args
     );
@@ -522,6 +532,7 @@ fn spawn_env_preserves_localhost_url() {
         "test-session-token",
         &ClaudeSettingsManager::new(),
         None,
+        false, // subagent_routing
     );
 
     let anthropic_url = params
@@ -549,6 +560,7 @@ fn spawn_env_preserves_ipv6_url() {
         "test-session-token",
         &ClaudeSettingsManager::new(),
         None,
+        false, // subagent_routing
     );
 
     let anthropic_url = params
@@ -581,6 +593,7 @@ fn multiple_spawns_same_proxy_url() {
         "test-session-token",
         &ClaudeSettingsManager::new(),
         None,
+        false, // subagent_routing
     );
     let params2 = build_spawn_params(
         &args2,
@@ -588,6 +601,7 @@ fn multiple_spawns_same_proxy_url() {
         "test-session-token",
         &ClaudeSettingsManager::new(),
         None,
+        false, // subagent_routing
     );
 
     let url1 = params1
@@ -618,6 +632,7 @@ fn spawn_then_restart_maintains_url() {
         "test-session-token",
         &ClaudeSettingsManager::new(),
         None,
+        false, // subagent_routing
     );
 
     // Then restart
@@ -628,6 +643,7 @@ fn spawn_then_restart_maintains_url() {
         "test-session-token",
         &ClaudeSettingsManager::new(),
         None,
+        false, // subagent_routing
         vec![],
         vec![],
     );
@@ -665,6 +681,7 @@ fn spawn_env_preserves_trailing_slash() {
         "test-session-token",
         &ClaudeSettingsManager::new(),
         None,
+        false, // subagent_routing
     );
 
     let anthropic_url = params
@@ -692,6 +709,7 @@ fn spawn_env_preserves_path() {
         "test-session-token",
         &ClaudeSettingsManager::new(),
         None,
+        false, // subagent_routing
     );
 
     let anthropic_url = params
@@ -719,6 +737,7 @@ fn spawn_env_preserves_https() {
         "test-session-token",
         &ClaudeSettingsManager::new(),
         None,
+        false, // subagent_routing
     );
 
     let anthropic_url = params

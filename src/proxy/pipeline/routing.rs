@@ -3,12 +3,12 @@
 //! Resolves the target backend based on:
 //! - Backend override from extensions (teammate pipeline)
 //! - Plugin routing decisions
-//! - Active backend from backend_state
 //! - Subagent marker model in request body
+//! - Active backend from backend_state
 
 use serde_json::Value;
 
-use crate::backend::BackendState;
+use crate::backend::{BackendState, SubagentBackend};
 use crate::config::Backend;
 use crate::metrics::{BackendOverride, RoutingDecision};
 use crate::proxy::error::ProxyError;
@@ -23,6 +23,7 @@ use crate::proxy::pipeline::PipelineContext;
 /// 4. Active backend from backend_state
 pub fn resolve_backend(
     backend_state: &BackendState,
+    subagent_backend: &SubagentBackend,
     backend_override: Option<String>,
     plugin_override: Option<BackendOverride>,
     parsed_body: Option<&Value>,
@@ -35,7 +36,7 @@ pub fn resolve_backend(
     let marker_backend = parsed_body
         .and_then(|body| body.get("model"))
         .and_then(|m| m.as_str())
-        .and_then(|model| detect_marker_model(model, backend_state));
+        .and_then(|model| detect_marker_model(model, backend_state, subagent_backend));
 
     // Determine final backend ID with priority:
     // plugin_override > backend_override (teammate) > marker_backend > active_backend
@@ -77,7 +78,24 @@ pub fn resolve_backend(
 ///
 /// Marker models are special model names that indicate the request
 /// should be routed to a specific backend regardless of the active backend.
-fn detect_marker_model(model: &str, backend_state: &BackendState) -> Option<String> {
+fn detect_marker_model(
+    model: &str,
+    backend_state: &BackendState,
+    subagent_backend: &SubagentBackend,
+) -> Option<String> {
+    // Special marker: subagent routing via runtime state
+    if model == "anyclaude-subagent" {
+        if let Some(backend_name) = subagent_backend.get() {
+            crate::metrics::app_log(
+                "routing",
+                &format!("Detected subagent marker model, routing to backend '{}'", backend_name),
+            );
+            return Some(backend_name);
+        }
+        // No subagent backend configured — fall through to default routing
+        return None;
+    }
+
     // Define marker patterns and their target backends
     // Format: "marker-{backend_name}" or "anyclaude-{backend_name}"
     let marker_prefixes = ["marker-", "anyclaude-"];

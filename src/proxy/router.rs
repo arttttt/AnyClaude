@@ -9,7 +9,7 @@ use axum::Router;
 use std::sync::Arc;
 use uuid::Uuid;
 
-use crate::backend::BackendState;
+use crate::backend::{BackendState, SubagentBackend};
 use crate::config::{AgentTeamsConfig, DebugLogLevel};
 use crate::proxy::error::ErrorResponse;
 use crate::metrics::{DebugLogger, ObservabilityHub, RequestMeta};
@@ -42,6 +42,7 @@ impl RouterEngine {
         timeout_config: TimeoutConfig,
         pool_config: PoolConfig,
         backend_state: BackendState,
+        subagent_backend: SubagentBackend,
         observability: ObservabilityHub,
         debug_logger: Arc<DebugLogger>,
         transformer_registry: Arc<TransformerRegistry>,
@@ -49,6 +50,7 @@ impl RouterEngine {
     ) -> Self {
         let pipeline_config = Some(PipelineConfig::new(
             backend_state.clone(),
+            subagent_backend,
             transformer_registry.clone(),
             timeout_config,
             pool_config,

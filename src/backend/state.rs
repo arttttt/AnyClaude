@@ -50,6 +50,34 @@ pub struct SwitchLogEntry {
     pub new_backend: String,
 }
 
+/// Runtime state for subagent backend routing.
+///
+/// Initialized from config on startup, updated via UI (Ctrl+B popup).
+/// Read by detect_marker_model() on every subagent request.
+#[derive(Clone)]
+pub struct SubagentBackend {
+    inner: Arc<RwLock<Option<String>>>,
+}
+
+impl SubagentBackend {
+    /// Create a new SubagentBackend with an initial value.
+    pub fn new(initial: Option<String>) -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(initial)),
+        }
+    }
+
+    /// Get current subagent backend name.
+    pub fn get(&self) -> Option<String> {
+        self.inner.read().clone()
+    }
+
+    /// Set subagent backend. None = disable (inherit parent model).
+    pub fn set(&self, backend: Option<String>) {
+        *self.inner.write() = backend;
+    }
+}
+
 /// Thread-safe backend state with hot-swap support.
 ///
 /// Uses a read-write lock pattern: many concurrent readers (requests)

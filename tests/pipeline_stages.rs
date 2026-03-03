@@ -11,7 +11,7 @@ use axum::body::Body;
 use axum::http::{header::{AUTHORIZATION, CONTENT_TYPE}, HeaderMap, Method, Request};
 use serde_json::json;
 
-use anyclaude::backend::BackendState;
+use anyclaude::backend::{BackendState, SubagentBackend};
 use anyclaude::config::{Backend, Config, DebugLogDestination, DebugLogFormat, DebugLogLevel, DebugLoggingConfig, Defaults};
 use anyclaude::metrics::{BackendOverride, DebugLogger, ObservabilityHub, RequestRecord, RequestSpan};
 use anyclaude::proxy::pipeline::{self, PipelineContext, PipelineConfig};
@@ -121,12 +121,14 @@ fn create_test_context() -> PipelineContext {
 fn create_test_pipeline_config() -> PipelineConfig {
     let config = create_test_config();
     let backend_state = BackendState::from_config(config).unwrap();
+    let subagent_backend = SubagentBackend::new(None);
     let transformer_registry = Arc::new(TransformerRegistry::new());
     let timeout_config = TimeoutConfig::default();
     let pool_config = PoolConfig::default();
 
     PipelineConfig::new(
         backend_state,
+        subagent_backend,
         transformer_registry,
         timeout_config,
         pool_config,
@@ -232,11 +234,13 @@ async fn test_extract_request_no_content_type() {
 fn test_resolve_backend_active_backend() {
     let config = create_test_config();
     let backend_state = BackendState::from_config(config).unwrap();
+    let subagent_backend = SubagentBackend::new(None);
     let mut ctx = create_test_context();
     let parsed_body = Some(json!({"model": "claude-3"}));
 
     let backend = pipeline::resolve_backend(
         &backend_state,
+        &subagent_backend,
         None,
         None,
         parsed_body.as_ref(),
@@ -250,11 +254,13 @@ fn test_resolve_backend_active_backend() {
 fn test_resolve_backend_override() {
     let config = create_test_config();
     let backend_state = BackendState::from_config(config).unwrap();
+    let subagent_backend = SubagentBackend::new(Some("anthropic".to_string()));
     let mut ctx = create_test_context();
     let parsed_body = Some(json!({"model": "claude-3"}));
 
     let backend = pipeline::resolve_backend(
         &backend_state,
+        &subagent_backend,
         Some("anthropic".to_string()),
         None,
         parsed_body.as_ref(),
@@ -268,6 +274,7 @@ fn test_resolve_backend_override() {
 fn test_resolve_backend_plugin_override() {
     let config = create_test_config();
     let backend_state = BackendState::from_config(config).unwrap();
+    let subagent_backend = SubagentBackend::new(None);
     let mut ctx = create_test_context();
     let parsed_body = Some(json!({"model": "claude-3"}));
 
@@ -278,6 +285,7 @@ fn test_resolve_backend_plugin_override() {
 
     let backend = pipeline::resolve_backend(
         &backend_state,
+        &subagent_backend,
         None,
         Some(plugin_override),
         parsed_body.as_ref(),
@@ -291,6 +299,7 @@ fn test_resolve_backend_plugin_override() {
 fn test_resolve_backend_marker_model() {
     let config = create_test_config();
     let backend_state = BackendState::from_config(config).unwrap();
+    let subagent_backend = SubagentBackend::new(None);
     let mut ctx = create_test_context();
 
     // Use marker- prefix to route to specific backend
@@ -298,6 +307,7 @@ fn test_resolve_backend_marker_model() {
 
     let backend = pipeline::resolve_backend(
         &backend_state,
+        &subagent_backend,
         None,
         None,
         parsed_body.as_ref(),
@@ -311,6 +321,7 @@ fn test_resolve_backend_marker_model() {
 fn test_resolve_backend_anyclaude_prefix() {
     let config = create_test_config();
     let backend_state = BackendState::from_config(config).unwrap();
+    let subagent_backend = SubagentBackend::new(None);
     let mut ctx = create_test_context();
 
     // Use anyclaude- prefix as alternative marker
@@ -318,6 +329,7 @@ fn test_resolve_backend_anyclaude_prefix() {
 
     let backend = pipeline::resolve_backend(
         &backend_state,
+        &subagent_backend,
         None,
         None,
         parsed_body.as_ref(),
@@ -331,6 +343,7 @@ fn test_resolve_backend_anyclaude_prefix() {
 fn test_resolve_backend_direct_backend_name() {
     let config = create_test_config();
     let backend_state = BackendState::from_config(config).unwrap();
+    let subagent_backend = SubagentBackend::new(None);
     let mut ctx = create_test_context();
 
     // Direct backend name as model
@@ -338,6 +351,7 @@ fn test_resolve_backend_direct_backend_name() {
 
     let backend = pipeline::resolve_backend(
         &backend_state,
+        &subagent_backend,
         None,
         None,
         parsed_body.as_ref(),
@@ -351,11 +365,13 @@ fn test_resolve_backend_direct_backend_name() {
 fn test_resolve_backend_missing_backend() {
     let config = create_test_config();
     let backend_state = BackendState::from_config(config).unwrap();
+    let subagent_backend = SubagentBackend::new(None);
     let mut ctx = create_test_context();
 
     // Request a non-existent backend
     let result = pipeline::resolve_backend(
         &backend_state,
+        &subagent_backend,
         Some("nonexistent".to_string()),
         None,
         None,
@@ -369,6 +385,7 @@ fn test_resolve_backend_missing_backend() {
 fn test_resolve_backend_priority_plugin_over_teammate() {
     let config = create_test_config();
     let backend_state = BackendState::from_config(config).unwrap();
+    let subagent_backend = SubagentBackend::new(Some("anthropic".to_string()));
     let mut ctx = create_test_context();
 
     let plugin_override = BackendOverride {
@@ -379,7 +396,8 @@ fn test_resolve_backend_priority_plugin_over_teammate() {
     // Plugin override should win over teammate override
     let backend = pipeline::resolve_backend(
         &backend_state,
-        Some("anthropic".to_string()), // teammate route
+        &subagent_backend,
+        None,
         Some(plugin_override),
         None,
         &mut ctx,
@@ -392,6 +410,7 @@ fn test_resolve_backend_priority_plugin_over_teammate() {
 fn test_resolve_backend_priority_teammate_over_marker() {
     let config = create_test_config();
     let backend_state = BackendState::from_config(config).unwrap();
+    let subagent_backend = SubagentBackend::new(None);
     let mut ctx = create_test_context();
 
     let parsed_body = Some(json!({"model": "marker-openrouter"}));
@@ -399,6 +418,7 @@ fn test_resolve_backend_priority_teammate_over_marker() {
     // Teammate override should win over marker model
     let backend = pipeline::resolve_backend(
         &backend_state,
+        &subagent_backend,
         Some("anthropic".to_string()), // teammate route
         None,
         parsed_body.as_ref(),
@@ -1035,6 +1055,7 @@ fn test_corner_case_invalid_marker_model() {
     // Marker model pointing to non-existent backend should fall through
     let config = create_test_config();
     let backend_state = BackendState::from_config(config).unwrap();
+    let subagent_backend = SubagentBackend::new(None);
     let mut ctx = create_test_context();
 
     // Invalid marker - "nonexistent" is not a valid backend
@@ -1042,6 +1063,7 @@ fn test_corner_case_invalid_marker_model() {
 
     let backend = pipeline::resolve_backend(
         &backend_state,
+        &subagent_backend,
         None,
         None,
         parsed_body.as_ref(),

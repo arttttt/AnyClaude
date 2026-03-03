@@ -304,6 +304,7 @@ fn build_restart_params_with_empty_extras() {
         "test-session-token",
         &ClaudeSettingsManager::new(),
         None, // no shim
+        false, // subagent_routing
         empty_env,
         empty_args,
     );
