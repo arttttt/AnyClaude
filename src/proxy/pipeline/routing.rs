@@ -3,12 +3,13 @@
 //! Resolves the target backend based on:
 //! - Backend override from extensions (teammate pipeline)
 //! - Plugin routing decisions
-//! - Subagent marker model in request body
+//! - AC marker in request body (session affinity from hook)
+//! - Marker model prefixes (marker-*, anyclaude-*)
 //! - Active backend from backend_state
 
 use serde_json::Value;
 
-use crate::backend::{BackendState, SubagentBackend};
+use crate::backend::BackendState;
 use crate::config::Backend;
 use crate::metrics::{BackendOverride, RoutingDecision};
 use crate::proxy::error::ProxyError;
@@ -19,11 +20,11 @@ use crate::proxy::pipeline::PipelineContext;
 /// Priority:
 /// 1. Plugin backend override (from observability.start_request)
 /// 2. Explicit backend_override parameter (teammate routes)
-/// 3. Subagent marker model detection (main pipeline)
-/// 4. Active backend from backend_state
+/// 3. AC marker in request body (session affinity from hook)
+/// 4. Marker model detection (marker-*, anyclaude-* prefixes, direct backend name)
+/// 5. Active backend from backend_state
 pub fn resolve_backend(
     backend_state: &BackendState,
-    subagent_backend: &SubagentBackend,
     backend_override: Option<String>,
     plugin_override: Option<BackendOverride>,
     parsed_body: Option<&Value>,
@@ -32,18 +33,22 @@ pub fn resolve_backend(
     // Get the active backend for reference
     let active_backend = backend_state.get_active_backend();
 
-    // Check for subagent marker model in request body
+    // Extract AC marker from request body (session affinity from hook)
+    let ac_marker_backend = parsed_body.and_then(extract_ac_marker);
+
+    // Check for marker model in request body
     let marker_backend = parsed_body
         .and_then(|body| body.get("model"))
         .and_then(|m| m.as_str())
-        .and_then(|model| detect_marker_model(model, backend_state, subagent_backend, parsed_body));
+        .and_then(|model| detect_marker_model(model, backend_state));
 
     // Determine final backend ID with priority:
-    // plugin_override > backend_override (teammate) > marker_backend > active_backend
+    // plugin_override > backend_override (teammate) > ac_marker_backend > marker_backend > active_backend
     let backend_id = plugin_override
         .as_ref()
         .map(|o| o.backend.clone())
         .or(backend_override.clone())
+        .or(ac_marker_backend.clone())
         .or(marker_backend.clone())
         .unwrap_or(active_backend);
 
@@ -59,8 +64,10 @@ pub fn resolve_backend(
         plugin_override.map(|o| o.reason).unwrap_or_else(|| "plugin".to_string())
     } else if backend_override.is_some() {
         "teammate route".to_string()
+    } else if ac_marker_backend.is_some() {
+        "ac marker session affinity".to_string()
     } else if marker_backend.is_some() {
-        "subagent marker model".to_string()
+        "marker model".to_string()
     } else {
         "active backend".to_string()
     };
@@ -98,51 +105,14 @@ pub fn extract_ac_marker(body: &Value) -> Option<String> {
     }
 }
 
-/// Detect subagent marker model and return corresponding backend.
+/// Detect marker model and return corresponding backend.
 ///
 /// Marker models are special model names that indicate the request
 /// should be routed to a specific backend regardless of the active backend.
-///
-/// Uses 3-level fallback:
-/// 1. AC marker in request body (session affinity from hook)
-/// 2. SubagentBackend runtime state (current selection)
-/// 3. None (default routing via active backend)
 fn detect_marker_model(
     model: &str,
     backend_state: &BackendState,
-    subagent_backend: &SubagentBackend,
-    body: Option<&Value>,
 ) -> Option<String> {
-    // Special marker: subagent routing
-    if model == "anyclaude-subagent" {
-        // 1. Try AC marker from hook-injected additionalContext (session affinity)
-        if let Some(backend_name) = body.and_then(extract_ac_marker) {
-            crate::metrics::app_log(
-                "routing",
-                &format!(
-                    "Subagent session affinity: routing to pinned backend '{}'",
-                    backend_name
-                ),
-            );
-            return Some(backend_name);
-        }
-
-        // 2. Fallback: current SubagentBackend runtime state
-        if let Some(backend_name) = subagent_backend.get() {
-            crate::metrics::app_log(
-                "routing",
-                &format!(
-                    "Subagent marker model: routing to backend '{}' (no session marker)",
-                    backend_name
-                ),
-            );
-            return Some(backend_name);
-        }
-
-        // 3. No subagent backend configured — fall through to default routing
-        return None;
-    }
-
     // Define marker patterns and their target backends
     // Format: "marker-{backend_name}" or "anyclaude-{backend_name}"
     let marker_prefixes = ["marker-", "anyclaude-"];

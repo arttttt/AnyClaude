@@ -504,7 +504,6 @@ pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Re
                     .with_session_token(&session_token)
                     .with_settings(app.settings_manager())
                     .with_shim(_teammate_shim.as_ref())
-                    .with_subagent_routing()
                     .build();
                 let args = crate::args::ArgAssembler::from_passthrough(&classified.args)
                     .with_session_resume(&current_session_id)

@@ -49,21 +49,6 @@ impl EnvSet {
         self
     }
 
-    /// Set CLAUDE_CODE_SUBAGENT_MODEL to the fixed "anyclaude-subagent" marker.
-    ///
-    /// Always set this env var so that Claude Code uses "anyclaude-subagent" as
-    /// the model name for all subagents. The proxy's detect_marker_model() will
-    /// treat this as a special case and look up the current subagent backend from
-    /// shared runtime state (SubagentBackend). When SubagentBackend state is None,
-    /// detect_marker_model() returns None → standard routing applies.
-    pub fn with_subagent_routing(mut self) -> Self {
-        self.vars.push((
-            "CLAUDE_CODE_SUBAGENT_MODEL".into(),
-            "anyclaude-subagent".into(),
-        ));
-        self
-    }
-
     /// Build the final environment variable list.
     pub fn build(self) -> Vec<(String, String)> {
         self.vars

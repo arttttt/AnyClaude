@@ -13,7 +13,7 @@ use std::time::SystemTime;
 use axum::body::Body;
 use axum::http::{header::CONTENT_TYPE, Method, Request};
 
-use anyclaude::backend::{BackendState, SubagentBackend};
+use anyclaude::backend::BackendState;
 use anyclaude::config::{Backend, Config, DebugLogDestination, DebugLogFormat, DebugLogLevel, DebugLoggingConfig, Defaults};
 use anyclaude::metrics::{DebugLogger, ObservabilityHub, RequestRecord, RequestSpan};
 use anyclaude::proxy::pipeline::{self, PipelineContext, PipelineConfig};
@@ -96,14 +96,12 @@ fn create_pipeline_context() -> PipelineContext {
 }
 
 fn create_pipeline_config(backend_state: BackendState) -> PipelineConfig {
-    let subagent_backend = SubagentBackend::new(None);
     let transformer_registry = Arc::new(TransformerRegistry::new());
     let timeout_config = TimeoutConfig::default();
     let pool_config = PoolConfig::default();
 
     PipelineConfig::new(
         backend_state,
-        subagent_backend,
         transformer_registry,
         timeout_config,
         pool_config,

@@ -67,7 +67,6 @@ pub fn build_spawn_params(
         .with_session_token(session_token)
         .with_settings(settings)
         .with_shim(shim)
-        .with_subagent_routing()
         .build();
 
     // Stage 4: Assemble arguments
@@ -127,7 +126,6 @@ pub fn build_restart_params(
         .with_session_token(session_token)
         .with_settings(settings)
         .with_shim(shim)
-        .with_subagent_routing()
         .with_extra(extra_env)
         .build();
 

@@ -14,7 +14,7 @@ mod extract_ac_marker {
     #[test]
     fn valid_marker() {
         let body = json!({
-            "model": "anyclaude-subagent",
+            "model": "claude-haiku-4-5-20251001",
             "messages": [{"role": "system", "content": "\u{27E8}AC:my-backend\u{27E9}"}]
         });
         assert_eq!(extract_ac_marker(&body), Some("my-backend".into()));

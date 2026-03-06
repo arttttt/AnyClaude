@@ -51,7 +51,6 @@ impl RouterEngine {
     ) -> Self {
         let pipeline_config = Some(PipelineConfig::new(
             backend_state.clone(),
-            subagent_backend.clone(),
             transformer_registry.clone(),
             timeout_config,
             pool_config,

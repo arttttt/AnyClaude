@@ -124,28 +124,37 @@ CC инжектит `additionalContext` как `<system-reminder>` в message st
 
 **File:** `src/proxy/pipeline/routing.rs`
 
-В `detect_marker_model()`, при обработке `"anyclaude-subagent"`:
+В `resolve_backend()`, AC marker extraction happens before marker model detection:
 
 ```rust
-if model == "anyclaude-subagent" {
-    // 1. Try to extract pinned backend from AC marker in request body
-    if let Some(backend) = extract_ac_marker(body) {
-        return Some(RoutingDecision::backend(
-            &backend,
-            "subagent session affinity (hook marker)",
-        ));
-    }
+pub fn resolve_backend(
+    backend_state: &BackendState,
+    _subagent_backend: &SubagentBackend,
+    backend_override: Option<String>,
+    plugin_override: Option<BackendOverride>,
+    parsed_body: Option<&Value>,
+    ctx: &mut PipelineContext,
+) -> Result<Backend, ProxyError> {
+    let active_backend = backend_state.get_active_backend();
 
-    // 2. Fallback: use current SubagentBackend state
-    if let Some(backend) = subagent_backend.get() {
-        return Some(RoutingDecision::backend(
-            &backend,
-            "subagent marker model (no session marker)",
-        ));
-    }
+    // 1. Extract AC marker from request body (session affinity from hook)
+    let ac_marker_backend = parsed_body.and_then(extract_ac_marker);
 
-    // 3. No subagent backend configured — default routing
-    return None;
+    // 2. Check for marker model prefixes (marker-*, anyclaude-*) or direct backend name
+    let marker_backend = parsed_body
+        .and_then(|body| body.get("model"))
+        .and_then(|m| m.as_str())
+        .and_then(|model| detect_marker_model(model, backend_state));
+
+    // Priority: plugin_override > backend_override > ac_marker_backend > marker_backend > active_backend
+    let backend_id = plugin_override
+        .as_ref()
+        .map(|o| o.backend.clone())
+        .or(backend_override.clone())
+        .or(ac_marker_backend.clone())
+        .or(marker_backend.clone())
+        .unwrap_or(active_backend);
+    // ...
 }
 ```
 
@@ -193,11 +202,11 @@ fn extract_ac_marker(body: &serde_json::Value) -> Option<String> {
 | Ситуация | Поведение |
 |----------|-----------|
 | Маркер `⟨AC:X⟩` найден, бэкенд X существует | → Route to X |
-| Маркер найден, бэкенд X не существует | → Fallback to SubagentBackend state |
-| Маркер не найден (hooks не сработали) | → Fallback to SubagentBackend state |
-| SubagentBackend state = None | → Default routing (active backend) |
+| Маркер найден, бэкенд X не существует | → Fallback to marker model, then active backend |
+| Маркер не найден (hooks не сработали) | → Check marker-* prefix or direct backend name |
+| Ничего не найдено | → Default routing (active backend) |
 
-Трёхуровневый fallback: marker → state → default. Система работает даже если хуки не доступны.
+Priority: `ac_marker_backend > marker_backend > active_backend`. Маркер обеспечивает session affinity — субагент остаётся на том же бэкенде всю сессию.
 
 ---
 
@@ -297,8 +306,8 @@ pub async fn handle_subagent_stop(
 **File:** `src/proxy/pipeline/routing.rs`
 
 - Add `extract_ac_marker(body: &Value) -> Option<String>`
-- Update `detect_marker_model()` to try marker extraction before fallback to SubagentBackend state
-- Need to pass `&Value` (request body) into `detect_marker_model()` or `resolve_backend()`
+- Update `resolve_backend()` to extract AC marker from body before marker model detection
+- Priority: `plugin_override > backend_override > ac_marker_backend > marker_backend > active_backend`
 
 ### 6. Runtime: pass proxy_port
 
