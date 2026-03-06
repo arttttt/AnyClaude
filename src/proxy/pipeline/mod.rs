@@ -7,7 +7,7 @@ use axum::body::Body;
 use axum::http::{Request, Response};
 use std::sync::Arc;
 
-use crate::backend::BackendState;
+use crate::backend::{BackendState, SubagentRegistry};
 use crate::metrics::{BackendOverride, DebugLogger, ObservabilityHub, RequestSpan};
 use crate::proxy::thinking::TransformerRegistry;
 
@@ -61,6 +61,8 @@ impl PipelineContext {
 pub struct PipelineConfig {
     /// Backend state for resolving backends
     pub backend_state: BackendState,
+    /// Subagent registry for session affinity lookups
+    pub subagent_registry: SubagentRegistry,
     /// Transformer registry for thinking session management
     pub transformer_registry: Arc<TransformerRegistry>,
     /// Request timeout configuration
@@ -74,6 +76,7 @@ pub struct PipelineConfig {
 impl PipelineConfig {
     pub fn new(
         backend_state: BackendState,
+        subagent_registry: SubagentRegistry,
         transformer_registry: Arc<TransformerRegistry>,
         timeout_config: crate::proxy::timeout::TimeoutConfig,
         pool_config: crate::proxy::pool::PoolConfig,
@@ -87,6 +90,7 @@ impl PipelineConfig {
 
         Self {
             backend_state,
+            subagent_registry,
             transformer_registry,
             timeout_config,
             pool_config,
@@ -144,6 +148,7 @@ async fn execute_pipeline_inner(
         backend_override,
         plugin_override,
         extracted.parsed_body.as_ref(),
+        &config.subagent_registry,
         ctx,
     )?;
 

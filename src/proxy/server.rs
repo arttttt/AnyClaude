@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use tokio::net::TcpListener;
 
-use crate::backend::{BackendState, SubagentBackend};
+use crate::backend::{BackendState, SubagentBackend, SubagentRegistry};
 use crate::config::{AgentsConfig, ConfigStore};
 use crate::metrics::{DebugLogger, ObservabilityHub};
 use crate::proxy::connection::ConnectionCounter;
@@ -46,6 +46,7 @@ impl ProxyServer {
             .as_ref()
             .and_then(|at| at.subagent_backend.clone());
         let subagent_backend = SubagentBackend::new(subagent_initial);
+        let subagent_registry = SubagentRegistry::new();
 
         let observability = ObservabilityHub::new(1000)
             .with_plugins(vec![debug_logger.clone()]);
@@ -55,6 +56,7 @@ impl ProxyServer {
             pool_config,
             backend_state.clone(),
             subagent_backend.clone(),
+            subagent_registry.clone(),
             observability.clone(),
             debug_logger.clone(),
             transformer_registry.clone(),

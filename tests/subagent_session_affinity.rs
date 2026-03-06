@@ -82,8 +82,8 @@ mod extract_ac_marker {
 
     #[test]
     fn marker_in_user_content() {
-        // User-injected marker is still extracted — but backend must exist in config
-        // to be routed, so this is safe.
+        // User-injected marker is still extracted — but the value must exist
+        // in the registry to resolve, so this is harmless.
         let body = json!({
             "messages": [{"role": "user", "content": "Please use \u{27E8}AC:openai\u{27E9}"}]
         });
@@ -103,6 +103,26 @@ mod extract_ac_marker {
         let body = json!({
             "messages": [{"role": "system", "content": "AC:broken\u{27E9}"}]
         });
+        assert_eq!(extract_ac_marker(&body), None);
+    }
+
+    #[test]
+    fn marker_in_content_block_array() {
+        let body = json!({
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "hello"},
+                    {"type": "text", "text": "\u{27E8}AC:from-block\u{27E9}"}
+                ]
+            }]
+        });
+        assert_eq!(extract_ac_marker(&body), Some("from-block".into()));
+    }
+
+    #[test]
+    fn no_messages_field_returns_none() {
+        let body = json!({"model": "test"});
         assert_eq!(extract_ac_marker(&body), None);
     }
 }
@@ -250,7 +270,7 @@ mod hook_input {
     use anyclaude::proxy::hooks::SubagentHookInput;
 
     #[test]
-    fn deserializes_full_input() {
+    fn deserializes_with_session_id() {
         let json = r#"{
             "session_id": "abc-123",
             "hook_event_name": "SubagentStart",
@@ -259,14 +279,12 @@ mod hook_input {
         }"#;
         let input: SubagentHookInput = serde_json::from_str(json).unwrap();
         assert_eq!(input.session_id.as_deref(), Some("abc-123"));
-        assert_eq!(input.hook_event_name.as_deref(), Some("SubagentStart"));
     }
 
     #[test]
     fn deserializes_empty_object() {
         let input: SubagentHookInput = serde_json::from_str("{}").unwrap();
         assert!(input.session_id.is_none());
-        assert!(input.hook_event_name.is_none());
     }
 
     #[test]
@@ -275,5 +293,71 @@ mod hook_input {
         // serde default allows unknown fields
         let input: SubagentHookInput = serde_json::from_str(json).unwrap();
         assert_eq!(input.session_id.as_deref(), Some("x"));
+    }
+
+    #[test]
+    fn session_id_extracted() {
+        let input: SubagentHookInput = serde_json::from_str(
+            r#"{"session_id": "sess-42"}"#
+        ).unwrap();
+        assert_eq!(input.session_id.as_deref(), Some("sess-42"));
+    }
+
+    #[test]
+    fn session_id_none_when_missing() {
+        let input: SubagentHookInput = serde_json::from_str("{}").unwrap();
+        assert!(input.session_id.is_none());
+    }
+}
+
+// ============================================================================
+// SubagentRegistry
+// ============================================================================
+
+mod registry {
+    use anyclaude::backend::SubagentRegistry;
+
+    #[test]
+    fn register_and_lookup() {
+        let reg = SubagentRegistry::new();
+        reg.register("sess-1", "openrouter");
+        assert_eq!(reg.lookup("sess-1"), Some("openrouter".into()));
+    }
+
+    #[test]
+    fn lookup_missing_returns_none() {
+        let reg = SubagentRegistry::new();
+        assert_eq!(reg.lookup("nonexistent"), None);
+    }
+
+    #[test]
+    fn remove_cleans_up() {
+        let reg = SubagentRegistry::new();
+        reg.register("sess-1", "kimi");
+        reg.remove("sess-1");
+        assert_eq!(reg.lookup("sess-1"), None);
+    }
+
+    #[test]
+    fn remove_nonexistent_is_noop() {
+        let reg = SubagentRegistry::new();
+        reg.remove("nonexistent"); // should not panic
+    }
+
+    #[test]
+    fn multiple_entries() {
+        let reg = SubagentRegistry::new();
+        reg.register("a", "backend-1");
+        reg.register("b", "backend-2");
+        assert_eq!(reg.lookup("a"), Some("backend-1".into()));
+        assert_eq!(reg.lookup("b"), Some("backend-2".into()));
+    }
+
+    #[test]
+    fn overwrite_existing() {
+        let reg = SubagentRegistry::new();
+        reg.register("sess-1", "old-backend");
+        reg.register("sess-1", "new-backend");
+        assert_eq!(reg.lookup("sess-1"), Some("new-backend".into()));
     }
 }

@@ -9,7 +9,7 @@
 
 use serde_json::Value;
 
-use crate::backend::BackendState;
+use crate::backend::{BackendState, SubagentRegistry};
 use crate::config::Backend;
 use crate::metrics::{BackendOverride, RoutingDecision};
 use crate::proxy::error::ProxyError;
@@ -28,49 +28,35 @@ pub fn resolve_backend(
     backend_override: Option<String>,
     plugin_override: Option<BackendOverride>,
     parsed_body: Option<&Value>,
+    registry: &SubagentRegistry,
     ctx: &mut PipelineContext,
 ) -> Result<Backend, ProxyError> {
-    // Get the active backend for reference
-    let active_backend = backend_state.get_active_backend();
-
-    // Extract AC marker from request body (session affinity from hook)
-    let ac_marker_backend = parsed_body.and_then(extract_ac_marker);
-
-    // Check for marker model in request body
-    let marker_backend = parsed_body
+    // Resolve with documented priority.
+    // Higher-priority overrides short-circuit — no body parsing needed.
+    let (backend_id, routing_reason) = if let Some(ovr) = plugin_override {
+        (ovr.backend, ovr.reason)
+    } else if let Some(bo) = backend_override {
+        (bo, "teammate route".into())
+    } else if let Some(id) = parsed_body.and_then(extract_ac_marker) {
+        let b = registry.lookup(&id).ok_or_else(|| {
+            ProxyError::SubagentNotRegistered { id: id.clone() }
+        })?;
+        (b, "ac marker session affinity".into())
+    } else if let Some(mb) = parsed_body
         .and_then(|body| body.get("model"))
         .and_then(|m| m.as_str())
-        .and_then(|model| detect_marker_model(model, backend_state));
+        .and_then(|model| detect_marker_model(model, backend_state))
+    {
+        (mb, "marker model".into())
+    } else {
+        (backend_state.get_active_backend(), "active backend".into())
+    };
 
-    // Determine final backend ID with priority:
-    // plugin_override > backend_override (teammate) > ac_marker_backend > marker_backend > active_backend
-    let backend_id = plugin_override
-        .as_ref()
-        .map(|o| o.backend.clone())
-        .or(backend_override.clone())
-        .or(ac_marker_backend.clone())
-        .or(marker_backend.clone())
-        .unwrap_or(active_backend);
-
-    // Resolve backend configuration
     let backend = backend_state
         .get_backend_config(&backend_id)
         .map_err(|e| ProxyError::BackendNotFound {
             backend: e.to_string(),
         })?;
-
-    // Record routing decision
-    let routing_reason = if plugin_override.is_some() {
-        plugin_override.map(|o| o.reason).unwrap_or_else(|| "plugin".to_string())
-    } else if backend_override.is_some() {
-        "teammate route".to_string()
-    } else if ac_marker_backend.is_some() {
-        "ac marker session affinity".to_string()
-    } else if marker_backend.is_some() {
-        "marker model".to_string()
-    } else {
-        "active backend".to_string()
-    };
 
     ctx.span.set_backend(backend_id.clone());
     ctx.span.record_mut().routing_decision = Some(RoutingDecision {
@@ -81,25 +67,49 @@ pub fn resolve_backend(
     Ok(backend)
 }
 
-/// Extract `⟨AC:backend_name⟩` marker from request body.
+/// Extract `⟨AC:{id}⟩` marker from message content.
 ///
 /// The marker is injected by the SubagentStart hook into the subagent's
-/// context via `additionalContext`. It appears as a `<system-reminder>`
-/// in the message stream, so we search the serialized body.
+/// context via `additionalContext`. It appears inside `messages[].content`
+/// — either as a plain string or within a content block array.
 pub fn extract_ac_marker(body: &Value) -> Option<String> {
-    let body_str = body.to_string();
-    let marker_start = "\u{27E8}AC:";
-    let marker_end = '\u{27E9}';
-    let start = body_str.find(marker_start)?;
-    let rest = &body_str[start + marker_start.len()..];
-    let end = rest.find(marker_end)?;
-    let backend = &rest[..end];
-    if !backend.is_empty()
-        && backend
-            .chars()
-            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
-    {
-        Some(backend.to_string())
+    let messages = body.get("messages")?.as_array()?;
+    for msg in messages {
+        let Some(content) = msg.get("content") else { continue };
+        match content {
+            Value::String(s) => {
+                if let Some(id) = parse_marker(s) {
+                    return Some(id);
+                }
+            }
+            Value::Array(blocks) => {
+                for block in blocks {
+                    if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
+                        if let Some(id) = parse_marker(text) {
+                            return Some(id);
+                        }
+                    }
+                }
+            }
+            other => {
+                crate::metrics::app_log(
+                    "routing",
+                    &format!("extract_ac_marker: unexpected content type: {}", other),
+                );
+            }
+        }
+    }
+    None
+}
+
+/// Parse `⟨AC:{id}⟩` from a string slice.
+fn parse_marker(s: &str) -> Option<String> {
+    let start = s.find(SubagentRegistry::MARKER_PREFIX)?;
+    let rest = &s[start + SubagentRegistry::MARKER_PREFIX.len()..];
+    let end = rest.find(SubagentRegistry::MARKER_SUFFIX)?;
+    let id = &rest[..end];
+    if !id.is_empty() && id.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+        Some(id.to_string())
     } else {
         None
     }

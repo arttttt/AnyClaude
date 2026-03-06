@@ -3,6 +3,7 @@
 //! Provides thread-safe backend state management with support for
 //! runtime switching without interrupting in-flight requests.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -75,6 +76,51 @@ impl SubagentBackend {
     /// Set subagent backend. None = disable (inherit parent model).
     pub fn set(&self, backend: Option<String>) {
         *self.inner.write() = backend;
+    }
+}
+
+/// Maps subagent identifiers to their birth backends.
+///
+/// When CC spawns a subagent, the SubagentStart hook registers the
+/// subagent's identifier (from the hook payload) with the backend
+/// that was active at spawn time. The identifier is injected into
+/// the subagent's context as `⟨AC:{id}⟩`. At routing time, the
+/// marker is extracted and looked up here to resolve the backend.
+/// SubagentStop removes the entry.
+#[derive(Clone)]
+pub struct SubagentRegistry {
+    inner: Arc<RwLock<HashMap<String, String>>>,
+}
+
+impl SubagentRegistry {
+    /// AC marker delimiters — shared between hooks (write) and routing (read).
+    pub const MARKER_PREFIX: &str = "\u{27E8}AC:";
+    pub const MARKER_SUFFIX: char = '\u{27E9}';
+
+    /// Format an AC marker for injection into `additionalContext`.
+    pub fn format_marker(id: &str) -> String {
+        format!("{}{}{}", Self::MARKER_PREFIX, id, Self::MARKER_SUFFIX)
+    }
+
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    /// Register a subagent identifier → backend mapping.
+    pub fn register(&self, id: &str, backend: &str) {
+        self.inner.write().insert(id.to_string(), backend.to_string());
+    }
+
+    /// Remove a subagent mapping (called on SubagentStop).
+    pub fn remove(&self, id: &str) {
+        self.inner.write().remove(id);
+    }
+
+    /// Look up the backend for a subagent identifier.
+    pub fn lookup(&self, id: &str) -> Option<String> {
+        self.inner.read().get(id).cloned()
     }
 }
 

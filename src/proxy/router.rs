@@ -9,9 +9,10 @@ use axum::Router;
 use std::sync::Arc;
 use uuid::Uuid;
 
-use crate::backend::{BackendState, SubagentBackend};
+use crate::backend::{BackendState, SubagentBackend, SubagentRegistry};
 use crate::config::{AgentsConfig, DebugLogLevel};
 use crate::proxy::error::ErrorResponse;
+use crate::proxy::hooks::HookState;
 use crate::metrics::{DebugLogger, ObservabilityHub, RequestMeta};
 use crate::proxy::health::HealthHandler;
 use crate::proxy::pipeline::{PipelineConfig, PipelineContext};
@@ -34,7 +35,7 @@ pub struct RouterEngine {
     pub(crate) subagent_backend: SubagentBackend,
     observability: ObservabilityHub,
     pub(crate) debug_logger: Arc<DebugLogger>,
-    pipeline_config: Option<PipelineConfig>,
+    pipeline_config: PipelineConfig,
     pub(crate) session_token: Option<String>,
 }
 
@@ -44,17 +45,19 @@ impl RouterEngine {
         pool_config: PoolConfig,
         backend_state: BackendState,
         subagent_backend: SubagentBackend,
+        subagent_registry: SubagentRegistry,
         observability: ObservabilityHub,
         debug_logger: Arc<DebugLogger>,
         transformer_registry: Arc<TransformerRegistry>,
         session_token: Option<String>,
     ) -> Self {
-        let pipeline_config = Some(PipelineConfig::new(
+        let pipeline_config = PipelineConfig::new(
             backend_state.clone(),
+            subagent_registry,
             transformer_registry.clone(),
             timeout_config,
             pool_config,
-        ));
+        );
 
         Self {
             health: Arc::new(HealthHandler::new()),
@@ -107,10 +110,14 @@ pub fn build_router(
         .with_state(engine.clone());
 
     // Hook endpoints don't need auth — they're called by CC hooks via localhost curl.
+    let hook_state = HookState {
+        subagent_backend: engine.subagent_backend.clone(),
+        registry: engine.pipeline_config.subagent_registry.clone(),
+    };
     let hook_routes = Router::new()
         .route("/api/subagent-start", post(crate::proxy::hooks::handle_subagent_start))
         .route("/api/subagent-stop", post(crate::proxy::hooks::handle_subagent_stop))
-        .with_state(engine.subagent_backend.clone());
+        .with_state(hook_state);
 
     let mut router = Router::new()
         .route("/health", get(health_handler))
@@ -190,16 +197,7 @@ async fn proxy_handler(
 
     let backend_override = teammate_backend;
 
-    let pipeline_config = match &state.pipeline_config {
-        Some(config) => config.clone(),
-        None => {
-            let err = crate::proxy::error::ProxyError::Internal(
-                "Pipeline config not initialized".to_string()
-            );
-            crate::metrics::app_log_error("router", &format!("Request failed: request_id={}", request_id), &format!("{} ({})", err, err.error_type()));
-            return ErrorResponse::from_error(&err, &request_id);
-        }
-    };
+    let pipeline_config = state.pipeline_config.clone();
 
     let mut pipeline_ctx = PipelineContext::new(
         start.span,

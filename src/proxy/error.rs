@@ -49,6 +49,10 @@ pub enum ProxyError {
     #[error("Upstream error: {status} - {message}")]
     UpstreamError { status: u16, message: String },
 
+    /// AC marker references a subagent ID not found in the registry
+    #[error("Subagent '{id}' not registered in affinity registry")]
+    SubagentNotRegistered { id: String },
+
     /// Internal server error
     #[error("Internal error: {0}")]
     Internal(String),
@@ -78,6 +82,7 @@ impl ProxyError {
             ProxyError::UpstreamError { status, .. } => {
                 StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY)
             }
+            ProxyError::SubagentNotRegistered { .. } => StatusCode::INTERNAL_SERVER_ERROR,
             ProxyError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
             ProxyError::Http(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
@@ -94,6 +99,7 @@ impl ProxyError {
             ProxyError::IdleTimeout { .. } => "idle_timeout",
             ProxyError::InvalidRequest(_) => "invalid_request",
             ProxyError::UpstreamError { .. } => "upstream_error",
+            ProxyError::SubagentNotRegistered { .. } => "subagent_not_registered",
             ProxyError::Internal(_) => "internal_error",
             ProxyError::Http(_) => "http_error",
         }

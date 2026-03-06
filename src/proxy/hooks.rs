@@ -1,26 +1,32 @@
 //! Hook handlers for CC SubagentStart / SubagentStop events.
 //!
 //! CC fires these hooks when it spawns or stops in-process subagents.
-//! We use SubagentStart to inject a backend marker (`⟨AC:backend⟩`) into
-//! the subagent's context via `additionalContext`, pinning it to the
-//! backend that was active at spawn time (session affinity).
+//! We use SubagentStart to register the subagent's identifier in the
+//! registry, mapping it to the backend that was active at spawn time.
+//! The identifier is injected into `additionalContext` as `⟨AC:{id}⟩`,
+//! and resolved back to a backend at routing time via registry lookup.
 
 use axum::extract::State;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
-use crate::backend::SubagentBackend;
+use crate::backend::{SubagentBackend, SubagentRegistry};
+
+/// Axum state for hook endpoints — bundles the two pieces of state
+/// that hook handlers need.
+#[derive(Clone)]
+pub struct HookState {
+    pub subagent_backend: SubagentBackend,
+    pub registry: SubagentRegistry,
+}
 
 /// Input sent by CC hook (piped via curl stdin).
 ///
-/// Fields are populated by serde deserialization only — they document
-/// the CC hook contract but are not read by our handlers.
+/// CC sends various fields — we only deserialize what we use.
+/// Unknown fields are silently ignored by serde.
 #[derive(Deserialize)]
 pub struct SubagentHookInput {
     pub session_id: Option<String>,
-    pub hook_event_name: Option<String>,
-    pub agent_name: Option<String>,
-    pub agent_type: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -39,19 +45,30 @@ pub struct SubagentStartResponse {
 
 /// POST /api/subagent-start
 ///
-/// Returns `additionalContext` with backend marker so the subagent
-/// stays pinned to its birth backend for its entire lifetime.
+/// Registers the subagent's identifier in the registry, mapping it to
+/// the currently active subagent backend. Injects `⟨AC:{id}⟩` into
+/// `additionalContext` so routing can look it up later.
 pub async fn handle_subagent_start(
-    State(subagent_backend): State<SubagentBackend>,
-    Json(_input): Json<SubagentHookInput>,
+    State(state): State<HookState>,
+    Json(input): Json<SubagentHookInput>,
 ) -> Json<SubagentStartResponse> {
-    let context = subagent_backend.get().map(|backend| {
-        crate::metrics::app_log(
-            "hooks",
-            &format!("SubagentStart: pinning to backend '{}'", backend),
-        );
-        format!("\u{27E8}AC:{}\u{27E9}", backend)
-    });
+    let context = match (input.session_id.as_deref(), state.subagent_backend.get()) {
+        (Some(id), Some(backend)) => {
+            state.registry.register(id, &backend);
+            crate::metrics::app_log(
+                "hooks",
+                &format!("SubagentStart: registered '{}' → backend '{}'", id, backend),
+            );
+            Some(SubagentRegistry::format_marker(id))
+        }
+        _ => {
+            crate::metrics::app_log(
+                "hooks",
+                "SubagentStart: no identifier or no subagent backend configured",
+            );
+            None
+        }
+    };
 
     Json(SubagentStartResponse {
         hook_specific_output: HookSpecificOutput {
@@ -63,10 +80,14 @@ pub async fn handle_subagent_start(
 
 /// POST /api/subagent-stop
 ///
-/// Logging only — no state to clean up (backend is encoded in the marker).
+/// Removes the subagent's identifier from the registry.
 pub async fn handle_subagent_stop(
-    Json(_input): Json<SubagentHookInput>,
+    State(state): State<HookState>,
+    Json(input): Json<SubagentHookInput>,
 ) -> axum::http::StatusCode {
-    crate::metrics::app_log("hooks", "SubagentStop received");
+    if let Some(id) = input.session_id.as_deref() {
+        state.registry.remove(id);
+        crate::metrics::app_log("hooks", &format!("SubagentStop: removed '{}'", id));
+    }
     axum::http::StatusCode::OK
 }
