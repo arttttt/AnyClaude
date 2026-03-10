@@ -26,6 +26,10 @@ pub struct HookState {
 /// Unknown fields are silently ignored by serde.
 #[derive(Deserialize)]
 pub struct SubagentHookInput {
+    /// Unique identifier for this subagent instance (e.g. "a1b2c3d4e5f6a7b8").
+    /// Used as the registry key for session affinity.
+    pub agent_id: Option<String>,
+    /// Parent session ID. Not used for routing but kept for diagnostics.
     pub session_id: Option<String>,
 }
 
@@ -52,7 +56,7 @@ pub async fn handle_subagent_start(
     State(state): State<HookState>,
     Json(input): Json<SubagentHookInput>,
 ) -> Json<SubagentStartResponse> {
-    let context = match (input.session_id.as_deref(), state.subagent_backend.get()) {
+    let context = match (input.agent_id.as_deref(), state.subagent_backend.get()) {
         (Some(id), Some(backend)) => {
             state.registry.register(id, &backend);
             crate::metrics::app_log(
@@ -64,7 +68,7 @@ pub async fn handle_subagent_start(
         _ => {
             crate::metrics::app_log(
                 "hooks",
-                "SubagentStart: no identifier or no subagent backend configured",
+                "SubagentStart: no agent_id or no subagent backend configured",
             );
             None
         }
@@ -85,7 +89,7 @@ pub async fn handle_subagent_stop(
     State(state): State<HookState>,
     Json(input): Json<SubagentHookInput>,
 ) -> axum::http::StatusCode {
-    if let Some(id) = input.session_id.as_deref() {
+    if let Some(id) = input.agent_id.as_deref() {
         state.registry.remove(id);
         crate::metrics::app_log("hooks", &format!("SubagentStop: removed '{}'", id));
     }

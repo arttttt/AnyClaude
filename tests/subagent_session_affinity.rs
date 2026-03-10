@@ -270,43 +270,39 @@ mod hook_input {
     use anyclaude::proxy::hooks::SubagentHookInput;
 
     #[test]
-    fn deserializes_with_session_id() {
+    fn deserializes_with_agent_id() {
         let json = r#"{
             "session_id": "abc-123",
             "hook_event_name": "SubagentStart",
-            "agent_name": "researcher",
+            "agent_id": "a1b2c3d4e5f6a7b8",
             "agent_type": "general-purpose"
         }"#;
         let input: SubagentHookInput = serde_json::from_str(json).unwrap();
+        assert_eq!(input.agent_id.as_deref(), Some("a1b2c3d4e5f6a7b8"));
         assert_eq!(input.session_id.as_deref(), Some("abc-123"));
     }
 
     #[test]
     fn deserializes_empty_object() {
         let input: SubagentHookInput = serde_json::from_str("{}").unwrap();
+        assert!(input.agent_id.is_none());
         assert!(input.session_id.is_none());
     }
 
     #[test]
     fn ignores_unknown_fields() {
-        let json = r#"{"session_id": "x", "unknown_field": 42}"#;
-        // serde default allows unknown fields
+        let json = r#"{"agent_id": "a1234", "unknown_field": 42}"#;
         let input: SubagentHookInput = serde_json::from_str(json).unwrap();
-        assert_eq!(input.session_id.as_deref(), Some("x"));
+        assert_eq!(input.agent_id.as_deref(), Some("a1234"));
     }
 
     #[test]
-    fn session_id_extracted() {
+    fn agent_id_none_when_missing() {
         let input: SubagentHookInput = serde_json::from_str(
             r#"{"session_id": "sess-42"}"#
         ).unwrap();
+        assert!(input.agent_id.is_none());
         assert_eq!(input.session_id.as_deref(), Some("sess-42"));
-    }
-
-    #[test]
-    fn session_id_none_when_missing() {
-        let input: SubagentHookInput = serde_json::from_str("{}").unwrap();
-        assert!(input.session_id.is_none());
     }
 }
 

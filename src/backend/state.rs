@@ -79,14 +79,14 @@ impl SubagentBackend {
     }
 }
 
-/// Maps subagent identifiers to their birth backends.
+/// Maps subagent agent_ids to their birth backends.
 ///
 /// When CC spawns a subagent, the SubagentStart hook registers the
-/// subagent's identifier (from the hook payload) with the backend
-/// that was active at spawn time. The identifier is injected into
-/// the subagent's context as `⟨AC:{id}⟩`. At routing time, the
-/// marker is extracted and looked up here to resolve the backend.
-/// SubagentStop removes the entry.
+/// subagent's `agent_id` (unique per instance, e.g. "a1b2c3d4e5f6a7b8")
+/// with the backend that was active at spawn time. The agent_id is
+/// injected into the subagent's context as `⟨AC:{agent_id}⟩`. At
+/// routing time, the marker is extracted and looked up here to resolve
+/// the backend. SubagentStop removes the entry.
 #[derive(Clone)]
 pub struct SubagentRegistry {
     inner: Arc<RwLock<HashMap<String, String>>>,
