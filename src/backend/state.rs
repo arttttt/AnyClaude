@@ -118,6 +118,11 @@ impl SubagentRegistry {
         self.inner.write().remove(id);
     }
 
+    /// Check if the registry has any entries.
+    pub fn is_empty(&self) -> bool {
+        self.inner.read().is_empty()
+    }
+
     /// Look up the backend for a subagent identifier.
     pub fn lookup(&self, id: &str) -> Option<String> {
         self.inner.read().get(id).cloned()

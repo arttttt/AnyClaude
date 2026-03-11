@@ -37,7 +37,10 @@ pub fn resolve_backend(
         (ovr.backend, ovr.reason)
     } else if let Some(bo) = backend_override {
         (bo, "teammate route".into())
-    } else if let Some(id) = parsed_body.and_then(extract_ac_marker) {
+    } else if let Some(id) = (!registry.is_empty())
+        .then(|| parsed_body.and_then(extract_ac_marker))
+        .flatten()
+    {
         let b = registry.lookup(&id).ok_or_else(|| {
             ProxyError::SubagentNotRegistered { id: id.clone() }
         })?;
