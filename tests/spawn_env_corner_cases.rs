@@ -451,10 +451,10 @@ fn tmux_shim_detects_claude_invocation() {
         "Should detect send-keys command"
     );
 
-    // Should detect claude path
+    // Should detect teammate spawn via --agent-id
     assert!(
-        script.contains("/claude"),
-        "Should detect claude binary path"
+        script.contains("--agent-id"),
+        "Should detect teammate spawn via --agent-id flag"
     );
 }
 

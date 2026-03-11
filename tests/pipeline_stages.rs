@@ -525,11 +525,11 @@ fn test_ac_marker_wins_over_marker_model() {
 }
 
 #[test]
-fn test_ac_marker_unregistered_id_errors() {
+fn test_ac_marker_skipped_when_registry_empty() {
     let config = create_test_config();
     let backend_state = BackendState::from_config(config).unwrap();
     let registry = SubagentRegistry::new();
-    // Do NOT register any ID — marker points to unknown subagent
+    // Empty registry — marker parsing is skipped entirely
 
     let mut ctx = create_test_context();
 
@@ -547,7 +547,9 @@ fn test_ac_marker_unregistered_id_errors() {
         &mut ctx,
     );
 
-    assert!(result.is_err(), "unregistered AC marker must return error, not fallback");
+    // With empty registry, AC marker is skipped — falls through to active backend
+    let backend = result.expect("empty registry should skip marker, not error");
+    assert_eq!(backend.name, backend_state.get_active_backend());
 }
 
 // =============================================================================

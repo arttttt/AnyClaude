@@ -177,9 +177,9 @@ fn tmux_shim_injects_both_url_and_headers() {
     assert!(script.contains("INJECT_URL="));
     assert!(script.contains("INJECT_HEADERS="));
 
-    // Both should be used in Case A (standalone arg)
-    assert!(script.contains(r#"args+=("$INJECT_HEADERS")"#));
+    // Both should be injected via sed into the arg string
+    assert!(script.contains("$INJECT_URL $INJECT_HEADERS"));
 
-    // Both should be used in Case B (embedded) — ANTHROPIC_CUSTOM_HEADERS replacement
+    // ANTHROPIC_CUSTOM_HEADERS stripping should be present
     assert!(script.contains("ANTHROPIC_CUSTOM_HEADERS="));
 }
