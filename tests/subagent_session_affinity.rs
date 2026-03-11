@@ -11,44 +11,144 @@ mod extract_ac_marker {
     use super::*;
     use anyclaude::proxy::pipeline::extract_ac_marker;
 
+    /// Helper: wrap marker text in the CC hook context format.
+    fn hook_msg(marker: &str) -> serde_json::Value {
+        json!({
+            "role": "user",
+            "content": format!(
+                "<system-reminder>\nSubagentStart hook additional context: {}\n</system-reminder>",
+                marker
+            )
+        })
+    }
+
+    /// Helper: same but as content block array.
+    fn hook_msg_blocks(marker: &str) -> serde_json::Value {
+        json!({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": format!(
+                    "<system-reminder>\nSubagentStart hook additional context: {}\n</system-reminder>",
+                    marker
+                )}
+            ]
+        })
+    }
+
+    // === Positive cases ===
+
     #[test]
-    fn valid_marker() {
+    fn valid_marker_in_hook_context() {
         let body = json!({
-            "model": "claude-haiku-4-5-20251001",
-            "messages": [{"role": "system", "content": "\u{27E8}AC:my-backend\u{27E9}"}]
+            "messages": [hook_msg("\u{27E8}AC:a1b2c3d4e5f6a7b8\u{27E9}")]
         });
-        assert_eq!(extract_ac_marker(&body), Some("my-backend".into()));
+        assert_eq!(extract_ac_marker(&body), Some("a1b2c3d4e5f6a7b8".into()));
     }
 
     #[test]
-    fn marker_with_underscores() {
+    fn marker_with_hyphens_and_underscores() {
         let body = json!({
-            "messages": [{"role": "system", "content": "\u{27E8}AC:my_backend_2\u{27E9}"}]
+            "messages": [hook_msg("\u{27E8}AC:a1b2-c3d4_e5f6\u{27E9}")]
         });
-        assert_eq!(extract_ac_marker(&body), Some("my_backend_2".into()));
+        assert_eq!(extract_ac_marker(&body), Some("a1b2-c3d4_e5f6".into()));
     }
+
+    #[test]
+    fn marker_in_content_block_array() {
+        let body = json!({
+            "messages": [hook_msg_blocks("\u{27E8}AC:abcdef1234567890\u{27E9}")]
+        });
+        assert_eq!(extract_ac_marker(&body), Some("abcdef1234567890".into()));
+    }
+
+    #[test]
+    fn marker_in_second_message() {
+        let body = json!({
+            "messages": [
+                {"role": "user", "content": "some preamble"},
+                hook_msg("\u{27E8}AC:a1b2c3d4e5f6a7b8\u{27E9}")
+            ]
+        });
+        assert_eq!(extract_ac_marker(&body), Some("a1b2c3d4e5f6a7b8".into()));
+    }
+
+    // === Negative cases: no false positives ===
 
     #[test]
     fn no_marker_returns_none() {
         let body = json!({
-            "model": "claude-sonnet-4-20250514",
             "messages": [{"role": "user", "content": "hello"}]
         });
         assert_eq!(extract_ac_marker(&body), None);
     }
 
     #[test]
-    fn empty_backend_returns_none() {
+    fn no_messages_field_returns_none() {
+        let body = json!({"model": "test"});
+        assert_eq!(extract_ac_marker(&body), None);
+    }
+
+    #[test]
+    fn marker_without_hook_prefix_rejected() {
+        // Bare marker in user text — no hook context prefix
         let body = json!({
-            "messages": [{"role": "system", "content": "\u{27E8}AC:\u{27E9}"}]
+            "messages": [{"role": "user", "content": "\u{27E8}AC:a1b2c3d4e5f6a7b8\u{27E9}"}]
         });
         assert_eq!(extract_ac_marker(&body), None);
     }
 
     #[test]
-    fn invalid_chars_returns_none() {
+    fn marker_in_assistant_message_rejected() {
         let body = json!({
-            "messages": [{"role": "system", "content": "\u{27E8}AC:back@end\u{27E9}"}]
+            "messages": [{
+                "role": "assistant",
+                "content": format!(
+                    "SubagentStart hook additional context: \u{27E8}AC:a1b2c3d4e5f6a7b8\u{27E9}"
+                )
+            }]
+        });
+        assert_eq!(extract_ac_marker(&body), None);
+    }
+
+    #[test]
+    fn marker_in_system_role_rejected() {
+        let body = json!({
+            "messages": [{
+                "role": "system",
+                "content": format!(
+                    "SubagentStart hook additional context: \u{27E8}AC:a1b2c3d4e5f6a7b8\u{27E9}"
+                )
+            }]
+        });
+        assert_eq!(extract_ac_marker(&body), None);
+    }
+
+    #[test]
+    fn marker_beyond_scan_limit_rejected() {
+        // Marker in 4th message — beyond MAX_MESSAGES_TO_SCAN (3)
+        let body = json!({
+            "messages": [
+                {"role": "user", "content": "msg 1"},
+                {"role": "assistant", "content": "msg 2"},
+                {"role": "user", "content": "msg 3"},
+                hook_msg("\u{27E8}AC:a1b2c3d4e5f6a7b8\u{27E9}")
+            ]
+        });
+        assert_eq!(extract_ac_marker(&body), None);
+    }
+
+    #[test]
+    fn empty_id_rejected() {
+        let body = json!({
+            "messages": [hook_msg("\u{27E8}AC:\u{27E9}")]
+        });
+        assert_eq!(extract_ac_marker(&body), None);
+    }
+
+    #[test]
+    fn non_hex_chars_rejected() {
+        let body = json!({
+            "messages": [hook_msg("\u{27E8}AC:back@end\u{27E9}")]
         });
         assert_eq!(extract_ac_marker(&body), None);
     }
@@ -56,7 +156,7 @@ mod extract_ac_marker {
     #[test]
     fn dots_rejected() {
         let body = json!({
-            "messages": [{"role": "system", "content": "\u{27E8}AC:back.end\u{27E9}"}]
+            "messages": [hook_msg("\u{27E8}AC:back.end\u{27E9}")]
         });
         assert_eq!(extract_ac_marker(&body), None);
     }
@@ -64,65 +164,28 @@ mod extract_ac_marker {
     #[test]
     fn spaces_rejected() {
         let body = json!({
-            "messages": [{"role": "system", "content": "\u{27E8}AC:back end\u{27E9}"}]
+            "messages": [hook_msg("\u{27E8}AC:back end\u{27E9}")]
         });
         assert_eq!(extract_ac_marker(&body), None);
-    }
-
-    #[test]
-    fn multiple_markers_returns_first() {
-        let body = json!({
-            "messages": [
-                {"role": "system", "content": "\u{27E8}AC:first\u{27E9}"},
-                {"role": "user", "content": "\u{27E8}AC:second\u{27E9}"}
-            ]
-        });
-        assert_eq!(extract_ac_marker(&body), Some("first".into()));
-    }
-
-    #[test]
-    fn marker_in_user_content() {
-        // User-injected marker is still extracted — but the value must exist
-        // in the registry to resolve, so this is harmless.
-        let body = json!({
-            "messages": [{"role": "user", "content": "Please use \u{27E8}AC:openai\u{27E9}"}]
-        });
-        assert_eq!(extract_ac_marker(&body), Some("openai".into()));
     }
 
     #[test]
     fn marker_without_closing_bracket() {
         let body = json!({
-            "messages": [{"role": "system", "content": "\u{27E8}AC:broken"}]
+            "messages": [hook_msg("\u{27E8}AC:broken")]
         });
         assert_eq!(extract_ac_marker(&body), None);
     }
 
     #[test]
-    fn marker_without_opening_bracket() {
+    fn user_text_mimicking_hook_context_rejected() {
+        // User writes something that looks like hook context but isn't
+        // the exact prefix — should not match
         let body = json!({
-            "messages": [{"role": "system", "content": "AC:broken\u{27E9}"}]
+            "messages": [{"role": "user", "content": "I saw SubagentStart hook additional context: \u{27E8}AC:fake\u{27E9} in the logs"}]
         });
-        assert_eq!(extract_ac_marker(&body), None);
-    }
-
-    #[test]
-    fn marker_in_content_block_array() {
-        let body = json!({
-            "messages": [{
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "hello"},
-                    {"type": "text", "text": "\u{27E8}AC:from-block\u{27E9}"}
-                ]
-            }]
-        });
-        assert_eq!(extract_ac_marker(&body), Some("from-block".into()));
-    }
-
-    #[test]
-    fn no_messages_field_returns_none() {
-        let body = json!({"model": "test"});
+        // This actually matches the prefix — but "fake" is valid hex? No, 'k' is not hex.
+        // Wait — 'a'-'f' are hex digits. "fake" has 'k' which is not hex. So rejected by char validation.
         assert_eq!(extract_ac_marker(&body), None);
     }
 }

@@ -70,39 +70,67 @@ pub fn resolve_backend(
     Ok(backend)
 }
 
-/// Extract `⟨AC:{id}⟩` marker from message content.
+/// CC wrapper prefix that always precedes our marker in `additionalContext`.
+/// Without this prefix the marker is ignored — prevents false positives
+/// from user text that happens to contain `⟨AC:...⟩`.
+const HOOK_CONTEXT_PREFIX: &str = "SubagentStart hook additional context:";
+
+/// Max user messages to scan for the marker.
+/// Hook context is prepended at the start, so scanning beyond the first
+/// few messages is wasteful and increases false-positive surface.
+const MAX_MESSAGES_TO_SCAN: usize = 3;
+
+/// Extract `⟨AC:{id}⟩` marker from the first few user messages.
 ///
-/// The marker is injected by the SubagentStart hook into the subagent's
-/// context via `additionalContext`. It appears inside `messages[].content`
-/// — either as a plain string or within a content block array.
+/// The marker is injected by the SubagentStart hook via `additionalContext`.
+/// CC wraps it in `<system-reminder>SubagentStart hook additional context: …</system-reminder>`
+/// and places it as an early user message.
+///
+/// Multi-layer protection against false positives:
+/// 1. Registry guard in `resolve_backend` — skips entirely when no subagents exist
+/// 2. Only first [`MAX_MESSAGES_TO_SCAN`] messages are checked
+/// 3. Only `role: "user"` messages are checked
+/// 4. The CC-generated [`HOOK_CONTEXT_PREFIX`] must precede the marker
+/// 5. Registry lookup must succeed for the extracted id
 pub fn extract_ac_marker(body: &Value) -> Option<String> {
     let messages = body.get("messages")?.as_array()?;
-    for msg in messages {
+
+    for msg in messages.iter().take(MAX_MESSAGES_TO_SCAN) {
+        // Only user messages — hook context is always injected as role: "user"
+        if msg.get("role").and_then(|r| r.as_str()) != Some("user") {
+            continue;
+        }
+
         let Some(content) = msg.get("content") else { continue };
         match content {
             Value::String(s) => {
-                if let Some(id) = parse_marker(s) {
+                if let Some(id) = parse_marker_in_hook_context(s) {
                     return Some(id);
                 }
             }
             Value::Array(blocks) => {
                 for block in blocks {
                     if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
-                        if let Some(id) = parse_marker(text) {
+                        if let Some(id) = parse_marker_in_hook_context(text) {
                             return Some(id);
                         }
                     }
                 }
             }
-            other => {
-                crate::metrics::app_log(
-                    "routing",
-                    &format!("extract_ac_marker: unexpected content type: {}", other),
-                );
-            }
+            _ => {}
         }
     }
     None
+}
+
+/// Parse `⟨AC:{id}⟩` only when preceded by the CC hook context prefix.
+///
+/// Rejects markers that appear in arbitrary user text — the full
+/// `SubagentStart hook additional context: ⟨AC:…⟩` sequence is required.
+fn parse_marker_in_hook_context(s: &str) -> Option<String> {
+    let prefix_start = s.find(HOOK_CONTEXT_PREFIX)?;
+    let after_prefix = &s[prefix_start + HOOK_CONTEXT_PREFIX.len()..];
+    parse_marker(after_prefix)
 }
 
 /// Parse `⟨AC:{id}⟩` from a string slice.
@@ -111,7 +139,7 @@ fn parse_marker(s: &str) -> Option<String> {
     let rest = &s[start + SubagentRegistry::MARKER_PREFIX.len()..];
     let end = rest.find(SubagentRegistry::MARKER_SUFFIX)?;
     let id = &rest[..end];
-    if !id.is_empty() && id.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+    if !id.is_empty() && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-' || c == '_') {
         Some(id.to_string())
     } else {
         None

@@ -448,14 +448,14 @@ fn test_ac_marker_routes_to_backend() {
     let backend_state = BackendState::from_config(config).unwrap();
     let registry = SubagentRegistry::new();
     // Register subagent identifier → backend mapping (simulates SubagentStart hook)
-    registry.register("subagent-session-1", "openrouter");
+    registry.register("a1b2c3d4e5f6a7b8", "openrouter");
 
     let mut ctx = create_test_context();
 
-    // AC marker contains the subagent identifier, resolved via registry
+    // AC marker in hook context format, resolved via registry
     let parsed_body = Some(json!({
         "model": "claude-haiku-4-5-20251001",
-        "messages": [{"role": "system", "content": "\u{27E8}AC:subagent-session-1\u{27E9}"}]
+        "messages": [{"role": "user", "content": "SubagentStart hook additional context: \u{27E8}AC:a1b2c3d4e5f6a7b8\u{27E9}"}]
     }));
 
     let backend = pipeline::resolve_backend(
@@ -502,14 +502,14 @@ fn test_ac_marker_wins_over_marker_model() {
     let config = create_test_config();
     let backend_state = BackendState::from_config(config).unwrap();
     let registry = SubagentRegistry::new();
-    registry.register("subagent-session-2", "openrouter");
+    registry.register("a2b3c4d5e6f7a8b9", "openrouter");
 
     let mut ctx = create_test_context();
 
     // AC marker should win over marker- model prefix
     let parsed_body = Some(json!({
         "model": "marker-anthropic",  // would route to anthropic
-        "messages": [{"role": "system", "content": "\u{27E8}AC:subagent-session-2\u{27E9}"}]  // but registry maps to openrouter
+        "messages": [{"role": "user", "content": "SubagentStart hook additional context: \u{27E8}AC:a2b3c4d5e6f7a8b9\u{27E9}"}]  // but registry maps to openrouter
     }));
 
     let backend = pipeline::resolve_backend(
@@ -535,7 +535,7 @@ fn test_ac_marker_skipped_when_registry_empty() {
 
     let parsed_body = Some(json!({
         "model": "claude-haiku-4-5-20251001",
-        "messages": [{"role": "system", "content": "\u{27E8}AC:unknown-session\u{27E9}"}]
+        "messages": [{"role": "user", "content": "SubagentStart hook additional context: \u{27E8}AC:a3b4c5d6e7f8a9b0\u{27E9}"}]
     }));
 
     let result = pipeline::resolve_backend(
