@@ -1,10 +1,14 @@
 //! tmux PATH shim.
 //!
 //! Intercepts all tmux calls from Claude Code. For `send-keys` commands
-//! that launch a teammate claude process, injects `ANTHROPIC_BASE_URL`
-//! pointing to the `/teammate` prefix on our proxy and `ANTHROPIC_CUSTOM_HEADERS`
-//! with the session token so the routing layer can authenticate and direct
-//! teammate traffic to a cheaper backend.
+//! that spawn a teammate process, injects `ANTHROPIC_BASE_URL` pointing
+//! to the `/teammate` prefix on our proxy and `ANTHROPIC_CUSTOM_HEADERS`
+//! with the session token so the routing layer can direct teammate traffic
+//! to a cheaper backend.
+//!
+//! Detection relies on `--agent-id` flag (part of agent teams protocol),
+//! not on the binary path — works across all Claude Code installation
+//! methods (Homebrew, install.sh, npm, etc.).
 //!
 //! All other tmux commands are forwarded unchanged to the real binary.
 
@@ -20,12 +24,10 @@ pub const LOG_FILENAME: &str = "tmux_shim.log";
 const TEMPLATE: &str = r#"#!/bin/bash
 # AnyClaude tmux shim — intercepts send-keys to inject teammate routing.
 #
-# Claude Code spawns teammates via:
-#   tmux -L claude-swarm-PID send-keys -t %N \
-#     cd /path && ENV=val /abs/path/claude --flags Enter
-#
-# We inject ANTHROPIC_BASE_URL=http://127.0.0.1:PORT/teammate before
-# the absolute claude path so teammate requests hit the /teammate route.
+# Detects teammate spawns by --agent-id flag (agent teams protocol), then
+# replaces ANTHROPIC_BASE_URL to route through the /teammate proxy path.
+# Does not depend on binary path or command structure — only on protocol-level
+# env vars and flags that must exist for agent teams to work.
 
 SHIM_DIR="$(cd "$(dirname "$0")" && pwd)"
 LOG_ENABLED=__LOG_ENABLED__
@@ -54,9 +56,8 @@ if [ -z "$REAL_TMUX" ]; then
   exit 127
 fi
 
-# Detect send-keys with claude invocation and inject ANTHROPIC_BASE_URL.
-# Claude Code passes the entire command as ONE arg to send-keys (Case B),
-# but we also handle individual args (Case A) for robustness.
+# Teammate env vars to inject.
+# Uses sed with | delimiter to avoid conflicts with / and : in URLs.
 INJECT_URL="ANTHROPIC_BASE_URL=http://127.0.0.1:__PORT__/teammate"
 INJECT_HEADERS="ANTHROPIC_CUSTOM_HEADERS=x-session-token:__SESSION_TOKEN__"
 args=()
@@ -70,46 +71,29 @@ for arg in "$@"; do
   fi
 
   if $has_send_keys && ! $injected; then
-    # Case A: claude path as standalone arg (/abs/path/claude)
-    if [[ "$arg" == /* ]] && [[ "$arg" == *"/claude" ]]; then
-      args+=("$INJECT_URL")
-      args+=("$INJECT_HEADERS")
-      args+=("$arg")
-      injected=true
-      slog "INJECT teammate URL + headers (standalone arg)"
-      continue
-    fi
-    # Case B: claude path embedded in a longer string (confirmed format)
-    if [[ "$arg" == *"/claude "* ]] || [[ "$arg" == *"/claude" ]]; then
-      # Claude Code may pass its own ANTHROPIC_BASE_URL in the command.
-      # We must REPLACE it (not add a second one) to avoid the original
-      # overwriting ours depending on variable order.
-      # Same for ANTHROPIC_CUSTOM_HEADERS — replace if present.
-      # Uses bash regex (=~) — no sed subprocess or escaping issues.
+    # Detect teammate spawn by --agent-id flag (part of agent teams protocol,
+    # stable across Claude Code versions and installation methods).
+    if [[ "$arg" == *"--agent-id "* ]]; then
       slog "BEFORE inject: $(printf '%q' "$arg")"
 
-      # Replace or inject ANTHROPIC_BASE_URL
-      if [[ "$arg" =~ ^(.*)ANTHROPIC_BASE_URL=[^[:space:]]+(.*) ]]; then
-        arg="${BASH_REMATCH[1]}$INJECT_URL${BASH_REMATCH[2]}"
-      elif [[ "$arg" =~ ^(.*[[:space:]])(/[^[:space:]]*/claude)([[:space:]].*|$) ]]; then
-        arg="${BASH_REMATCH[1]}$INJECT_URL ${BASH_REMATCH[2]}${BASH_REMATCH[3]}"
-      elif [[ "$arg" =~ ^(/[^[:space:]]*/claude)([[:space:]].*|$) ]]; then
-        arg="$INJECT_URL ${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
+      # Strip existing ANTHROPIC_CUSTOM_HEADERS if present (shim re-entry)
+      if [[ "$arg" == *ANTHROPIC_CUSTOM_HEADERS=* ]]; then
+        arg=$(printf '%s' "$arg" | sed "s|ANTHROPIC_CUSTOM_HEADERS=[^ ]*||")
       fi
 
-      # Replace or inject ANTHROPIC_CUSTOM_HEADERS
-      if [[ "$arg" =~ ^(.*)ANTHROPIC_CUSTOM_HEADERS=[^[:space:]]+(.*) ]]; then
-        arg="${BASH_REMATCH[1]}$INJECT_HEADERS${BASH_REMATCH[2]}"
-      elif [[ "$arg" =~ ^(.*[[:space:]])(/[^[:space:]]*/claude)([[:space:]].*|$) ]]; then
-        arg="${BASH_REMATCH[1]}$INJECT_HEADERS ${BASH_REMATCH[2]}${BASH_REMATCH[3]}"
-      elif [[ "$arg" =~ ^(/[^[:space:]]*/claude)([[:space:]].*|$) ]]; then
-        arg="$INJECT_HEADERS ${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
+      # Replace ANTHROPIC_BASE_URL with teammate URL + inject headers.
+      # Anchored on the variable name, not on command structure.
+      if [[ "$arg" == *ANTHROPIC_BASE_URL=* ]]; then
+        arg=$(printf '%s' "$arg" | sed "s|ANTHROPIC_BASE_URL=[^ ]*|$INJECT_URL $INJECT_HEADERS|")
+      else
+        # Fallback: no URL in command — inject before --agent-id
+        arg=$(printf '%s' "$arg" | sed "s|--agent-id|$INJECT_URL $INJECT_HEADERS --agent-id|")
       fi
 
       slog "AFTER  inject: $(printf '%q' "$arg")"
       args+=("$arg")
       injected=true
-      slog "INJECT teammate URL + headers (embedded in string)"
+      slog "INJECT teammate route (agent-id detected)"
       continue
     fi
   fi
