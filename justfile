@@ -20,10 +20,10 @@ lint-test-location:
 # Release a new version: just release 0.3.0
 release version:
     cargo set-version {{version}}
-    git cliff --tag v{{version}} --output CHANGELOG.md
+    git cliff --tag {{version}} --output CHANGELOG.md
     git add Cargo.toml Cargo.lock CHANGELOG.md
-    git commit -m "chore: release v{{version}}"
-    git tag v{{version}}
+    git commit -m "chore: release {{version}}"
+    git tag {{version}}
 
 # Update CHANGELOG without releasing
 changelog:
