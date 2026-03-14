@@ -169,14 +169,15 @@ async fn teammate_path_stripped_before_forwarding() {
     );
     let h = TestHarness::start(config).await;
 
+    // Real shim sends /teammate/{agent_id}/v1/messages — agent_id gets stripped by router.
     h.client
-        .post(h.url("/teammate/v1/messages"))
+        .post(h.url("/teammate/agent-42/v1/messages"))
         .body("{}")
         .send().await.unwrap();
 
     let requests = mock_teammate.captured_requests().await;
     assert_eq!(requests.len(), 1);
-    // nest() strips /teammate prefix — backend receives /v1/messages
+    // nest() strips /teammate, router strips agent_id — backend receives /v1/messages
     assert_eq!(requests[0].path, "/v1/messages");
 }
 
@@ -196,13 +197,13 @@ async fn teammate_preserves_query_string() {
     let h = TestHarness::start(config).await;
 
     h.client
-        .post(h.url("/teammate/v1/messages?beta=true&version=2"))
+        .post(h.url("/teammate/agent-42/v1/messages?beta=true&version=2"))
         .body("{}")
         .send().await.unwrap();
 
     let requests = mock_teammate.captured_requests().await;
     assert_eq!(requests.len(), 1);
-    // Path after stripping, query string preserved
+    // Path after stripping agent_id, query string preserved
     assert_eq!(requests[0].path, "/v1/messages");
     // Note: MockBackend captures path without query. Check via full URI if needed.
 }
@@ -291,7 +292,7 @@ async fn no_agents_config_teammate_falls_back_to_main_backend() {
     // /teammate nest is always mounted — without agents config,
     // falls back to main backend via active_backend
     let _ = h.client
-        .post(h.url("/teammate/v1/messages"))
+        .post(h.url("/teammate/agent-42/v1/messages"))
         .body("{}")
         .send().await.unwrap();
 
