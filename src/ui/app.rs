@@ -72,6 +72,10 @@ pub struct App {
     pty_handle: Option<PtyHandle>,
     config: ConfigStore,
     error_registry: ErrorRegistry,
+    /// Claude Code session ID (UUID).
+    session_id: String,
+    /// When set, header shows "Session ID copied!" until this instant passes.
+    session_copied_until: Option<Instant>,
     ipc_sender: Option<UiCommandSender>,
     proxy_status: Option<ProxyStatus>,
     metrics: Option<MetricsSnapshot>,
@@ -133,6 +137,8 @@ impl App {
             pty_handle: None,
             config,
             error_registry: ErrorRegistry::new(100),
+            session_id: String::new(),
+            session_copied_until: None,
             ipc_sender: None,
             proxy_status: None,
             metrics: None,
@@ -160,6 +166,27 @@ impl App {
     /// Get access to the error registry.
     pub fn error_registry(&self) -> &ErrorRegistry {
         &self.error_registry
+    }
+
+    /// Get session ID.
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
+    /// Set session ID (called once from runtime after session resolution).
+    pub fn set_session_id(&mut self, id: String) {
+        self.session_id = id;
+    }
+
+    /// Trigger a "copied!" flash in the header (lasts 2 seconds).
+    pub fn flash_session_copied(&mut self) {
+        self.session_copied_until = Some(Instant::now() + Duration::from_secs(2));
+    }
+
+    /// True while the "copied!" flash is active.
+    pub fn session_copied_flash(&self) -> bool {
+        self.session_copied_until
+            .is_some_and(|until| Instant::now() < until)
     }
 
     pub fn should_quit(&self) -> bool {

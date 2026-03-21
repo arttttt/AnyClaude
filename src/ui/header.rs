@@ -18,10 +18,59 @@ impl Header {
         Self
     }
 
+    /// Compute the column range (start, end) of the "Session: ..." text in the header.
+    /// Columns are absolute (include left border offset).
+    pub fn session_col_range(
+        status: Option<&ProxyStatus>,
+        error_registry: &ErrorRegistry,
+        session_id: &str,
+    ) -> (u16, u16) {
+        let mut col: u16 = 1; // left border
+
+        // " " + emoji(2 cells) + " "
+        col += 1 + 2 + 1;
+
+        // Optional error/recovery message + separator
+        if let Some(error) = error_registry.current_error() {
+            match error.severity {
+                ErrorSeverity::Critical | ErrorSeverity::Error | ErrorSeverity::Warning => {
+                    let msg_len = if error.message.len() > 40 { 40 } else { error.message.len() };
+                    col += msg_len as u16 + 3; // message + " │ "
+                }
+                ErrorSeverity::Info => {}
+            }
+        } else if let Some(recovery) = error_registry.active_recoveries().first() {
+            let msg = format!(
+                "Retrying... (attempt {}/{})",
+                recovery.attempt, recovery.max_attempts
+            );
+            col += msg.len() as u16 + 3;
+        }
+
+        let backend = status
+            .map(|s| s.active_backend.as_str())
+            .unwrap_or("unknown");
+        let total_requests = status.map(|s| s.total_requests).unwrap_or(0);
+        let uptime = status.map(|s| s.uptime_seconds).unwrap_or(0);
+
+        col += format!("Backend: {backend}").len() as u16;
+        col += 3; // " │ "
+        col += format!("Reqs: {total_requests}").len() as u16;
+        col += 3;
+        col += format!("Uptime: {uptime}s").len() as u16;
+        col += 3;
+
+        let start = col;
+        let end = col + format!("Session: {session_id}").len() as u16;
+        (start, end)
+    }
+
     pub fn widget(
         &self,
         status: Option<&ProxyStatus>,
         error_registry: &ErrorRegistry,
+        session_id: &str,
+        session_copied: bool,
     ) -> Paragraph<'static> {
         let text_style = Style::default().fg(HEADER_TEXT).add_modifier(Modifier::DIM);
 
@@ -80,6 +129,12 @@ impl Header {
             Span::styled(format!("Reqs: {total_requests}"), text_style),
             Span::styled(" │ ", text_style),
             Span::styled(format!("Uptime: {uptime}s"), text_style),
+            Span::styled(" │ ", text_style),
+            if session_copied {
+                Span::styled("Session ID copied!", Style::default().fg(STATUS_OK))
+            } else {
+                Span::styled(format!("Session: {session_id}"), text_style)
+            },
         ]);
 
         let line = Line::from(spans);

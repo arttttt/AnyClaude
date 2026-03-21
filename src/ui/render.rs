@@ -25,7 +25,12 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
 
     let header_widget = Header::new();
     frame.render_widget(
-        header_widget.widget(app.proxy_status(), app.error_registry()),
+        header_widget.widget(
+            app.proxy_status(),
+            app.error_registry(),
+            app.session_id(),
+            app.session_copied_flash(),
+        ),
         header,
     );
     frame.render_widget(Clear, body);
