@@ -109,6 +109,7 @@ pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Re
 
     let (ui_command_tx, ui_command_rx) = mpsc::channel(UI_COMMAND_BUFFER);
     let mut app = App::new(config_store.clone());
+    app.set_session_id(current_session_id.clone());
     app.set_ipc_sender(ui_command_tx.clone());
 
     let mut proxy_server = ProxyServer::new(config_store.clone(), debug_logger.clone(), Some(session_token.clone()))
@@ -309,11 +310,25 @@ pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Re
                         _ => {}
                     }
                 }
-                // 2. PTY mouse tracking — forward to child process
+                // 2. Click on session ID in header — copy to clipboard
+                else if row < 3 && matches!(mouse, MouseEvent::Down { button: term_input::MouseButton::Left, .. }) {
+                    let (start, end) = crate::ui::header::Header::session_col_range(
+                        app.proxy_status(),
+                        app.error_registry(),
+                        app.session_id(),
+                    );
+                    if col >= start && col < end {
+                        if let Some(clip) = &mut clipboard {
+                            let _ = clip.set_text(app.session_id());
+                            app.flash_session_copied();
+                        }
+                    }
+                }
+                // 3. PTY mouse tracking — forward to child process
                 else if app.mouse_tracking() {
                     app.send_input(&mouse.to_x10_bytes());
                 }
-                // 3. Wrapper text selection — click+drag
+                // 4. Wrapper text selection — click+drag
                 else {
                     match mouse {
                         MouseEvent::Down { button: term_input::MouseButton::Left, .. } => {
