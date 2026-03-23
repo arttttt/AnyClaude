@@ -25,7 +25,6 @@ enum State {
 pub struct InputParser {
     state: State,
     buf: Vec<u8>,
-    paste_buf: String,
     out: VecDeque<InputEvent>,
 }
 
@@ -34,7 +33,6 @@ impl InputParser {
         Self {
             state: State::Ground,
             buf: Vec::with_capacity(32),
-            paste_buf: String::new(),
             out: VecDeque::new(),
         }
     }
@@ -66,21 +64,23 @@ impl InputParser {
                 self.emit_key(raw, KeyKind::Unknown);
                 self.state = State::Ground;
             }
-            State::PasteBuf => {
-                // Incomplete paste — emit what we have
-                let text = std::mem::take(&mut self.paste_buf);
-                self.out.push_back(InputEvent::Paste(text));
-                self.buf.clear();
-                self.state = State::Ground;
+            State::PasteBuf | State::Ground => {
+                // PasteBuf: wait for end marker, not a timeout.
+                // Ground: nothing to flush.
             }
-            State::Ground => {}
         }
         self.out.drain(..).collect()
     }
 
     /// Whether there is pending state that needs a timeout to resolve.
+    /// PasteBuf is excluded — it waits for the end marker, not a timeout.
     pub fn has_pending(&self) -> bool {
-        self.state != State::Ground
+        !matches!(self.state, State::Ground | State::PasteBuf)
+    }
+
+    /// Whether the parser is currently inside a bracketed paste.
+    pub fn is_in_paste(&self) -> bool {
+        self.state == State::PasteBuf
     }
 
     fn step(&mut self, byte: u8) {
@@ -92,7 +92,7 @@ impl InputParser {
             State::Ss3Pending => self.ss3_pending(byte),
             State::MouseX10 { count } => self.mouse_x10(byte, count),
             State::SgrMouse => self.sgr_mouse(byte),
-            State::PasteBuf => self.paste_buf(byte),
+            State::PasteBuf => self.in_paste(byte),
             State::Utf8 { remaining } => self.utf8_cont(byte, remaining),
         }
     }
@@ -257,7 +257,6 @@ impl InputParser {
                 if params.first() == Some(&200) {
                     // Start bracketed paste
                     self.buf.clear();
-                    self.paste_buf.clear();
                     self.state = State::PasteBuf;
                 } else {
                     let raw = std::mem::take(&mut self.buf);
@@ -350,23 +349,17 @@ impl InputParser {
         }
     }
 
-    fn paste_buf(&mut self, byte: u8) {
-        // Detect ESC[201~ end marker.
-        // We accumulate raw bytes to detect the end sequence.
+    fn in_paste(&mut self, byte: u8) {
         self.buf.push(byte);
 
-        // Check if buf ends with ESC[201~
         const END_MARKER: &[u8] = b"\x1b[201~";
         if self.buf.len() >= END_MARKER.len()
             && &self.buf[self.buf.len() - END_MARKER.len()..] == END_MARKER
         {
-            // Remove the end marker bytes from paste content
-            // Everything before the marker in buf is paste content
             let paste_bytes = &self.buf[..self.buf.len() - END_MARKER.len()];
             let text = String::from_utf8_lossy(paste_bytes).into_owned();
             self.out.push_back(InputEvent::Paste(text));
             self.buf.clear();
-            self.paste_buf.clear();
             self.state = State::Ground;
         }
     }
@@ -703,6 +696,43 @@ mod tests {
         let events = p.feed(&input);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0], InputEvent::Paste("hello world".to_string()));
+    }
+
+    #[test]
+    fn paste_not_flushed_by_timeout() {
+        let mut p = InputParser::new();
+        // Start paste, don't send end marker
+        let events = p.feed(b"\x1b[200~hello");
+        assert!(events.is_empty());
+        assert!(p.is_in_paste());
+        assert!(!p.has_pending()); // must not trigger ESC timeout
+
+        // flush() must not emit incomplete paste
+        let events = p.flush();
+        assert!(events.is_empty());
+        assert!(p.is_in_paste()); // still waiting for end marker
+
+        // Now send end marker — paste completes
+        let events = p.feed(b"\x1b[201~");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0], InputEvent::Paste("hello".to_string()));
+    }
+
+    #[test]
+    fn paste_chunked_across_feeds() {
+        let mut p = InputParser::new();
+        // Chunk 1: start marker + partial text
+        let events = p.feed(b"\x1b[200~line1\n");
+        assert!(events.is_empty());
+
+        // Chunk 2: more text
+        let events = p.feed(b"line2\nline3");
+        assert!(events.is_empty());
+
+        // Chunk 3: end marker
+        let events = p.feed(b"\x1b[201~");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0], InputEvent::Paste("line1\nline2\nline3".to_string()));
     }
 
     #[test]

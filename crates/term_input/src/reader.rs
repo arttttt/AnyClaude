@@ -96,6 +96,16 @@ impl TtyReader {
         let events = self.parser.feed(&self.buf[..n]);
         self.pending.extend(events);
 
+        // If parser is inside bracketed paste, keep reading until end marker
+        while self.parser.is_in_paste() {
+            let n = self.file.read(&mut self.buf)?;
+            if n == 0 {
+                return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "tty closed"));
+            }
+            let events = self.parser.feed(&self.buf[..n]);
+            self.pending.extend(events);
+        }
+
         // Handle ESC timeout: if parser has pending state, do a short poll
         if self.parser.has_pending() {
             if !self.select(ESC_TIMEOUT_MS)? {
