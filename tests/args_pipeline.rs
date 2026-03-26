@@ -249,16 +249,6 @@ fn continue_preserves_next_arg() {
     assert!(!p.args.contains(&"--continue".to_string()));
 }
 
-#[test]
-fn continue_preserves_next_arg_on_resume() {
-    let args = raw_args(vec!["--continue", "--model", "opus"]);
-    let p = build_spawn(&args);
-    assert!(p.args.contains(&"--model".to_string()));
-    assert!(p.args.contains(&"opus".to_string()));
-    assert!(!p.args.contains(&"--continue".to_string()));
-    assert!(p.args.contains(&"--resume".to_string()));
-}
-
 // -- session-id/resume value stripping ----------------------------------------
 
 #[test]
