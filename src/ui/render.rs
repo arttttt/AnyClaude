@@ -23,13 +23,35 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
     let area = frame.area();
     let (header, body, footer) = layout_regions(area);
 
+    // Resolve sub/team backend display names (fallback to active backend name)
+    let active_display_name = app
+        .backends()
+        .iter()
+        .find(|b| b.is_active)
+        .map(|b| b.display_name.as_str())
+        .unwrap_or("unknown");
+
+    let resolve_name = |id: Option<&str>| -> &str {
+        id.and_then(|id| {
+            app.backends()
+                .iter()
+                .find(|b| b.id == id)
+                .map(|b| b.display_name.as_str())
+        })
+        .unwrap_or(active_display_name)
+    };
+
+    let sub_name = resolve_name(app.subagent_backend());
+    let team_name = resolve_name(app.teammate_backend());
+
     let header_widget = Header::new();
     frame.render_widget(
         header_widget.widget(
             app.proxy_status(),
-            app.error_registry(),
             app.session_id(),
             app.session_copied_flash(),
+            sub_name,
+            team_name,
         ),
         header,
     );
