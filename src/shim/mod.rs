@@ -26,11 +26,11 @@ impl TeammateShim {
     /// teammate processes spawned via tmux `send-keys` can authenticate
     /// with the proxy.
     /// `log_enabled` controls whether the shim writes to tmux_shim.log.
-    pub fn create(proxy_port: u16, session_token: &str, log_enabled: bool) -> Result<Self> {
+    pub fn create(proxy_port: u16, session_token: &str, session_id: &str, log_enabled: bool) -> Result<Self> {
         let dir = tempfile::tempdir()
             .context("failed to create temp directory for teammate shims")?;
 
-        tmux::install(dir.path(), proxy_port, session_token, log_enabled)?;
+        tmux::install(dir.path(), proxy_port, session_token, session_id, log_enabled)?;
 
         let dir_path = dir.path().to_owned();
         Ok(Self { _dir: dir, dir_path })
