@@ -312,10 +312,26 @@ pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Re
                 }
                 // 2. Click on session ID in header — copy to clipboard
                 else if row < 3 && matches!(mouse, MouseEvent::Down { button: term_input::MouseButton::Left, .. }) {
+                    let active_display = app
+                        .backends()
+                        .iter()
+                        .find(|b| b.is_active)
+                        .map(|b| b.display_name.as_str())
+                        .unwrap_or("unknown");
+                    let resolve = |id: Option<&str>| -> &str {
+                        id.and_then(|id| {
+                            app.backends()
+                                .iter()
+                                .find(|b| b.id == id)
+                                .map(|b| b.display_name.as_str())
+                        })
+                        .unwrap_or(active_display)
+                    };
                     let (start, end) = crate::ui::header::Header::session_col_range(
                         app.proxy_status(),
-                        app.error_registry(),
                         app.session_id(),
+                        resolve(app.subagent_backend()),
+                        resolve(app.teammate_backend()),
                     );
                     if col >= start && col < end {
                         if let Some(clip) = &mut clipboard {
