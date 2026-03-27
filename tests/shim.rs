@@ -16,14 +16,14 @@ fn shim_dir(shim: &TeammateShim) -> String {
 fn create_succeeds_or_returns_error() {
     // In CI/dev environments claude may or may not be installed.
     // Just verify the function doesn't panic.
-    let _ = TeammateShim::create(12345, "test-token", true);
+    let _ = TeammateShim::create(12345, "test-token", "test-session", true);
 }
 
 // ── PATH env ─────────────────────────────────────────────────────────
 
 #[test]
 fn path_env_prepends_shim_dir() {
-    let shim = match TeammateShim::create(12345, "test-token", true) {
+    let shim = match TeammateShim::create(12345, "test-token", "test-session", true) {
         Ok(s) => s,
         Err(_) => return,
     };
@@ -39,7 +39,7 @@ fn path_env_prepends_shim_dir() {
 
 #[test]
 fn tmux_shim_exists() {
-    let shim = match TeammateShim::create(12345, "test-token", true) {
+    let shim = match TeammateShim::create(12345, "test-token", "test-session", true) {
         Ok(s) => s,
         Err(_) => return,
     };
@@ -49,7 +49,7 @@ fn tmux_shim_exists() {
 
 #[test]
 fn tmux_shim_is_executable() {
-    let shim = match TeammateShim::create(12345, "test-token", true) {
+    let shim = match TeammateShim::create(12345, "test-token", "test-session", true) {
         Ok(s) => s,
         Err(_) => return,
     };
@@ -66,7 +66,7 @@ fn tmux_shim_is_executable() {
 
 #[test]
 fn tmux_shim_contains_log_and_shim_dir() {
-    let shim = match TeammateShim::create(12345, "test-token", true) {
+    let shim = match TeammateShim::create(12345, "test-token", "test-session", true) {
         Ok(s) => s,
         Err(_) => return,
     };
@@ -80,7 +80,7 @@ fn tmux_shim_contains_log_and_shim_dir() {
 
 #[test]
 fn tmux_shim_contains_port_and_injection_logic() {
-    let shim = match TeammateShim::create(7777, "test-token", true) {
+    let shim = match TeammateShim::create(7777, "test-token", "test-session", true) {
         Ok(s) => s,
         Err(_) => return,
     };
@@ -103,7 +103,7 @@ fn tmux_shim_contains_port_and_injection_logic() {
 
 #[test]
 fn tmux_log_path_points_to_shim_dir() {
-    let shim = match TeammateShim::create(12345, "test-token", true) {
+    let shim = match TeammateShim::create(12345, "test-token", "test-session", true) {
         Ok(s) => s,
         Err(_) => return,
     };
@@ -125,7 +125,7 @@ fn tmux_log_path_points_to_shim_dir() {
 #[test]
 fn tmux_shim_contains_session_token_header() {
     let token = "my-secret-session-token-42";
-    let shim = match TeammateShim::create(8080, token, true) {
+    let shim = match TeammateShim::create(8080, token, "test-session", true) {
         Ok(s) => s,
         Err(_) => return,
     };
@@ -149,11 +149,11 @@ fn tmux_shim_contains_session_token_header() {
 
 #[test]
 fn tmux_shim_different_tokens_produce_different_scripts() {
-    let shim1 = match TeammateShim::create(8080, "token-aaa", true) {
+    let shim1 = match TeammateShim::create(8080, "token-aaa", "test-session", true) {
         Ok(s) => s,
         Err(_) => return,
     };
-    let shim2 = match TeammateShim::create(8080, "token-bbb", true) {
+    let shim2 = match TeammateShim::create(8080, "token-bbb", "test-session", true) {
         Ok(s) => s,
         Err(_) => return,
     };
@@ -171,7 +171,7 @@ fn tmux_shim_different_tokens_produce_different_scripts() {
 
 #[test]
 fn tmux_shim_injects_both_url_and_headers() {
-    let shim = match TeammateShim::create(9999, "test-tok", true) {
+    let shim = match TeammateShim::create(9999, "test-tok", "test-session", true) {
         Ok(s) => s,
         Err(_) => return,
     };

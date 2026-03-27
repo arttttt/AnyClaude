@@ -36,7 +36,7 @@ SHIM_DIR="$(cd "$(dirname "$0")" && pwd)"
 LOG_ENABLED=__LOG_ENABLED__
 LOG="$SHIM_DIR/tmux_shim.log"
 # Persistent log survives TempDir cleanup
-PLOG="$HOME/.config/anyclaude/logs/tmux_shim.log"
+PLOG="$HOME/.config/anyclaude/logs/tmux_shim.__SESSION_ID__.log"
 mkdir -p "$(dirname "$PLOG")" 2>/dev/null
 
 slog() {
@@ -135,10 +135,11 @@ fi
 "#;
 
 /// Install the tmux shim script into `dir`.
-pub fn install(dir: &Path, proxy_port: u16, session_token: &str, log_enabled: bool) -> Result<()> {
+pub fn install(dir: &Path, proxy_port: u16, session_token: &str, session_id: &str, log_enabled: bool) -> Result<()> {
     let script = TEMPLATE
         .replace("__PORT__", &proxy_port.to_string())
         .replace("__SESSION_TOKEN__", session_token)
+        .replace("__SESSION_ID__", session_id)
         .replace("__LOG_ENABLED__", if log_enabled { "true" } else { "false" });
     write_executable(dir, "tmux", &script)
 }
