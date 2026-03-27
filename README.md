@@ -136,7 +136,7 @@ scrollback_lines = 10000          # History buffer size
 level = "verbose"                 # "off", "basic", "verbose", "full"
 format = "console"                # "console", "json"
 destination = "file"              # "stderr", "file", "both"
-file_path = "~/.config/anyclaude/debug.log"
+file_path = "~/.config/anyclaude/logs/debug.log"
 body_preview_bytes = 1024         # Max bytes of request/response body to log
 header_preview = true             # Log request/response headers
 full_body = false                 # Log full bodies (no size limit)
@@ -271,7 +271,7 @@ Enable detailed request/response logging for debugging:
 [debug_logging]
 level = "verbose"                  # "off" | "basic" | "verbose" | "full"
 destination = "file"               # "stderr" | "file" | "both"
-file_path = "~/.config/anyclaude/debug.log"
+file_path = "~/.config/anyclaude/logs/debug.log"
 format = "console"                 # "console" | "json"
 pretty_print = true                # Pretty-print JSON bodies
 full_body = false                  # Log complete bodies (no size limit)

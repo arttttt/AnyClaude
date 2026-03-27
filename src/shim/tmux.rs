@@ -36,7 +36,8 @@ SHIM_DIR="$(cd "$(dirname "$0")" && pwd)"
 LOG_ENABLED=__LOG_ENABLED__
 LOG="$SHIM_DIR/tmux_shim.log"
 # Persistent log survives TempDir cleanup
-PLOG="$HOME/.config/anyclaude/tmux_shim.log"
+PLOG="$HOME/.config/anyclaude/logs/tmux_shim.log"
+mkdir -p "$(dirname "$PLOG")" 2>/dev/null
 
 slog() {
   $LOG_ENABLED || return

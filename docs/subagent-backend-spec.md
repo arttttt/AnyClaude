@@ -250,7 +250,7 @@ pub fn with_subagent_hooks(mut self, proxy_port: u16) -> Self {
 4. **Model rewrite:** in forwarded request to upstream — model is rewritten via `model_map`
 5. **UI:** Ctrl+B → change subagent backend → **no PTY restart**, next subagent request routes to new backend
 6. **Session affinity:** existing subagent continues on old backend (marker baked in at start)
-7. **Teammates:** check in shim log (`~/.config/anyclaude/tmux_shim.log`) that `CLAUDE_CODE_SUBAGENT_MODEL` is NOT present
+7. **Teammates:** check in shim log (`~/.config/anyclaude/logs/tmux_shim.log`) that `CLAUDE_CODE_SUBAGENT_MODEL` is NOT present
 8. **Tests:** `cargo test` — all existing tests pass
 9. **Validation:** `subagent_backend = "nonexistent"` → error on startup
 
