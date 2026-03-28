@@ -33,13 +33,17 @@ impl Header {
         let total_requests = status.map(|s| s.total_requests).unwrap_or(0);
         let uptime = status.map(|s| s.uptime_seconds).unwrap_or(0);
 
-        // " Backend: {name}"
+        let backend_lower = backend.to_lowercase();
+        let sub_lower = subagent_backend_name.to_lowercase();
+        let team_lower = teammate_backend_name.to_lowercase();
+
+        // " backend: {name}"
         col += 1; // leading space
-        col += format!("Backend: {backend}").len() as u16;
+        col += format!("backend: {backend_lower}").len() as u16;
         col += 3; // " │ "
-        col += format!("sub: {subagent_backend_name}").len() as u16;
+        col += format!("sub: {sub_lower}").len() as u16;
         col += 3; // " │ "
-        col += format!("team: {teammate_backend_name}").len() as u16;
+        col += format!("team: {team_lower}").len() as u16;
         col += 3; // " │ "
         col += format!("Reqs: {total_requests}").len() as u16;
         col += 3;
@@ -67,13 +71,17 @@ impl Header {
         let total_requests = status.map(|value| value.total_requests).unwrap_or(0);
         let uptime = status.map(|value| value.uptime_seconds).unwrap_or(0);
 
+        let backend_lower = backend.to_lowercase();
+        let sub_lower = subagent_backend_name.to_lowercase();
+        let team_lower = teammate_backend_name.to_lowercase();
+
         let spans = vec![
             Span::styled(" ", text_style),
-            Span::styled(format!("Backend: {backend}"), text_style),
+            Span::styled(format!("backend: {backend_lower}"), text_style),
             Span::styled(" │ ", text_style),
-            Span::styled(format!("sub: {subagent_backend_name}"), text_style),
+            Span::styled(format!("sub: {sub_lower}"), text_style),
             Span::styled(" │ ", text_style),
-            Span::styled(format!("team: {teammate_backend_name}"), text_style),
+            Span::styled(format!("team: {team_lower}"), text_style),
             Span::styled(" │ ", text_style),
             Span::styled(format!("Reqs: {total_requests}"), text_style),
             Span::styled(" │ ", text_style),
