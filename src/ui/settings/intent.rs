@@ -1,5 +1,5 @@
 use crate::config::SettingsFieldSnapshot;
-use crate::ui::mvi::Intent;
+use mvi::Intent;
 
 #[derive(Debug, Clone)]
 pub enum SettingsIntent {

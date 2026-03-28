@@ -1,0 +1,8 @@
+[package]
+name = "mvi"
+version = "0.1.0"
+edition = "2021"
+description = "Model-View-Intent architecture primitives"
+
+[lints]
+workspace = true

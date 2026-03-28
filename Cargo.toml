@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/term_input"]
+members = [".", "crates/term_input", "crates/mvi"]
 
 [workspace.lints.rust]
 dead_code = "deny"
@@ -24,6 +24,7 @@ alacritty_terminal = "0.25"
 crossterm = "0.29"
 signal-hook = "0.4"
 term_input = { path = "crates/term_input" }
+mvi = { path = "crates/mvi" }
 
 # TUI
 ratatui = "0.30"

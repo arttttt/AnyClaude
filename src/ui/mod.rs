@@ -7,7 +7,6 @@ pub mod history;
 pub mod input;
 pub mod layout;
 pub mod components;
-pub mod mvi;
 pub mod pty;
 pub mod render;
 pub mod selection;

@@ -1,6 +1,6 @@
 //! Intents for the PTY lifecycle.
 
-use crate::ui::mvi::Intent;
+use mvi::Intent;
 
 /// Intents that can be dispatched to the PTY lifecycle reducer.
 #[derive(Debug)]

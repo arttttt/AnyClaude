@@ -1,4 +1,4 @@
-use crate::ui::mvi::Reducer;
+use mvi::Reducer;
 use crate::ui::settings::intent::SettingsIntent;
 use crate::ui::settings::state::SettingsDialogState;
 

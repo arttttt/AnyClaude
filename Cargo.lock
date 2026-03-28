@@ -128,6 +128,7 @@ dependencies = [
  "futures-core",
  "http-body-util",
  "libc",
+ "mvi",
  "parking_lot",
  "portable-pty",
  "ratatui",
@@ -1709,6 +1710,10 @@ dependencies = [
  "num-traits",
  "pxfm",
 ]
+
+[[package]]
+name = "mvi"
+version = "0.1.0"
 
 [[package]]
 name = "nix"

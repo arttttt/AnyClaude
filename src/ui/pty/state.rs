@@ -1,6 +1,6 @@
 //! State for the PTY lifecycle.
 
-use crate::ui::mvi::UiState;
+use mvi::UiState;
 use std::collections::VecDeque;
 
 /// PTY lifecycle state machine.

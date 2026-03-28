@@ -2,7 +2,7 @@ mod common;
 
 use std::collections::VecDeque;
 
-use anyclaude::ui::mvi::Reducer;
+use mvi::Reducer;
 use anyclaude::ui::pty::{PtyIntent, PtyLifecycleState, PtyReducer};
 
 #[test]
