@@ -2,6 +2,7 @@ use crate::config::{ClaudeSettingsManager, ConfigStore};
 use crate::error::ErrorRegistry;
 use crate::ipc::{BackendInfo, ProxyStatus};
 use crate::pty::PtyHandle;
+use crate::ui::backend_switch::{BackendSwitchIntent, BackendSwitchReducer, BackendSwitchState};
 use crate::ui::history::{HistoryDialogState, HistoryEntry, HistoryIntent, HistoryReducer};
 use crate::ui::mvi::Reducer;
 use crate::ui::pty::{PtyIntent, PtyLifecycleState, PtyReducer};
@@ -18,14 +19,6 @@ pub enum PopupKind {
     BackendSwitch,
     History,
     Settings,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
-pub enum BackendPopupSection {
-    #[default]
-    ActiveBackend,
-    SubagentBackend,
-    TeammateBackend,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -76,10 +69,8 @@ pub struct App {
     ipc_sender: Option<UiCommandSender>,
     proxy_status: Option<ProxyStatus>,
     backends: Vec<BackendInfo>,
-    backend_selection: usize,
     last_ipc_error: Option<String>,
     last_status_refresh: Instant,
-    last_backends_refresh: Instant,
     /// State of the history dialog (MVI pattern).
     history_dialog: HistoryDialogState,
     /// Provider closure that fetches history entries from backend state.
@@ -95,14 +86,10 @@ pub struct App {
     pty_generation: u64,
     /// Current mouse text selection (None when nothing is selected).
     selection: Option<TextSelection>,
-    /// Which section of backend popup is focused.
-    backend_popup_section: BackendPopupSection,
-    /// Selection index for subagent backend list.
-    subagent_selection: usize,
+    /// State of the backend switch dialog (MVI pattern).
+    backend_switch: BackendSwitchState,
     /// Current subagent backend (runtime state, from config on start).
     subagent_backend: Option<String>,
-    /// Selection index for teammate backend list.
-    teammate_selection: usize,
     /// Current teammate backend (runtime state, from config on start).
     teammate_backend: Option<String>,
 }
@@ -137,10 +124,8 @@ impl App {
             ipc_sender: None,
             proxy_status: None,
             backends: Vec::new(),
-            backend_selection: 0,
             last_ipc_error: None,
             last_status_refresh: now,
-            last_backends_refresh: now,
             history_dialog: HistoryDialogState::default(),
             history_provider: None,
             settings_dialog: SettingsDialogState::default(),
@@ -148,10 +133,8 @@ impl App {
             settings_saved_snapshot,
             pty_generation: 0,
             selection: None,
-            backend_popup_section: BackendPopupSection::default(),
-            subagent_selection: 0,
+            backend_switch: BackendSwitchState::default(),
             subagent_backend,
-            teammate_selection: 0,
             teammate_backend,
         }
     }
@@ -213,18 +196,12 @@ impl App {
     pub fn toggle_popup(&mut self, kind: PopupKind) -> bool {
         self.focus = match self.focus {
             Focus::Popup(active) if active == kind => Focus::Terminal,
-            _ => {
-                if kind == PopupKind::BackendSwitch {
-                    self.reset_backend_selection();
-                }
-                Focus::Popup(kind)
-            }
+            _ => Focus::Popup(kind),
         };
+        if matches!(self.focus, Focus::Popup(PopupKind::BackendSwitch)) {
+            self.open_backend_switch_dialog();
+        }
         matches!(self.focus, Focus::Popup(_))
-    }
-
-    pub fn close_popup(&mut self) {
-        self.focus = Focus::Terminal;
     }
 
     pub fn on_tick(&mut self) {
@@ -413,10 +390,6 @@ impl App {
         &self.backends
     }
 
-    pub fn backend_selection(&self) -> usize {
-        self.backend_selection
-    }
-
     pub fn last_ipc_error(&self) -> Option<&str> {
         self.last_ipc_error.as_deref()
     }
@@ -426,13 +399,7 @@ impl App {
     }
 
     pub fn update_backends(&mut self, backends: Vec<BackendInfo>) {
-        let was_empty = self.backends.is_empty();
         self.backends = backends;
-        if was_empty {
-            self.reset_backend_selection();
-            return;
-        }
-        self.clamp_backend_selection();
     }
 
     pub fn set_ipc_error(&mut self, message: String) {
@@ -472,40 +439,9 @@ impl App {
         })
     }
 
-    pub fn move_backend_selection(&mut self, direction: i32) {
-        if self.backends.is_empty() {
-            self.backend_selection = 0;
-            return;
-        }
-
-        let len = self.backends.len();
-        let current = self.backend_selection.min(len.saturating_sub(1));
-        let next = if direction.is_negative() {
-            if current == 0 {
-                len - 1
-            } else {
-                current - 1
-            }
-        } else if current + 1 >= len {
-            0
-        } else {
-            current + 1
-        };
-
-        self.backend_selection = next;
-    }
-
     pub fn should_refresh_status(&mut self, interval: Duration) -> bool {
         if self.last_status_refresh.elapsed() >= interval {
             self.last_status_refresh = Instant::now();
-            return true;
-        }
-        false
-    }
-
-    pub fn should_refresh_backends(&mut self, interval: Duration) -> bool {
-        if self.last_backends_refresh.elapsed() >= interval {
-            self.last_backends_refresh = Instant::now();
             return true;
         }
         false
@@ -687,63 +623,88 @@ impl App {
         }
     }
 
-    fn reset_backend_selection(&mut self) {
-        self.backend_selection = self.active_backend_index().unwrap_or(0);
-        self.backend_popup_section = BackendPopupSection::ActiveBackend;
-        self.reset_subagent_selection();
-        self.reset_teammate_selection();
-    }
-
-    fn clamp_backend_selection(&mut self) {
-        if self.backends.is_empty() {
-            self.backend_selection = 0;
-            return;
-        }
-        let max_index = self.backends.len() - 1;
-        if self.backend_selection > max_index {
-            self.backend_selection = max_index;
-        }
-    }
+    // ========================================================================
+    // Backend switch dialog methods (MVI pattern)
+    // ========================================================================
 
     fn active_backend_index(&self) -> Option<usize> {
         self.backends.iter().position(|backend| backend.is_active)
     }
 
-    // --- Subagent Backend Methods ---
-
-    /// Cycle through ActiveBackend → SubagentBackend → TeammateBackend sections.
-    pub fn toggle_backend_popup_section(&mut self) {
-        self.backend_popup_section = match self.backend_popup_section {
-            BackendPopupSection::ActiveBackend => BackendPopupSection::SubagentBackend,
-            BackendPopupSection::SubagentBackend => BackendPopupSection::TeammateBackend,
-            BackendPopupSection::TeammateBackend => BackendPopupSection::ActiveBackend,
-        };
-    }
-
-    /// Get current backend popup section.
-    pub fn backend_popup_section(&self) -> BackendPopupSection {
-        self.backend_popup_section
-    }
-
-    /// Get subagent selection index.
-    pub fn subagent_selection(&self) -> usize {
-        self.subagent_selection
-    }
-
-    /// Move subagent selection by delta (-1 for up, 1 for down).
+    /// Compute initial selection for override sections (subagent/teammate).
     /// Index 0 = "Disabled", 1..N = backends.
-    pub fn move_subagent_selection(&mut self, direction: i32) {
-        let total = self.backends.len() + 1; // +1 for "Disabled"
-        let current = self.subagent_selection.min(total.saturating_sub(1));
-        let next = if direction.is_negative() {
-            if current == 0 { total - 1 } else { current - 1 }
-        } else if current + 1 >= total {
-            0
-        } else {
-            current + 1
-        };
-        self.subagent_selection = next;
+    fn override_selection(&self, backend_id: Option<&str>) -> usize {
+        backend_id
+            .and_then(|name| self.backends.iter().position(|b| b.id == name))
+            .map(|idx| idx + 1)
+            .unwrap_or(0)
     }
+
+    /// Get the current backend switch dialog state.
+    pub fn backend_switch(&self) -> &BackendSwitchState {
+        &self.backend_switch
+    }
+
+    /// Dispatch an intent to the backend switch dialog reducer.
+    pub fn dispatch_backend_switch(&mut self, intent: BackendSwitchIntent) {
+        dispatch_mvi!(self, backend_switch, BackendSwitchReducer, intent);
+    }
+
+    /// Open the backend switch dialog with computed initial selections.
+    pub fn open_backend_switch_dialog(&mut self) {
+        let backend_selection = self.active_backend_index().unwrap_or(0);
+        let subagent_selection = self.override_selection(self.subagent_backend.as_deref());
+        let teammate_selection = self.override_selection(self.teammate_backend.as_deref());
+        self.dispatch_backend_switch(BackendSwitchIntent::Open {
+            backend_selection,
+            subagent_selection,
+            teammate_selection,
+            backends_count: self.backends.len(),
+        });
+    }
+
+    /// Close the backend switch dialog.
+    pub fn close_backend_switch_dialog(&mut self) {
+        self.dispatch_backend_switch(BackendSwitchIntent::Close);
+        self.focus = Focus::Terminal;
+    }
+
+    /// Confirm selection in the active backend section. Returns true if popup should close.
+    pub fn confirm_active_backend(&mut self, index: usize) -> bool {
+        let Some(backend) = self.backends.get(index) else {
+            return false;
+        };
+        if backend.is_active {
+            self.close_backend_switch_dialog();
+            return true;
+        }
+        // request_switch_backend_by_index uses 1-based index
+        if self.request_switch_backend_by_index(index + 1) {
+            self.close_backend_switch_dialog();
+            return true;
+        }
+        false
+    }
+
+    /// Confirm selection in a subagent/teammate override section.
+    pub fn confirm_override_backend(
+        &mut self,
+        selection: usize,
+        set_fn: fn(&mut App, usize),
+        clear_fn: fn(&mut App),
+    ) {
+        if selection == 0 {
+            clear_fn(self);
+        } else {
+            let backend_index = selection - 1;
+            if backend_index < self.backends.len() {
+                set_fn(self, backend_index);
+            }
+        }
+        self.close_backend_switch_dialog();
+    }
+
+    // --- Subagent Backend IPC Methods ---
 
     /// Request to set subagent backend by index.
     pub fn request_set_subagent_backend(&mut self, index: usize) {
@@ -766,37 +727,7 @@ impl App {
         self.subagent_backend.as_deref()
     }
 
-    /// Reset subagent selection to match current subagent_backend.
-    /// Index 0 = "Disabled", 1..N = backends.
-    fn reset_subagent_selection(&mut self) {
-        self.subagent_selection = self.subagent_backend
-            .as_ref()
-            .and_then(|name| self.backends.iter().position(|b| &b.id == name))
-            .map(|idx| idx + 1) // offset: 0=Disabled, 1..N=backends
-            .unwrap_or(0);
-    }
-
-    // --- Teammate Backend Methods ---
-
-    /// Get teammate selection index.
-    pub fn teammate_selection(&self) -> usize {
-        self.teammate_selection
-    }
-
-    /// Move teammate selection by delta (-1 for up, 1 for down).
-    /// Index 0 = "Disabled", 1..N = backends.
-    pub fn move_teammate_selection(&mut self, direction: i32) {
-        let total = self.backends.len() + 1; // +1 for "Disabled"
-        let current = self.teammate_selection.min(total.saturating_sub(1));
-        let next = if direction.is_negative() {
-            if current == 0 { total - 1 } else { current - 1 }
-        } else if current + 1 >= total {
-            0
-        } else {
-            current + 1
-        };
-        self.teammate_selection = next;
-    }
+    // --- Teammate Backend IPC Methods ---
 
     /// Request to set teammate backend by index.
     pub fn request_set_teammate_backend(&mut self, index: usize) {
@@ -817,15 +748,6 @@ impl App {
     /// Get current teammate backend.
     pub fn teammate_backend(&self) -> Option<&str> {
         self.teammate_backend.as_deref()
-    }
-
-    /// Reset teammate selection to match current teammate_backend.
-    fn reset_teammate_selection(&mut self) {
-        self.teammate_selection = self.teammate_backend
-            .as_ref()
-            .and_then(|name| self.backends.iter().position(|b| &b.id == name))
-            .map(|idx| idx + 1) // offset: 0=Disabled, 1..N=backends
-            .unwrap_or(0);
     }
 }
 

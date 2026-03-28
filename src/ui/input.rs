@@ -1,4 +1,5 @@
-use crate::ui::app::{App, BackendPopupSection, PopupKind};
+use crate::ui::app::{App, PopupKind};
+use crate::ui::backend_switch::{BackendPopupSection, BackendSwitchIntent, BackendSwitchState};
 use crate::ui::history::HistoryIntent;
 use crate::ui::settings::SettingsIntent;
 use term_input::{Direction, KeyInput, KeyKind};
@@ -117,65 +118,27 @@ fn handle_settings_key(app: &mut App, key: &KeyInput) -> InputAction {
 fn handle_backend_switch_key(app: &mut App, key: &KeyInput) -> InputAction {
     match &key.kind {
         KeyKind::Escape | KeyKind::Control('b') | KeyKind::Control('h') => {
-            app.close_popup();
+            app.close_backend_switch_dialog();
         }
         KeyKind::Tab => {
-            app.toggle_backend_popup_section();
+            app.dispatch_backend_switch(BackendSwitchIntent::NextSection);
         }
         KeyKind::Arrow(Direction::Up) => {
-            match app.backend_popup_section() {
-                BackendPopupSection::ActiveBackend => app.move_backend_selection(-1),
-                BackendPopupSection::SubagentBackend => app.move_subagent_selection(-1),
-                BackendPopupSection::TeammateBackend => app.move_teammate_selection(-1),
-            }
+            app.dispatch_backend_switch(BackendSwitchIntent::MoveUp);
         }
         KeyKind::Arrow(Direction::Down) => {
-            match app.backend_popup_section() {
-                BackendPopupSection::ActiveBackend => app.move_backend_selection(1),
-                BackendPopupSection::SubagentBackend => app.move_subagent_selection(1),
-                BackendPopupSection::TeammateBackend => app.move_teammate_selection(1),
-            }
+            app.dispatch_backend_switch(BackendSwitchIntent::MoveDown);
         }
         KeyKind::Enter => {
-            match app.backend_popup_section() {
-                BackendPopupSection::ActiveBackend => return handle_backend_switch_enter(app),
-                BackendPopupSection::SubagentBackend => return handle_subagent_backend_enter(app),
-                BackendPopupSection::TeammateBackend => return handle_teammate_backend_enter(app),
-            }
+            return handle_backend_confirm(app);
         }
         KeyKind::Backspace | KeyKind::Nav(term_input::NavKey::Delete) => {
-            match app.backend_popup_section() {
-                BackendPopupSection::SubagentBackend => {
-                    app.request_clear_subagent_backend();
-                    app.close_popup();
-                }
-                BackendPopupSection::TeammateBackend => {
-                    app.request_clear_teammate_backend();
-                    app.close_popup();
-                }
-                _ => {}
-            }
+            return handle_backend_delete(app);
         }
         KeyKind::Char(ch) if ch.is_ascii_digit() => {
             let index = ch.to_digit(10).unwrap_or(0) as usize;
             if index > 0 {
-                match app.backend_popup_section() {
-                    BackendPopupSection::ActiveBackend => return handle_backend_switch_by_number(app, index),
-                    BackendPopupSection::SubagentBackend => {
-                        if index <= app.backends().len() {
-                            app.request_set_subagent_backend(index - 1);
-                            app.close_popup();
-                        }
-                        return InputAction::None;
-                    }
-                    BackendPopupSection::TeammateBackend => {
-                        if index <= app.backends().len() {
-                            app.request_set_teammate_backend(index - 1);
-                            app.close_popup();
-                        }
-                        return InputAction::None;
-                    }
-                }
+                return handle_backend_digit(app, index);
             }
         }
         _ => {}
@@ -183,74 +146,91 @@ fn handle_backend_switch_key(app: &mut App, key: &KeyInput) -> InputAction {
     InputAction::None
 }
 
-/// Handle Enter key in backend switch popup.
-fn handle_backend_switch_enter(app: &mut App) -> InputAction {
-    let index = app.backend_selection();
-    let backends = app.backends();
-
-    let Some(backend) = backends.get(index) else {
+/// Handle Enter in the currently active section of the backend switch dialog.
+fn handle_backend_confirm(app: &mut App) -> InputAction {
+    let BackendSwitchState::Visible {
+        section,
+        backend_selection,
+        subagent_selection,
+        teammate_selection,
+        ..
+    } = *app.backend_switch()
+    else {
         return InputAction::None;
     };
 
-    if backend.is_active {
-        app.close_popup();
-        return InputAction::None;
-    }
-
-    if app.request_switch_backend_by_index(index + 1) {
-        app.close_popup();
-    }
-    InputAction::None
-}
-
-/// Handle number key in backend switch popup.
-fn handle_backend_switch_by_number(app: &mut App, index: usize) -> InputAction {
-    let backends = app.backends();
-
-    let Some(backend) = backends.get(index.saturating_sub(1)) else {
-        return InputAction::None;
-    };
-
-    if backend.is_active {
-        app.close_popup();
-        return InputAction::None;
-    }
-
-    if app.request_switch_backend_by_index(index) {
-        app.close_popup();
-    }
-    InputAction::None
-}
-
-/// Handle Enter key in subagent backend section.
-fn handle_subagent_backend_enter(app: &mut App) -> InputAction {
-    let sel = app.subagent_selection();
-    if sel == 0 {
-        // "Disabled" — clear subagent backend
-        app.request_clear_subagent_backend();
-        app.close_popup();
-    } else {
-        // Backend at index sel-1
-        let backend_index = sel - 1;
-        if backend_index < app.backends().len() {
-            app.request_set_subagent_backend(backend_index);
-            app.close_popup();
+    match section {
+        BackendPopupSection::ActiveBackend => {
+            app.confirm_active_backend(backend_selection);
+        }
+        BackendPopupSection::SubagentBackend => {
+            app.confirm_override_backend(
+                subagent_selection,
+                App::request_set_subagent_backend,
+                App::request_clear_subagent_backend,
+            );
+        }
+        BackendPopupSection::TeammateBackend => {
+            app.confirm_override_backend(
+                teammate_selection,
+                App::request_set_teammate_backend,
+                App::request_clear_teammate_backend,
+            );
         }
     }
     InputAction::None
 }
 
-fn handle_teammate_backend_enter(app: &mut App) -> InputAction {
-    let sel = app.teammate_selection();
-    if sel == 0 {
-        // "Disabled" — clear teammate backend
-        app.request_clear_teammate_backend();
-        app.close_popup();
-    } else {
-        let backend_index = sel - 1;
-        if backend_index < app.backends().len() {
-            app.request_set_teammate_backend(backend_index);
-            app.close_popup();
+/// Handle Backspace/Delete — clear override in subagent/teammate sections.
+fn handle_backend_delete(app: &mut App) -> InputAction {
+    let BackendSwitchState::Visible { section, .. } = *app.backend_switch() else {
+        return InputAction::None;
+    };
+
+    match section {
+        BackendPopupSection::SubagentBackend => {
+            app.request_clear_subagent_backend();
+            app.close_backend_switch_dialog();
+        }
+        BackendPopupSection::TeammateBackend => {
+            app.request_clear_teammate_backend();
+            app.close_backend_switch_dialog();
+        }
+        BackendPopupSection::ActiveBackend => {}
+    }
+    InputAction::None
+}
+
+/// Handle digit keys for quick selection.
+fn handle_backend_digit(app: &mut App, index: usize) -> InputAction {
+    let BackendSwitchState::Visible { section, .. } = *app.backend_switch() else {
+        return InputAction::None;
+    };
+
+    match section {
+        BackendPopupSection::ActiveBackend => {
+            let Some(backend) = app.backends().get(index.saturating_sub(1)) else {
+                return InputAction::None;
+            };
+            if backend.is_active {
+                app.close_backend_switch_dialog();
+                return InputAction::None;
+            }
+            if app.request_switch_backend_by_index(index) {
+                app.close_backend_switch_dialog();
+            }
+        }
+        BackendPopupSection::SubagentBackend => {
+            if index <= app.backends().len() {
+                app.request_set_subagent_backend(index - 1);
+                app.close_backend_switch_dialog();
+            }
+        }
+        BackendPopupSection::TeammateBackend => {
+            if index <= app.backends().len() {
+                app.request_set_teammate_backend(index - 1);
+                app.close_backend_switch_dialog();
+            }
         }
     }
     InputAction::None
