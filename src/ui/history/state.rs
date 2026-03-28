@@ -1,4 +1,4 @@
-use crate::ui::mvi::UiState;
+use mvi::UiState;
 use std::time::SystemTime;
 
 #[derive(Debug, Clone, PartialEq)]

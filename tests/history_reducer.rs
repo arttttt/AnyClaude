@@ -5,7 +5,7 @@ use std::time::SystemTime;
 use anyclaude::ui::history::{
     HistoryDialogState, HistoryEntry, HistoryIntent, HistoryReducer, MAX_VISIBLE_ROWS,
 };
-use anyclaude::ui::mvi::Reducer;
+use mvi::Reducer;
 
 fn make_entries(count: usize) -> Vec<HistoryEntry> {
     (0..count)

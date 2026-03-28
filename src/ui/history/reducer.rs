@@ -1,6 +1,6 @@
 use crate::ui::history::intent::HistoryIntent;
 use crate::ui::history::state::HistoryDialogState;
-use crate::ui::mvi::Reducer;
+use mvi::Reducer;
 
 pub const MAX_VISIBLE_ROWS: usize = 14;
 

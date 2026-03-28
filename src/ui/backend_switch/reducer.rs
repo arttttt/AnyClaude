@@ -1,6 +1,6 @@
 use crate::ui::backend_switch::intent::BackendSwitchIntent;
 use crate::ui::backend_switch::state::{BackendPopupSection, BackendSwitchState};
-use crate::ui::mvi::Reducer;
+use mvi::Reducer;
 
 pub struct BackendSwitchReducer;
 

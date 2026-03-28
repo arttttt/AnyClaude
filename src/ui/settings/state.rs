@@ -1,5 +1,5 @@
 use crate::config::SettingsFieldSnapshot;
-use crate::ui::mvi::UiState;
+use mvi::UiState;
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum SettingsDialogState {

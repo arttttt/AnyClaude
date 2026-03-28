@@ -4,7 +4,7 @@ use crate::ipc::{BackendInfo, ProxyStatus};
 use crate::pty::PtyHandle;
 use crate::ui::backend_switch::{BackendSwitchIntent, BackendSwitchReducer, BackendSwitchState};
 use crate::ui::history::{HistoryDialogState, HistoryEntry, HistoryIntent, HistoryReducer};
-use crate::ui::mvi::Reducer;
+use mvi::Reducer;
 use crate::ui::pty::{PtyIntent, PtyLifecycleState, PtyReducer};
 use crate::ui::selection::{GridPos, TextSelection};
 use crate::ui::settings::{SettingsDialogState, SettingsIntent, SettingsReducer};

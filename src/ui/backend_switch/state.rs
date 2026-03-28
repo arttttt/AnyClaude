@@ -1,4 +1,4 @@
-use crate::ui::mvi::UiState;
+use mvi::UiState;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
 pub enum BackendPopupSection {

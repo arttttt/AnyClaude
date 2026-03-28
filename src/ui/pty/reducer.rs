@@ -2,7 +2,7 @@
 
 use std::collections::VecDeque;
 
-use crate::ui::mvi::Reducer;
+use mvi::Reducer;
 
 use super::intent::PtyIntent;
 use super::state::PtyLifecycleState;
