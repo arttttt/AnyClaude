@@ -1,5 +1,4 @@
 use crate::config::SettingSection;
-use crate::error::ErrorSeverity;
 use crate::ui::app::{App, PopupKind};
 use crate::ui::components::PopupDialog;
 use crate::ui::footer::Footer;
@@ -10,14 +9,12 @@ use crate::ui::settings::SettingsDialogState;
 use crate::ui::terminal::TerminalBody;
 use crate::ui::theme::{
     ACTIVE_HIGHLIGHT, CLAUDE_ORANGE, HEADER_SEPARATOR, HEADER_TEXT, STATUS_ERROR, STATUS_OK,
-    STATUS_WARNING,
 };
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Clear;
 use ratatui::Frame;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
 
 pub fn draw(frame: &mut Frame<'_>, app: &App) {
     let area = frame.area();
@@ -88,175 +85,6 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
         }
 
         let (title, lines) = match kind {
-            PopupKind::Status => {
-                let mut lines = Vec::new();
-
-                // Find active backend info
-                let active_backend = app.backends().iter().find(|b| b.is_active);
-
-                if let Some(backend) = active_backend {
-                    // Provider
-                    lines.push(Line::from(vec![
-                        Span::styled("  Provider:  ", Style::default().fg(HEADER_TEXT)),
-                        Span::styled(&backend.display_name, Style::default().fg(HEADER_TEXT)),
-                    ]));
-
-                    // URL (truncate if too long)
-                    let url = if backend.base_url.len() > 40 {
-                        format!("{}...", &backend.base_url[..37])
-                    } else {
-                        backend.base_url.clone()
-                    };
-                    lines.push(Line::from(vec![
-                        Span::styled("  URL:       ", Style::default().fg(HEADER_TEXT)),
-                        Span::styled(url, Style::default().fg(HEADER_TEXT)),
-                    ]));
-
-                    // Status
-                    let (status_text, status_color) =
-                        if app.proxy_status().is_some_and(|s| s.healthy) {
-                            ("Connected", STATUS_OK)
-                        } else {
-                            ("Error", STATUS_ERROR)
-                        };
-                    lines.push(Line::from(vec![
-                        Span::styled("  Status:    ", Style::default().fg(HEADER_TEXT)),
-                        Span::styled(status_text, Style::default().fg(status_color)),
-                        Span::styled("   ●", Style::default().fg(status_color)),
-                    ]));
-
-                    // Latency - get from most recent request for this backend
-                    let latency_str = if let Some(metrics) = app.metrics() {
-                        metrics
-                            .recent
-                            .iter()
-                            .rev()
-                            .find(|r| r.backend == backend.id)
-                            .and_then(|r| r.latency_ms)
-                            .map(|ms| format!("{} ms", ms))
-                            .unwrap_or_else(|| "—".to_string())
-                    } else {
-                        "—".to_string()
-                    };
-                    lines.push(Line::from(vec![
-                        Span::styled("  Latency:   ", Style::default().fg(HEADER_TEXT)),
-                        Span::styled(latency_str, Style::default().fg(HEADER_TEXT)),
-                    ]));
-
-                    // Tokens - estimated from most recent request
-                    let tokens_str = if let Some(metrics) = app.metrics() {
-                        metrics
-                            .recent
-                            .iter()
-                            .rev()
-                            .find(|r| r.backend == backend.id)
-                            .map(|r| {
-                                let input = r
-                                    .request_analysis
-                                    .as_ref()
-                                    .and_then(|a| a.estimated_input_tokens)
-                                    .map(|t| format!("{}", t))
-                                    .unwrap_or_else(|| "—".to_string());
-                                // Estimate output tokens from response bytes (rough: ~4 chars per token)
-                                let output = if r.response_bytes > 0 {
-                                    format!("{}", r.response_bytes / 4)
-                                } else {
-                                    "—".to_string()
-                                };
-                                format!("{} in / {} out", input, output)
-                            })
-                            .unwrap_or_else(|| "— in / — out".to_string())
-                    } else {
-                        "— in / — out".to_string()
-                    };
-                    lines.push(Line::from(vec![
-                        Span::styled("  Tokens:    ", Style::default().fg(HEADER_TEXT)),
-                        Span::styled(tokens_str, Style::default().fg(HEADER_TEXT)),
-                    ]));
-
-                } else {
-                    lines.push(Line::from("  No backend configured"));
-                }
-
-                // Show recent errors from error registry
-                let recent_errors: Vec<_> = app
-                    .error_registry()
-                    .all_errors()
-                    .into_iter()
-                    .rev()
-                    .filter(|e| e.severity >= ErrorSeverity::Warning)
-                    .take(5)
-                    .collect();
-
-                if !recent_errors.is_empty() {
-                    lines.push(Line::from(""));
-                    lines.push(Line::from(vec![Span::styled(
-                        "  Recent Issues:",
-                        Style::default().fg(STATUS_WARNING),
-                    )]));
-
-                    for error in recent_errors {
-                        let time_ago = format_time_ago(error.timestamp);
-                        let color = match error.severity {
-                            ErrorSeverity::Critical | ErrorSeverity::Error => STATUS_ERROR,
-                            ErrorSeverity::Warning => STATUS_WARNING,
-                            ErrorSeverity::Info => STATUS_OK,
-                        };
-                        lines.push(Line::from(vec![
-                            Span::styled(
-                                format!("    [{time_ago}] "),
-                                Style::default().fg(HEADER_TEXT),
-                            ),
-                            Span::styled(error.message.clone(), Style::default().fg(color)),
-                        ]));
-
-                        if let Some(details) = &error.details {
-                            // Show first line of details
-                            if let Some(first_line) = details.lines().next() {
-                                let truncated = if first_line.len() > 50 {
-                                    format!("{}...", &first_line[..47])
-                                } else {
-                                    first_line.to_string()
-                                };
-                                lines.push(Line::from(vec![Span::styled(
-                                    format!("      {truncated}"),
-                                    Style::default().fg(HEADER_TEXT),
-                                )]));
-                            }
-                        }
-                    }
-                }
-
-                // Show active recovery operations
-                let recoveries = app.error_registry().active_recoveries();
-                if !recoveries.is_empty() {
-                    lines.push(Line::from(""));
-                    lines.push(Line::from(vec![Span::styled(
-                        "  Recovery:",
-                        Style::default().fg(STATUS_WARNING),
-                    )]));
-
-                    for recovery in &recoveries {
-                        lines.push(Line::from(vec![Span::styled(
-                            format!(
-                                "    {} (attempt {}/{})",
-                                recovery.operation, recovery.attempt, recovery.max_attempts
-                            ),
-                            Style::default().fg(STATUS_WARNING),
-                        )]));
-                    }
-                }
-
-                if let Some(error) = app.last_ipc_error() {
-                    lines.push(Line::from(""));
-                    lines.push(Line::from(vec![Span::styled(
-                        format!("  IPC error: {error}"),
-                        Style::default().fg(STATUS_ERROR),
-                    )]));
-                }
-
-                ("Network Diagnostics", lines)
-            }
             PopupKind::BackendSwitch => {
                 use crate::ui::app::BackendPopupSection;
                 let mut lines = Vec::new();
@@ -471,18 +299,9 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
             PopupKind::History | PopupKind::Settings => unreachable!("handled above"),
         };
 
-        let mut dialog = PopupDialog::new(title, lines);
-        match kind {
-            PopupKind::Status => {
-                dialog = dialog.footer("Esc/Ctrl+S: Close");
-            }
-            PopupKind::BackendSwitch => {
-                dialog = dialog
-                    .min_width(60)
-                    .footer("Tab: Section  Up/Down: Move  Enter: Select  Del: Clear  Esc: Close");
-            }
-            PopupKind::History | PopupKind::Settings => unreachable!(),
-        }
+        let dialog = PopupDialog::new(title, lines)
+            .min_width(60)
+            .footer("Tab: Section  Up/Down: Move  Enter: Select  Del: Clear  Esc: Close");
         dialog.render(frame, body);
 
     }
@@ -556,18 +375,4 @@ fn render_settings_dialog(
         .min_width(50)
         .footer(footer)
         .render(frame, body);
-}
-
-/// Format a timestamp as a human-readable relative time.
-fn format_time_ago(timestamp: SystemTime) -> String {
-    let now = SystemTime::now();
-    let elapsed = now.duration_since(timestamp).unwrap_or(Duration::ZERO);
-
-    if elapsed.as_secs() < 60 {
-        format!("{}s ago", elapsed.as_secs())
-    } else if elapsed.as_secs() < 3600 {
-        format!("{}m ago", elapsed.as_secs() / 60)
-    } else {
-        format!("{}h ago", elapsed.as_secs() / 3600)
-    }
 }

@@ -94,7 +94,6 @@ the UI thread.
 pub enum UiCommand {
     SwitchBackend { backend_id: String },
     RefreshStatus,
-    RefreshMetrics { backend_id: Option<String> },
     RefreshBackends,
     ReloadConfig,
 }
@@ -102,7 +101,6 @@ pub enum UiCommand {
 pub enum AppEvent {
     // existing
     IpcStatus(ProxyStatus),
-    IpcMetrics(MetricsSnapshot),
     IpcBackends(Vec<BackendInfo>),
     IpcError(String),
 }
@@ -140,11 +138,10 @@ Notes:
 - Bridge calls `IpcClient::switch_backend` and returns the new active backend.
 - UI refreshes status + backend list on success.
 
-## Metrics + Status Refresh
+## Status Refresh
 
-- UI periodically sends `UiCommand::RefreshStatus` and `RefreshMetrics` on tick
-  (rate-limited) or when status popup is open.
-- IPC responses are cached in `App` for header + popup rendering.
+- UI periodically sends `UiCommand::RefreshStatus` on tick (rate-limited).
+- IPC responses are cached in `App` for header rendering.
 
 ## Shutdown Sequence
 

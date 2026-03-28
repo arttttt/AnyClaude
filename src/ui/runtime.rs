@@ -27,7 +27,6 @@ use uuid::Uuid;
 
 const UI_COMMAND_BUFFER: usize = 32;
 const STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
-const METRICS_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 const BACKENDS_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 
 pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Result<()> {
@@ -421,11 +420,6 @@ pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Re
                 if app.should_refresh_status(STATUS_REFRESH_INTERVAL) {
                     app.request_status_refresh();
                 }
-                if app.popup_kind() == Some(crate::ui::app::PopupKind::Status)
-                    && app.should_refresh_metrics(METRICS_REFRESH_INTERVAL)
-                {
-                    app.request_metrics_refresh(None);
-                }
                 if app.popup_kind() == Some(crate::ui::app::PopupKind::BackendSwitch)
                     && app.should_refresh_backends(BACKENDS_REFRESH_INTERVAL)
                 {
@@ -454,7 +448,6 @@ pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Re
                 app.request_status_refresh();
             }
             Ok(AppEvent::IpcStatus(status)) => app.update_status(status),
-            Ok(AppEvent::IpcMetrics(metrics)) => app.update_metrics(metrics),
             Ok(AppEvent::IpcBackends(backends)) => app.update_backends(backends),
             Ok(AppEvent::IpcError(message)) => app.set_ipc_error(message),
             Ok(AppEvent::ConfigError(message)) => {
@@ -655,15 +648,6 @@ async fn run_ui_bridge(
             UiCommand::RefreshStatus => match ipc_client.get_status().await {
                 Ok(status) => {
                     let _ = event_tx.send(AppEvent::IpcStatus(status));
-                }
-                Err(err) => {
-                    let _ = event_tx.send(AppEvent::IpcError(err.to_string()));
-                }
-            },
-            UiCommand::RefreshMetrics { backend_id } => match ipc_client.get_metrics(backend_id).await
-            {
-                Ok(metrics) => {
-                    let _ = event_tx.send(AppEvent::IpcMetrics(metrics));
                 }
                 Err(err) => {
                     let _ = event_tx.send(AppEvent::IpcError(err.to_string()));

@@ -94,6 +94,12 @@ pub struct AgentRegistry {
     inner: Arc<RwLock<HashMap<String, String>>>,
 }
 
+impl Default for AgentRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AgentRegistry {
     /// AC marker delimiters — used for subagent session affinity.
     /// Shared between hooks (write) and routing (read).

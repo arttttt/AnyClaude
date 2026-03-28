@@ -81,7 +81,6 @@ The wrapper automatically:
 | Key | Action |
 |-----|--------|
 | `Ctrl+B` | Backend switcher popup |
-| `Ctrl+S` | Status/metrics popup |
 | `Ctrl+H` | Backend switch history |
 | `Ctrl+E` | Settings dialog |
 | `Ctrl+R` | Restart Claude Code (preserves session) |

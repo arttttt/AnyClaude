@@ -1,7 +1,6 @@
 use crate::config::{ClaudeSettingsManager, ConfigStore};
 use crate::error::ErrorRegistry;
 use crate::ipc::{BackendInfo, ProxyStatus};
-use crate::metrics::MetricsSnapshot;
 use crate::pty::PtyHandle;
 use crate::ui::history::{HistoryDialogState, HistoryEntry, HistoryIntent, HistoryReducer};
 use crate::ui::mvi::Reducer;
@@ -17,7 +16,6 @@ use tokio::sync::mpsc;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PopupKind {
     BackendSwitch,
-    Status,
     History,
     Settings,
 }
@@ -43,7 +41,6 @@ pub enum UiCommand {
     SetTeammateBackend { backend_id: Option<String> },
     RestartClaude,
     RefreshStatus,
-    RefreshMetrics { backend_id: Option<String> },
     RefreshBackends,
     ReloadConfig,
     RestartPty {
@@ -78,12 +75,10 @@ pub struct App {
     session_copied_until: Option<Instant>,
     ipc_sender: Option<UiCommandSender>,
     proxy_status: Option<ProxyStatus>,
-    metrics: Option<MetricsSnapshot>,
     backends: Vec<BackendInfo>,
     backend_selection: usize,
     last_ipc_error: Option<String>,
     last_status_refresh: Instant,
-    last_metrics_refresh: Instant,
     last_backends_refresh: Instant,
     /// State of the history dialog (MVI pattern).
     history_dialog: HistoryDialogState,
@@ -141,12 +136,10 @@ impl App {
             session_copied_until: None,
             ipc_sender: None,
             proxy_status: None,
-            metrics: None,
             backends: Vec::new(),
             backend_selection: 0,
             last_ipc_error: None,
             last_status_refresh: now,
-            last_metrics_refresh: now,
             last_backends_refresh: now,
             history_dialog: HistoryDialogState::default(),
             history_provider: None,
@@ -416,10 +409,6 @@ impl App {
         self.proxy_status.as_ref()
     }
 
-    pub fn metrics(&self) -> Option<&MetricsSnapshot> {
-        self.metrics.as_ref()
-    }
-
     pub fn backends(&self) -> &[BackendInfo] {
         &self.backends
     }
@@ -434,10 +423,6 @@ impl App {
 
     pub fn update_status(&mut self, status: ProxyStatus) {
         self.proxy_status = Some(status);
-    }
-
-    pub fn update_metrics(&mut self, metrics: MetricsSnapshot) {
-        self.metrics = Some(metrics);
     }
 
     pub fn update_backends(&mut self, backends: Vec<BackendInfo>) {
@@ -460,10 +445,6 @@ impl App {
 
     pub fn request_status_refresh(&mut self) {
         self.send_command(UiCommand::RefreshStatus);
-    }
-
-    pub fn request_metrics_refresh(&mut self, backend_id: Option<String>) {
-        self.send_command(UiCommand::RefreshMetrics { backend_id });
     }
 
     pub fn request_backends_refresh(&mut self) {
@@ -517,14 +498,6 @@ impl App {
     pub fn should_refresh_status(&mut self, interval: Duration) -> bool {
         if self.last_status_refresh.elapsed() >= interval {
             self.last_status_refresh = Instant::now();
-            return true;
-        }
-        false
-    }
-
-    pub fn should_refresh_metrics(&mut self, interval: Duration) -> bool {
-        if self.last_metrics_refresh.elapsed() >= interval {
-            self.last_metrics_refresh = Instant::now();
             return true;
         }
         false

@@ -2,7 +2,6 @@ use tokio::sync::oneshot;
 
 use crate::backend::BackendError;
 use crate::config::DebugLoggingConfig;
-use crate::metrics::MetricsSnapshot;
 
 #[derive(Debug)]
 pub enum IpcError {
@@ -45,10 +44,6 @@ pub enum IpcCommand {
     },
     GetStatus {
         respond_to: oneshot::Sender<ProxyStatus>,
-    },
-    GetMetrics {
-        backend_id: Option<String>,
-        respond_to: oneshot::Sender<MetricsSnapshot>,
     },
     ListBackends {
         respond_to: oneshot::Sender<Vec<BackendInfo>>,

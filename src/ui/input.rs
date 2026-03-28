@@ -43,14 +43,6 @@ pub fn classify_key(app: &mut App, key: &KeyInput) -> InputAction {
             }
             InputAction::None
         }
-        KeyKind::Control('s') => {
-            let opened = app.toggle_popup(PopupKind::Status);
-            if opened {
-                app.request_status_refresh();
-                app.request_metrics_refresh(None);
-            }
-            InputAction::None
-        }
         KeyKind::Control('h') => {
             app.open_history_dialog();
             InputAction::None
@@ -78,7 +70,6 @@ fn handle_popup_key(app: &mut App, key: &KeyInput) -> InputAction {
         PopupKind::History => handle_history_key(app, key),
         PopupKind::Settings => handle_settings_key(app, key),
         PopupKind::BackendSwitch => handle_backend_switch_key(app, key),
-        PopupKind::Status => handle_generic_popup_key(app, key),
     }
 }
 
@@ -125,13 +116,7 @@ fn handle_settings_key(app: &mut App, key: &KeyInput) -> InputAction {
 
 fn handle_backend_switch_key(app: &mut App, key: &KeyInput) -> InputAction {
     match &key.kind {
-        KeyKind::Escape => {
-            app.close_popup();
-        }
-        KeyKind::Control('b') => {
-            app.close_popup();
-        }
-        KeyKind::Control('s') | KeyKind::Control('h') => {
+        KeyKind::Escape | KeyKind::Control('b') | KeyKind::Control('h') => {
             app.close_popup();
         }
         KeyKind::Tab => {
@@ -192,19 +177,6 @@ fn handle_backend_switch_key(app: &mut App, key: &KeyInput) -> InputAction {
                     }
                 }
             }
-        }
-        _ => {}
-    }
-    InputAction::None
-}
-
-fn handle_generic_popup_key(app: &mut App, key: &KeyInput) -> InputAction {
-    match &key.kind {
-        KeyKind::Escape => {
-            app.close_popup();
-        }
-        KeyKind::Control('b') | KeyKind::Control('s') | KeyKind::Control('h') => {
-            app.close_popup();
         }
         _ => {}
     }

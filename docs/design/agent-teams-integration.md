@@ -515,32 +515,6 @@ On terminal resize (`AppEvent::Resize`):
 
 ---
 
-## Metrics Aggregation
-
-With multiple agents, the Status popup (Ctrl+S) should show aggregate data:
-
-```
-Ctrl+S  →  ┌───────────────────────────────────────────┐
-            │  Status                             [Ctrl+S] │
-            │                                             │
-            │  ── Team Totals ──                          │
-            │  Total requests: 47                         │
-            │  Total tokens: 125,000 in / 43,000 out      │
-            │  Estimated cost: $2.34                       │
-            │                                             │
-            │  ── Per Agent ──                            │
-            │  Lead (Anthropic):     $1.80  (32 req)      │
-            │  investigator-a (OR):  $0.32  (8 req)       │
-            │  investigator-b (OR):  $0.22  (7 req)       │
-            │                                             │
-            │  ── Connection ──                           │
-            │  Proxy: 127.0.0.1:8080 (active)             │
-            │  Uptime: 1h 23m                             │
-            └─────────────────────────────────────────────┘
-```
-
----
-
 ## Risk Assessment
 
 | Risk | Impact | Mitigation |
@@ -572,11 +546,7 @@ Ctrl+S  →  ┌─────────────────────�
    - Hybrid: auto-assign with manual override via Ctrl+B on focused pane
    **Recommendation:** Hybrid approach. Config provides default, Ctrl+B overrides.
 
-3. **Metrics aggregation granularity.**
-   Should Ctrl+S show per-agent breakdown or only totals?
-   **Recommendation:** Totals by default in Ctrl+S, per-agent in Ctrl+T dashboard.
-
-4. **Should AnyClaude manage teammate lifecycle?**
+3. **Should AnyClaude manage teammate lifecycle?**
    Currently Claude Code spawns/terminates teammates. Should AnyClaude add
    ability to manually spawn/stop individual teammates?
    **Recommendation:** No. Respect Claude Code's team management. AnyClaude only

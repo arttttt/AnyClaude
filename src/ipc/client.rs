@@ -4,7 +4,6 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::backend::BackendError;
 use crate::config::DebugLoggingConfig;
-use crate::metrics::MetricsSnapshot;
 
 use super::types::{BackendInfo, IpcCommand, IpcError, ProxyStatus};
 
@@ -40,22 +39,6 @@ impl IpcClient {
         let (respond_to, receiver) = oneshot::channel();
         self.sender
             .send(IpcCommand::GetStatus { respond_to })
-            .await
-            .map_err(|_| IpcError::Disconnected)?;
-
-        recv_with_timeout(receiver).await
-    }
-
-    pub async fn get_metrics(
-        &self,
-        backend_id: Option<String>,
-    ) -> Result<MetricsSnapshot, IpcError> {
-        let (respond_to, receiver) = oneshot::channel();
-        self.sender
-            .send(IpcCommand::GetMetrics {
-                backend_id,
-                respond_to,
-            })
             .await
             .map_err(|_| IpcError::Disconnected)?;
 

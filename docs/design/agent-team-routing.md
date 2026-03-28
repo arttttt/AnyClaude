@@ -590,14 +590,6 @@ Metrics are already aggregated per-backend via `ObservabilityHub.snapshot()`.
 If teammate requests go through backend `"openrouter-sonnet"`, they
 automatically appear as separate metrics. Zero additional code.
 
-Status popup (Ctrl+S) already shows per-backend breakdown:
-
-```
-anthropic:          $1.80  (32 req)
-openrouter-sonnet:  $0.54  (15 req)
-Total:              $2.34  (47 req)
-```
-
 ### Phase 3: Per-Agent / Per-Team Routing (Optional)
 
 Different backends per agent or per team, not just lead vs all teammates.
