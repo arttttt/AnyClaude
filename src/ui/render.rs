@@ -1,5 +1,6 @@
 use crate::config::SettingSection;
 use crate::ui::app::{App, PopupKind};
+use crate::ui::backend_switch::render_backend_switch_dialog;
 use crate::ui::components::PopupDialog;
 use crate::ui::footer::Footer;
 use crate::ui::header::Header;
@@ -8,7 +9,7 @@ use crate::ui::layout::layout_regions;
 use crate::ui::settings::SettingsDialogState;
 use crate::ui::terminal::TerminalBody;
 use crate::ui::theme::{
-    ACTIVE_HIGHLIGHT, CLAUDE_ORANGE, HEADER_SEPARATOR, HEADER_TEXT, STATUS_ERROR, STATUS_OK,
+    ACTIVE_HIGHLIGHT, CLAUDE_ORANGE, HEADER_SEPARATOR, HEADER_TEXT, STATUS_OK,
 };
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -74,236 +75,25 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
     frame.render_widget(footer_widget.widget(footer), footer);
 
     if let Some(kind) = app.popup_kind() {
-        // History and Settings dialogs render themselves independently
-        if matches!(kind, PopupKind::History) {
-            render_history_dialog(frame, app.history_dialog());
-            return;
-        }
-        if matches!(kind, PopupKind::Settings) {
-            render_settings_dialog(frame, app.settings_dialog(), body);
-            return;
-        }
-
-        let (title, lines) = match kind {
-            PopupKind::BackendSwitch => {
-                use crate::ui::app::BackendPopupSection;
-                let mut lines = Vec::new();
-                let active_section = app.backend_popup_section();
-
-                // Helper to format backend list
-                let format_backend_list = |backends: &[crate::ipc::BackendInfo], selected_idx: usize, active_section: bool| -> Vec<Line<'static>> {
-                    if backends.is_empty() {
-                        return vec![Line::from("    No backends available.")];
-                    }
-
-                    let max_name_width = backends
-                        .iter()
-                        .map(|b| b.display_name.chars().count())
-                        .max()
-                        .unwrap_or(0);
-
-                    let mut result = Vec::new();
-                    for (idx, backend) in backends.iter().enumerate() {
-                        let (status_text, status_color) = if backend.is_active {
-                            ("Active", STATUS_OK)
-                        } else if backend.is_configured {
-                            ("Ready", STATUS_OK)
-                        } else {
-                            ("Missing", STATUS_ERROR)
-                        };
-                        let is_selected = active_section && idx == selected_idx;
-
-                        let base_style = if is_selected {
-                            Style::default().bg(ACTIVE_HIGHLIGHT)
-                        } else {
-                            Style::default()
-                        };
-
-                        let mut spans = Vec::new();
-                        let prefix = if is_selected {
-                            format!("  → {}. ", idx + 1)
-                        } else {
-                            format!("    {}. ", idx + 1)
-                        };
-                        spans.push(Span::styled(prefix, base_style.fg(HEADER_TEXT)));
-                        spans.push(Span::styled(
-                            format!("{:<width$}", backend.display_name, width = max_name_width),
-                            base_style.fg(HEADER_TEXT),
-                        ));
-                        spans.push(Span::styled("  [", base_style));
-                        spans.push(Span::styled(status_text, base_style.fg(status_color)));
-                        spans.push(Span::styled("]", base_style));
-
-                        result.push(Line::from(spans));
-                    }
-                    result
-                };
-
-                // --- Active Backend Section ---
-                let active_header_marker = if active_section == BackendPopupSection::ActiveBackend { "▸ " } else { "  " };
-                lines.push(Line::from(vec![
-                    Span::styled(format!("{}Active Backend", active_header_marker), Style::default().bold()),
-                ]));
-                lines.push(Line::from("  ─────────────────"));
-                lines.extend(format_backend_list(
-                    app.backends(),
-                    app.backend_selection(),
-                    active_section == BackendPopupSection::ActiveBackend,
-                ));
-
-                // --- Subagent Backend Section ---
-                lines.push(Line::from(""));
-                let subagent_header_marker = if active_section == BackendPopupSection::SubagentBackend { "▸ " } else { "  " };
-                lines.push(Line::from(vec![
-                    Span::styled(format!("{}Subagent Backend", subagent_header_marker), Style::default().bold()),
-                ]));
-                lines.push(Line::from("  ─────────────────"));
-
-                // Always show backend list; first item is "Disabled" (inherit).
-                // subagent_selection: 0 = Disabled, 1..N = backends
-                let subagent_backend = app.subagent_backend();
-                let in_section = active_section == BackendPopupSection::SubagentBackend;
-                let sel = app.subagent_selection();
-
-                // Item 0: Disabled (use active backend)
-                {
-                    let is_selected = in_section && sel == 0;
-                    let is_current = subagent_backend.is_none();
-                    let base_style = if is_selected {
-                        Style::default().bg(ACTIVE_HIGHLIGHT)
-                    } else {
-                        Style::default()
-                    };
-                    let prefix = if is_selected { "  → " } else { "    " };
-                    let mut spans = vec![
-                        Span::styled(format!("{}Disabled (use active backend)", prefix), base_style.fg(HEADER_TEXT)),
-                    ];
-                    if is_current {
-                        spans.push(Span::styled("  [", base_style));
-                        spans.push(Span::styled("Active", base_style.fg(STATUS_OK)));
-                        spans.push(Span::styled("]", base_style));
-                    }
-                    lines.push(Line::from(spans));
-                }
-
-                let max_name_width = app.backends()
-                    .iter()
-                    .map(|b| b.display_name.chars().count())
-                    .max()
-                    .unwrap_or(0);
-
-                // Items 1..N: backends
-                for (idx, backend) in app.backends().iter().enumerate() {
-                    let item_index = idx + 1; // offset by 1 because 0 = Disabled
-                    let is_selected = in_section && sel == item_index;
-                    let is_current = subagent_backend == Some(backend.id.as_str());
-
-                    let base_style = if is_selected {
-                        Style::default().bg(ACTIVE_HIGHLIGHT)
-                    } else {
-                        Style::default()
-                    };
-
-                    let mut spans = Vec::new();
-                    let prefix = if is_selected {
-                        format!("  → {}. ", idx + 1)
-                    } else {
-                        format!("    {}. ", idx + 1)
-                    };
-                    spans.push(Span::styled(prefix, base_style.fg(HEADER_TEXT)));
-                    spans.push(Span::styled(
-                        format!("{:<width$}", backend.display_name, width = max_name_width),
-                        base_style.fg(HEADER_TEXT),
-                    ));
-                    if is_current {
-                        spans.push(Span::styled("  [", base_style));
-                        spans.push(Span::styled("Selected", base_style.fg(STATUS_OK)));
-                        spans.push(Span::styled("]", base_style));
-                    }
-
-                    lines.push(Line::from(spans));
-                }
-
-                if let Some(error) = app.last_ipc_error() {
-                    lines.push(Line::from(""));
-                    lines.push(Line::from(format!("    IPC error: {error}")));
-                }
-
-                // --- Teammate Backend Section ---
-                lines.push(Line::from(""));
-                let teammate_header_marker = if active_section == BackendPopupSection::TeammateBackend { "▸ " } else { "  " };
-                lines.push(Line::from(vec![
-                    Span::styled(format!("{}Teammate Backend", teammate_header_marker), Style::default().bold()),
-                ]));
-                lines.push(Line::from("  ─────────────────"));
-
-                let teammate_backend = app.teammate_backend();
-                let in_teammate_section = active_section == BackendPopupSection::TeammateBackend;
-                let teammate_sel = app.teammate_selection();
-
-                // Item 0: Disabled (use active backend)
-                {
-                    let is_selected = in_teammate_section && teammate_sel == 0;
-                    let is_current = teammate_backend.is_none();
-                    let base_style = if is_selected {
-                        Style::default().bg(ACTIVE_HIGHLIGHT)
-                    } else {
-                        Style::default()
-                    };
-                    let prefix = if is_selected { "  → " } else { "    " };
-                    let mut spans = vec![
-                        Span::styled(format!("{}Disabled (use active backend)", prefix), base_style.fg(HEADER_TEXT)),
-                    ];
-                    if is_current {
-                        spans.push(Span::styled("  [", base_style));
-                        spans.push(Span::styled("Active", base_style.fg(STATUS_OK)));
-                        spans.push(Span::styled("]", base_style));
-                    }
-                    lines.push(Line::from(spans));
-                }
-
-                // Items 1..N: backends
-                for (idx, backend) in app.backends().iter().enumerate() {
-                    let item_index = idx + 1;
-                    let is_selected = in_teammate_section && teammate_sel == item_index;
-                    let is_current = teammate_backend == Some(backend.id.as_str());
-
-                    let base_style = if is_selected {
-                        Style::default().bg(ACTIVE_HIGHLIGHT)
-                    } else {
-                        Style::default()
-                    };
-
-                    let mut spans = Vec::new();
-                    let prefix = if is_selected {
-                        format!("  → {}. ", idx + 1)
-                    } else {
-                        format!("    {}. ", idx + 1)
-                    };
-                    spans.push(Span::styled(prefix, base_style.fg(HEADER_TEXT)));
-                    spans.push(Span::styled(
-                        format!("{:<width$}", backend.display_name, width = max_name_width),
-                        base_style.fg(HEADER_TEXT),
-                    ));
-                    if is_current {
-                        spans.push(Span::styled("  [", base_style));
-                        spans.push(Span::styled("Selected", base_style.fg(STATUS_OK)));
-                        spans.push(Span::styled("]", base_style));
-                    }
-
-                    lines.push(Line::from(spans));
-                }
-
-                ("Select Backend", lines)
+        match kind {
+            PopupKind::History => {
+                render_history_dialog(frame, app.history_dialog());
             }
-            PopupKind::History | PopupKind::Settings => unreachable!("handled above"),
-        };
-
-        let dialog = PopupDialog::new(title, lines)
-            .min_width(60)
-            .footer("Tab: Section  Up/Down: Move  Enter: Select  Del: Clear  Esc: Close");
-        dialog.render(frame, body);
-
+            PopupKind::Settings => {
+                render_settings_dialog(frame, app.settings_dialog(), body);
+            }
+            PopupKind::BackendSwitch => {
+                render_backend_switch_dialog(
+                    frame,
+                    app.backend_switch(),
+                    app.backends(),
+                    app.subagent_backend(),
+                    app.teammate_backend(),
+                    app.last_ipc_error(),
+                    body,
+                );
+            }
+        }
     }
 }
 

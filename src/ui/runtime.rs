@@ -27,7 +27,6 @@ use uuid::Uuid;
 
 const UI_COMMAND_BUFFER: usize = 32;
 const STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
-const BACKENDS_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 
 pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Result<()> {
     let (mut terminal, guard) = setup_terminal()?;
@@ -419,11 +418,6 @@ pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Re
                 app.on_tick();
                 if app.should_refresh_status(STATUS_REFRESH_INTERVAL) {
                     app.request_status_refresh();
-                }
-                if app.popup_kind() == Some(crate::ui::app::PopupKind::BackendSwitch)
-                    && app.should_refresh_backends(BACKENDS_REFRESH_INTERVAL)
-                {
-                    app.request_backends_refresh();
                 }
             }
             Ok(AppEvent::Resize(cols, rows)) => {
