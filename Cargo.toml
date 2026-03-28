@@ -30,7 +30,7 @@ ratatui = "0.30"
 
 # Async runtime
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-util", "signal", "time"] }
-uuid = { version = "1.20", features = ["v4"] }
+uuid = { version = "1.23", features = ["v4"] }
 
 # HTTP Proxy
 axum = { version = "0.8", features = ["json"] }
@@ -45,7 +45,7 @@ clap = { version = "4", features = ["derive"] }
 # Config
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-toml = "1.0"
+toml = "1.1"
 dirs = "6.0"
 thiserror = "2.0"
 fs2 = "0.4"
@@ -61,10 +61,10 @@ libc = "0.2"
 arboard = { version = "3.6", default-features = true }
 
 # Error handling
-anyhow = "1.0.100"
+anyhow = "1.0.102"
 
 # Temporary files
-tempfile = "3.24"
+tempfile = "3.27"
 
 [profile.release]
 opt-level = 3
