@@ -49,6 +49,7 @@ pub struct RouterEngine {
 }
 
 impl RouterEngine {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         timeout_config: TimeoutConfig,
         pool_config: PoolConfig,
@@ -95,7 +96,7 @@ async fn auth_middleware(
             .get("x-session-token")
             .and_then(|v| v.to_str().ok());
 
-        let valid = session_header.map_or(false, |t| t == expected_token);
+        let valid = session_header.is_some_and(|t| t == expected_token);
 
         if !valid {
             return Response::builder()

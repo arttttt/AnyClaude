@@ -19,7 +19,6 @@ The anyclaude application needs comprehensive error handling across six componen
 | IPC | `IpcError` enum | ✅ Complete |
 | Upstream | Retry with exponential backoff | ✅ Complete |
 | Header | Status indicator (🟢/🔴/⚪) | ✅ Complete |
-| Diagnostics | Network Diagnostics panel (Ctrl+S) | ✅ Complete |
 | Shutdown | `ShutdownCoordinator` | ✅ Complete |
 
 ### Gaps to Address
@@ -418,66 +417,6 @@ Add `STATUS_WARNING` to theme:
 pub const STATUS_WARNING: Color = Color::Rgb(0xf5, 0x9e, 0x0b); // amber-500
 ```
 
-#### Network Diagnostics Panel — Error Details
-
-Update diagnostics panel in `src/ui/render.rs`:
-
-```rust
-PopupKind::Status => {
-    let mut lines = Vec::new();
-
-    // ... existing backend info ...
-
-    // Add error section if there are errors
-    let errors = error_registry.errors_by_category(ErrorCategory::Network);
-    if !errors.is_empty() {
-        lines.push(Line::from(""));
-        lines.push(Line::from(vec![
-            Span::styled("  Recent Errors:", Style::default().fg(STATUS_ERROR)),
-        ]));
-
-        for error in errors.iter().take(3) {
-            let time = format_relative_time(error.timestamp);
-            lines.push(Line::from(vec![
-                Span::styled(format!("    [{time}] "), Style::default().fg(HEADER_TEXT)),
-                Span::styled(&error.message, Style::default().fg(STATUS_ERROR)),
-            ]));
-
-            if let Some(details) = &error.details {
-                for line in details.lines().take(2) {
-                    lines.push(Line::from(vec![
-                        Span::styled(format!("      {line}"), Style::default().fg(HEADER_TEXT)),
-                    ]));
-                }
-            }
-        }
-    }
-
-    // Add recovery section if recovering
-    let recoveries = error_registry.active_recoveries();
-    if !recoveries.is_empty() {
-        lines.push(Line::from(""));
-        lines.push(Line::from(vec![
-            Span::styled("  Recovery:", Style::default().fg(STATUS_WARNING)),
-        ]));
-
-        for recovery in &recoveries {
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!("    {} (attempt {}/{})",
-                            recovery.operation,
-                            recovery.attempt,
-                            recovery.max_attempts),
-                    Style::default().fg(STATUS_WARNING),
-                ),
-            ]));
-        }
-    }
-
-    ("Network Diagnostics", lines)
-}
-```
-
 ### 5. Graceful Degradation
 
 Add degradation state tracking:
@@ -602,7 +541,6 @@ let mut clipboard = match ClipboardHandler::new() {
 - [ ] All components implement graceful error handling without panics
 - [ ] User-friendly error messages displayed in UI (no technical stack traces)
 - [ ] Header shows error status indicator (red) when system degraded
-- [ ] Network Diagnostics panel (Ctrl+S) displays detailed error information
 - [ ] Auto-recovery with exponential backoff for transient failures
 - [ ] Graceful degradation: partial failures do not crash entire application
 - [ ] Config errors show file path and line number in diagnostics

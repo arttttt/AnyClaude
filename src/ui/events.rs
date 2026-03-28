@@ -6,7 +6,6 @@ use std::time::{Duration, Instant};
 use term_input::{InputEvent, TtyReader};
 
 use crate::ipc::{BackendInfo, ProxyStatus};
-use crate::metrics::MetricsSnapshot;
 use crate::shutdown::ShutdownHandle;
 
 /// Error types for PTY operations.
@@ -57,7 +56,6 @@ pub enum AppEvent {
     /// Config reload failed
     ConfigError(String),
     IpcStatus(ProxyStatus),
-    IpcMetrics(MetricsSnapshot),
     IpcBackends(Vec<BackendInfo>),
     IpcError(String),
     /// PTY error occurred

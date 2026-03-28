@@ -315,7 +315,6 @@ All notable changes to AnyClaude are documented in this file.
 - **pty:** Auto-shutdown when Claude process terminates
 - **shutdown:** Add graceful shutdown handling
 - **clipboard:** Add image and file paste support
-- **ui:** Implement network diagnostics popup (Ctrl+S)
 - **ui:** Add backend selector popup behavior
 - **ui:** Center popups by content size
 - **thinking:** Add convert_to_tags mode for thinking blocks

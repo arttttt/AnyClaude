@@ -69,9 +69,8 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
             return;
         }
 
-        // Status and BackendSwitch rendered inline
+        // BackendSwitch rendered inline
         let (title, lines) = match kind {
-            PopupKind::Status => { /* 200+ lines of inline rendering */ }
             PopupKind::BackendSwitch => { /* 50+ lines of inline rendering */ }
             // Adding a new popup requires modifying this match
         };
@@ -89,7 +88,6 @@ pub fn classify_key(app: &mut App, key: &KeyInput) -> InputAction {
     match &key.kind {
         KeyKind::Control('q') => { app.request_quit(); }
         KeyKind::Control('b') => { app.toggle_popup(PopupKind::BackendSwitch); }
-        KeyKind::Control('s') => { app.toggle_popup(PopupKind::Status); }
         KeyKind::Control('h') => { app.open_history_dialog(); }
         KeyKind::Control('e') => { app.open_settings_dialog(); }
         KeyKind::Control('r') => { app.request_restart_claude(); }
@@ -100,16 +98,11 @@ pub fn classify_key(app: &mut App, key: &KeyInput) -> InputAction {
 
 #### Current interval-based refresh (hardcoded in runtime)
 ```rust
-// src/ui/runtime.rs:379-393
+// src/ui/runtime.rs
 Ok(AppEvent::Tick) => {
     app.on_tick();
     if app.should_refresh_status(STATUS_REFRESH_INTERVAL) {
         app.request_status_refresh();
-    }
-    if app.popup_kind() == Some(PopupKind::Status)
-        && app.should_refresh_metrics(METRICS_REFRESH_INTERVAL)
-    {
-        app.request_metrics_refresh(None);
     }
     // Adding a new periodic refresh requires modifying the event loop
 }

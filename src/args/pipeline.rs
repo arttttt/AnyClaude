@@ -96,6 +96,7 @@ pub fn build_spawn_params(
 ///
 /// Similar to `build_spawn_params`, but accepts pre-computed env vars and CLI args
 /// from the settings UI, merging them with the base configuration.
+#[allow(clippy::too_many_arguments)]
 pub fn build_restart_params(
     raw_args: &[String],
     proxy_url: &str,

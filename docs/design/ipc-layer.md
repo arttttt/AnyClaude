@@ -163,8 +163,8 @@ pub struct IpcServer {
 
 1. Implement IPC types in `src/ipc/mod.rs` (commands, responses, client/server, errors).
 2. Add a proxy IPC loop task that owns `IpcServer` and handles commands.
-3. Wire TUI input handlers to use `IpcClient` for Ctrl+B / Ctrl+S actions.
-4. Add status and metrics display in UI with timeout-safe calls.
+3. Wire TUI input handlers to use `IpcClient` for Ctrl+B actions.
+4. Add status display in UI with timeout-safe calls.
 
 ## Acceptance Criteria Mapping
 

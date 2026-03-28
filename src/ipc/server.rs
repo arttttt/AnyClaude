@@ -1,11 +1,10 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
 use tokio::sync::mpsc;
 
 use crate::backend::BackendState;
-use crate::metrics::{app_log, DebugLogger, MetricsSnapshot, ObservabilityHub};
+use crate::metrics::{app_log, DebugLogger, ObservabilityHub};
 use crate::proxy::shutdown::ShutdownManager;
 use crate::proxy::thinking::TransformerRegistry;
 
@@ -62,16 +61,6 @@ impl IpcServer {
                         app_log("ipc","IPC: GetStatus response dropped (receiver gone)");
                     }
                 }
-                IpcCommand::GetMetrics {
-                    backend_id,
-                    respond_to,
-                } => {
-                    let snapshot = observability.snapshot();
-                    let filtered = filter_metrics(snapshot, backend_id.as_deref());
-                    if respond_to.send(filtered).is_err() {
-                        app_log("ipc","IPC: GetMetrics response dropped (receiver gone)");
-                    }
-                }
                 IpcCommand::ListBackends { respond_to } => {
                     let (config, active_backend) = backend_state.get_config_and_active_backend();
                     let mut backends = Vec::with_capacity(config.backends.len());
@@ -103,30 +92,4 @@ impl IpcServer {
             }
         }
     }
-}
-
-fn filter_metrics(snapshot: MetricsSnapshot, backend_id: Option<&str>) -> MetricsSnapshot {
-    let Some(backend_id) = backend_id else {
-        return snapshot;
-    };
-
-    let mut filtered = MetricsSnapshot {
-        generated_at: snapshot.generated_at,
-        per_backend: HashMap::new(),
-        recent: Vec::new(),
-    };
-
-    if let Some(metrics) = snapshot.per_backend.get(backend_id) {
-        filtered
-            .per_backend
-            .insert(backend_id.to_string(), metrics.clone());
-    }
-
-    filtered.recent = snapshot
-        .recent
-        .into_iter()
-        .filter(|record| record.backend == backend_id)
-        .collect();
-
-    filtered
 }

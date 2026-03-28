@@ -14,6 +14,7 @@ use crate::proxy::pipeline::{PipelineConfig, PipelineContext};
 /// Stage 6: Forward request to upstream with retry logic.
 ///
 /// Returns the raw upstream response for Stage 7 to handle.
+#[allow(clippy::too_many_arguments)]
 pub async fn forward_with_retry(
     client: &Client,
     method: Method,

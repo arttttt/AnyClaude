@@ -3,7 +3,6 @@
 /// Allows detecting Option/Alt and Shift keys even when the terminal emulator
 /// (e.g. Warp in alternate screen mode) does not send ESC prefix or
 /// kitty keyboard protocol sequences.
-
 #[cfg(target_os = "macos")]
 mod cg {
     #[link(name = "CoreGraphics", kind = "framework")]
