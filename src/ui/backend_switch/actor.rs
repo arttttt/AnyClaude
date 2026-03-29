@@ -1,65 +1,76 @@
 use crate::ui::backend_switch::intent::BackendSwitchIntent;
 use crate::ui::backend_switch::state::{BackendPopupSection, BackendSwitchState};
-use mvi::Reducer;
+use mvi::{Actor, ActorScope};
 
-pub struct BackendSwitchReducer;
+pub struct BackendSwitchActor;
 
-impl Reducer for BackendSwitchReducer {
+impl Actor for BackendSwitchActor {
     type State = BackendSwitchState;
     type Intent = BackendSwitchIntent;
+    type SideEffect = ();
 
-    fn reduce(state: Self::State, intent: Self::Intent) -> Self::State {
+    fn handle_intent(
+        &self,
+        intent: Self::Intent,
+        scope: &mut ActorScope<Self::State, Self::SideEffect>,
+    ) {
         match intent {
             BackendSwitchIntent::Open {
                 backend_selection,
                 subagent_selection,
                 teammate_selection,
                 backends_count,
-            } => BackendSwitchState::Visible {
-                section: BackendPopupSection::ActiveBackend,
-                backend_selection,
-                subagent_selection,
-                teammate_selection,
-                backends_count,
-            },
-            BackendSwitchIntent::Close => BackendSwitchState::Hidden,
-            BackendSwitchIntent::NextSection => match state {
-                BackendSwitchState::Visible {
-                    section,
+            } => {
+                scope.reduce(|_| BackendSwitchState::Visible {
+                    section: BackendPopupSection::ActiveBackend,
                     backend_selection,
                     subagent_selection,
                     teammate_selection,
                     backends_count,
-                } => {
-                    let next = match section {
-                        BackendPopupSection::ActiveBackend => {
-                            BackendPopupSection::SubagentBackend
-                        }
-                        BackendPopupSection::SubagentBackend => {
-                            BackendPopupSection::TeammateBackend
-                        }
-                        BackendPopupSection::TeammateBackend => {
-                            BackendPopupSection::ActiveBackend
-                        }
-                    };
+                });
+            }
+            BackendSwitchIntent::Close => {
+                scope.reduce(|_| BackendSwitchState::Hidden);
+            }
+            BackendSwitchIntent::NextSection => {
+                scope.reduce(|state| match state {
                     BackendSwitchState::Visible {
-                        section: next,
+                        section,
                         backend_selection,
                         subagent_selection,
                         teammate_selection,
                         backends_count,
+                    } => {
+                        let next = match section {
+                            BackendPopupSection::ActiveBackend => {
+                                BackendPopupSection::SubagentBackend
+                            }
+                            BackendPopupSection::SubagentBackend => {
+                                BackendPopupSection::TeammateBackend
+                            }
+                            BackendPopupSection::TeammateBackend => {
+                                BackendPopupSection::ActiveBackend
+                            }
+                        };
+                        BackendSwitchState::Visible {
+                            section: next,
+                            backend_selection,
+                            subagent_selection,
+                            teammate_selection,
+                            backends_count,
+                        }
                     }
-                }
-                other => other,
-            },
-            BackendSwitchIntent::MoveUp => navigate(state, -1),
-            BackendSwitchIntent::MoveDown => navigate(state, 1),
+                    other => other,
+                });
+            }
+            BackendSwitchIntent::MoveUp => navigate(scope, -1),
+            BackendSwitchIntent::MoveDown => navigate(scope, 1),
         }
     }
 }
 
-fn navigate(state: BackendSwitchState, direction: i32) -> BackendSwitchState {
-    match state {
+fn navigate(scope: &mut ActorScope<BackendSwitchState, ()>, direction: i32) {
+    scope.reduce(|state| match state {
         BackendSwitchState::Visible {
             section,
             mut backend_selection,
@@ -72,11 +83,11 @@ fn navigate(state: BackendSwitchState, direction: i32) -> BackendSwitchState {
                     backend_selection = wrap_around(backend_selection, direction, backends_count);
                 }
                 BackendPopupSection::SubagentBackend => {
-                    let total = backends_count + 1; // 0 = Disabled
+                    let total = backends_count + 1;
                     subagent_selection = wrap_around(subagent_selection, direction, total);
                 }
                 BackendPopupSection::TeammateBackend => {
-                    let total = backends_count + 1; // 0 = Disabled
+                    let total = backends_count + 1;
                     teammate_selection = wrap_around(teammate_selection, direction, total);
                 }
             }
@@ -89,7 +100,7 @@ fn navigate(state: BackendSwitchState, direction: i32) -> BackendSwitchState {
             }
         }
         other => other,
-    }
+    });
 }
 
 fn wrap_around(current: usize, direction: i32, len: usize) -> usize {

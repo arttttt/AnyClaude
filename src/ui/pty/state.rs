@@ -1,6 +1,6 @@
 //! State for the PTY lifecycle.
 
-use mvi::UiState;
+use mvi::State;
 use std::collections::VecDeque;
 
 /// PTY lifecycle state machine.
@@ -36,7 +36,7 @@ impl Default for PtyLifecycleState {
     }
 }
 
-impl UiState for PtyLifecycleState {}
+impl State for PtyLifecycleState {}
 
 impl PtyLifecycleState {
     /// Check if PTY is ready to receive input directly.

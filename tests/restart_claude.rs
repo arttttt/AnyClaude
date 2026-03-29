@@ -22,7 +22,7 @@ fn request_restart_transitions_to_restarting() {
     assert!(app.is_pty_ready());
 
     app.request_restart_claude();
-    assert!(app.pty_lifecycle.is_restarting());
+    assert!(app.pty_store.state().is_restarting());
 }
 
 #[test]
@@ -55,9 +55,9 @@ fn request_restart_without_sender_reverts_to_spawn_failed() {
 
     // Should revert to Pending (SpawnFailed from Ready→Restarting→SpawnFailed)
     assert!(
-        matches!(app.pty_lifecycle, PtyLifecycleState::Pending { .. }),
+        matches!(app.pty_store.state(), PtyLifecycleState::Pending { .. }),
         "expected Pending after failed restart, got {:?}",
-        std::mem::discriminant(&app.pty_lifecycle)
+        std::mem::discriminant(app.pty_store.state())
     );
 }
 
@@ -71,18 +71,18 @@ fn restart_clears_input_buffer() {
     app.dispatch_pty(anyclaude::ui::pty::PtyIntent::Attach);
     app.send_input(b"hello");
 
-    match &app.pty_lifecycle {
+    match app.pty_store.state() {
         PtyLifecycleState::Attached { buffer } => assert_eq!(buffer.len(), 1),
         other => panic!("expected Attached, got {:?}", std::mem::discriminant(other)),
     }
 
     // Restart
     app.request_restart_claude();
-    assert!(app.pty_lifecycle.is_restarting());
+    assert!(app.pty_store.state().is_restarting());
 
     // Re-attach — buffer should be empty
     app.dispatch_pty(anyclaude::ui::pty::PtyIntent::Attach);
-    match &app.pty_lifecycle {
+    match app.pty_store.state() {
         PtyLifecycleState::Attached { buffer } => {
             assert!(buffer.is_empty(), "buffer should be cleared after restart");
         }
@@ -118,7 +118,7 @@ fn ctrl_r_with_popup_open_does_not_restart() {
     // Should be handled as popup key (InputAction::None, no restart)
     assert_eq!(action, InputAction::None);
     assert!(
-        !app.pty_lifecycle.is_restarting(),
+        !app.pty_store.state().is_restarting(),
         "should NOT be restarting when popup is open"
     );
 
@@ -143,7 +143,7 @@ fn double_ctrl_r_stays_restarting() {
 
     // First restart request
     app.request_restart_claude();
-    assert!(app.pty_lifecycle.is_restarting());
+    assert!(app.pty_store.state().is_restarting());
 
     // Should have one command
     let cmd1 = rx.try_recv().expect("should have first RestartClaude command");
@@ -154,7 +154,7 @@ fn double_ctrl_r_stays_restarting() {
 
     // Should still be Restarting (Detach from Restarting -> Restarting)
     assert!(
-        app.pty_lifecycle.is_restarting(),
+        app.pty_store.state().is_restarting(),
         "should stay Restarting after second request"
     );
 
@@ -172,7 +172,7 @@ fn ctrl_r_from_pending_state() {
 
     // Verify initial state is Pending
     assert!(
-        matches!(app.pty_lifecycle, PtyLifecycleState::Pending { .. }),
+        matches!(app.pty_store.state(), PtyLifecycleState::Pending { .. }),
         "should start in Pending state"
     );
 
@@ -181,7 +181,7 @@ fn ctrl_r_from_pending_state() {
 
     // Should transition to Restarting
     assert!(
-        app.pty_lifecycle.is_restarting(),
+        app.pty_store.state().is_restarting(),
         "should be Restarting after request from Pending"
     );
 
@@ -200,7 +200,7 @@ fn ctrl_r_from_attached_not_ready() {
     // Attach but don't get output (stays Attached, not Ready)
     app.dispatch_pty(anyclaude::ui::pty::PtyIntent::Attach);
     assert!(
-        matches!(app.pty_lifecycle, PtyLifecycleState::Attached { .. }),
+        matches!(app.pty_store.state(), PtyLifecycleState::Attached { .. }),
         "should be Attached after Attach intent"
     );
     assert!(!app.is_pty_ready());
@@ -210,7 +210,7 @@ fn ctrl_r_from_attached_not_ready() {
 
     // Should transition to Restarting
     assert!(
-        app.pty_lifecycle.is_restarting(),
+        app.pty_store.state().is_restarting(),
         "should be Restarting after request from Attached"
     );
 
@@ -245,9 +245,9 @@ fn ipc_channel_full_reverts_to_pending() {
 
     // Should revert to Pending due to send failure
     assert!(
-        matches!(app.pty_lifecycle, PtyLifecycleState::Pending { .. }),
+        matches!(app.pty_store.state(), PtyLifecycleState::Pending { .. }),
         "should revert to Pending when channel is full, got {:?}",
-        std::mem::discriminant(&app.pty_lifecycle)
+        std::mem::discriminant(app.pty_store.state())
     );
 }
 

@@ -8,12 +8,12 @@
 //! Uses MVI (Model-View-Intent) pattern:
 //! - `state.rs` - Lifecycle state enum (Pending → Attached → Ready)
 //! - `intent.rs` - System events (Attach, GotOutput, BufferInput)
-//! - `reducer.rs` - State transitions (pure, no side effects)
+//! - `actor.rs` - State transitions via Actor
 
+mod actor;
 mod intent;
-mod reducer;
 mod state;
 
+pub use actor::{PtyActor, PtySideEffect};
 pub use intent::PtyIntent;
-pub use reducer::PtyReducer;
 pub use state::PtyLifecycleState;

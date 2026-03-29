@@ -2,7 +2,7 @@
 
 use mvi::Intent;
 
-/// Intents that can be dispatched to the PTY lifecycle reducer.
+/// Intents that can be dispatched to the PTY lifecycle actor.
 #[derive(Debug)]
 pub enum PtyIntent {
     /// PTY process has been spawned and attached.

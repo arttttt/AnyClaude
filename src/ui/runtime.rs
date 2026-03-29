@@ -470,9 +470,9 @@ pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Re
 
                 if pty_generation != app.pty_generation() {
                     // Stale ProcessExit from an old PTY instance — ignore.
-                } else if app.pty_lifecycle.is_restarting() {
+                } else if app.pty_store.state().is_restarting() {
                     // Current generation but lifecycle is restarting — ignore.
-                } else if app.has_restarted() && !app.pty_lifecycle.is_ready() {
+                } else if app.has_restarted() && !app.pty_store.state().is_ready() {
                     // Process exited before reaching Ready after a restart.
                     if can_retry {
                         // --resume failed (likely no conversation yet).
@@ -541,7 +541,7 @@ pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Re
                     scrollback_lines,
                     &events,
                 );
-                if !app.pty_lifecycle.is_attached() {
+                if !app.pty_store.state().is_attached() {
                     restart_can_retry = false;
                 }
             }
@@ -569,7 +569,7 @@ pub fn run(backend_override: Option<String>, claude_args: Vec<String>) -> io::Re
                     scrollback_lines,
                     &events,
                 );
-                if !app.pty_lifecycle.is_attached() {
+                if !app.pty_store.state().is_attached() {
                     // Spawn failed immediately — no point retrying.
                     restart_can_retry = false;
                 }

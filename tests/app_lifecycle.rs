@@ -17,15 +17,15 @@ fn on_key_dropped_while_restarting() {
 
     // Detach to enter Restarting state
     app.dispatch_pty(PtyIntent::Detach);
-    assert!(app.pty_lifecycle.is_restarting());
+    assert!(app.pty_store.state().is_restarting());
 
     // Input should be dropped (not buffered) — send_input is a no-op when not ready and no PTY
     app.send_input(b"a");
-    assert!(app.pty_lifecycle.is_restarting());
+    assert!(app.pty_store.state().is_restarting());
 
     // After restart, attach and verify no buffered input
     app.dispatch_pty(PtyIntent::Attach);
-    match &app.pty_lifecycle {
+    match app.pty_store.state() {
         PtyLifecycleState::Attached { buffer } => {
             assert!(buffer.is_empty(), "Buffer should be empty after restart");
         }
@@ -43,7 +43,7 @@ fn detach_pty_transitions_to_restarting() {
 
     // Detach should transition to Restarting
     app.detach_pty();
-    assert!(app.pty_lifecycle.is_restarting());
+    assert!(app.pty_store.state().is_restarting());
 }
 
 #[test]
@@ -55,7 +55,7 @@ fn attach_after_restart_clears_buffer() {
     app.send_input(b"x");
     app.send_input(b"y");
 
-    match &app.pty_lifecycle {
+    match app.pty_store.state() {
         PtyLifecycleState::Attached { buffer } => {
             assert_eq!(buffer.len(), 2);
         }
@@ -64,11 +64,11 @@ fn attach_after_restart_clears_buffer() {
 
     // Detach to Restarting
     app.dispatch_pty(PtyIntent::Detach);
-    assert!(app.pty_lifecycle.is_restarting());
+    assert!(app.pty_store.state().is_restarting());
 
     // Attach after restart should have empty buffer
     app.dispatch_pty(PtyIntent::Attach);
-    match &app.pty_lifecycle {
+    match app.pty_store.state() {
         PtyLifecycleState::Attached { buffer } => {
             assert!(buffer.is_empty(), "Buffer should be cleared after restart attach");
         }
@@ -147,7 +147,7 @@ fn full_restart_cycle_with_generation_tracking() {
 
     // Simulate settings change triggering restart
     app.detach_pty();
-    assert!(app.pty_lifecycle.is_restarting());
+    assert!(app.pty_store.state().is_restarting());
 
     // Simulate new PTY spawn after restart
     app.next_pty_generation();
@@ -175,7 +175,7 @@ fn not_ready_in_attached_state() {
 }
 
 #[test]
-fn ready_after_reducer_got_output() {
+fn ready_after_got_output() {
     let mut app = make_app();
     app.dispatch_pty(PtyIntent::Attach);
     app.dispatch_pty(PtyIntent::GotOutput);
@@ -208,7 +208,7 @@ fn on_pty_output_noop_when_already_ready() {
 fn send_input_buffered_while_pending() {
     let mut app = make_app();
     app.send_input(b"a");
-    match &app.pty_lifecycle {
+    match app.pty_store.state() {
         PtyLifecycleState::Pending { buffer } => {
             assert_eq!(buffer.len(), 1);
             assert_eq!(buffer[0], b"a");
@@ -222,7 +222,7 @@ fn send_input_buffered_while_attached() {
     let mut app = make_app();
     app.dispatch_pty(PtyIntent::Attach);
     app.send_input(b"x");
-    match &app.pty_lifecycle {
+    match app.pty_store.state() {
         PtyLifecycleState::Attached { buffer } => {
             assert_eq!(buffer.len(), 1);
             assert_eq!(buffer[0], b"x");
@@ -236,7 +236,7 @@ fn on_paste_buffered_while_not_ready() {
     let mut app = make_app();
     app.dispatch_pty(PtyIntent::Attach);
     app.on_paste("hello");
-    match &app.pty_lifecycle {
+    match app.pty_store.state() {
         PtyLifecycleState::Attached { buffer } => {
             assert_eq!(buffer.len(), 1);
             assert!(String::from_utf8_lossy(&buffer[0]).contains("hello"));
@@ -250,7 +250,7 @@ fn send_input_buffers_while_not_ready() {
     let mut app = make_app();
     app.dispatch_pty(PtyIntent::Attach);
     app.send_input(b"--resume");
-    match &app.pty_lifecycle {
+    match app.pty_store.state() {
         PtyLifecycleState::Attached { buffer } => {
             assert_eq!(buffer.len(), 1);
             assert_eq!(buffer[0], b"--resume");
