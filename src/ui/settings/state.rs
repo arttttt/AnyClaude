@@ -1,5 +1,5 @@
 use crate::config::SettingsFieldSnapshot;
-use mvi::UiState;
+use mvi::State;
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum SettingsDialogState {
@@ -14,7 +14,7 @@ pub enum SettingsDialogState {
     },
 }
 
-impl UiState for SettingsDialogState {}
+impl State for SettingsDialogState {}
 
 impl SettingsDialogState {
     pub fn is_visible(&self) -> bool {

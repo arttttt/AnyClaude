@@ -2,14 +2,13 @@ use crate::config::{ClaudeSettingsManager, ConfigStore};
 use crate::error::ErrorRegistry;
 use crate::ipc::{BackendInfo, ProxyStatus};
 use crate::pty::PtyHandle;
-use crate::ui::backend_switch::{BackendSwitchIntent, BackendSwitchReducer, BackendSwitchState};
-use crate::ui::history::{HistoryDialogState, HistoryEntry, HistoryIntent, HistoryReducer};
-use mvi::Reducer;
-use crate::ui::pty::{PtyIntent, PtyLifecycleState, PtyReducer};
+use crate::ui::backend_switch::{BackendSwitchActor, BackendSwitchIntent, BackendSwitchState};
+use crate::ui::history::{HistoryActor, HistoryDialogState, HistoryEntry, HistoryIntent};
+use crate::ui::pty::{PtyActor, PtyIntent, PtySideEffect};
 use crate::ui::selection::{GridPos, TextSelection};
-use crate::ui::settings::{SettingsDialogState, SettingsIntent, SettingsReducer};
+use crate::ui::settings::{SettingsActor, SettingsDialogState, SettingsIntent};
+use mvi::Store;
 use parking_lot::Mutex;
-use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -45,19 +44,12 @@ pub enum UiCommand {
 
 pub type UiCommandSender = mpsc::Sender<UiCommand>;
 
-/// Generic MVI dispatch: takes current state, runs reducer, stores result.
-macro_rules! dispatch_mvi {
-    ($self:expr, $field:ident, $reducer:ty, $intent:expr) => {
-        $self.$field = <$reducer>::reduce(std::mem::take(&mut $self.$field), $intent);
-    };
-}
-
 pub struct App {
     should_quit: bool,
     focus: Focus,
     size: Option<(u16, u16)>,
-    /// PTY lifecycle state (MVI pattern).
-    pub pty_lifecycle: PtyLifecycleState,
+    /// PTY lifecycle store (MVI pattern).
+    pub pty_store: Store<PtyActor>,
     /// PTY handle (resource, managed outside MVI).
     pty_handle: Option<PtyHandle>,
     config: ConfigStore,
@@ -71,12 +63,12 @@ pub struct App {
     backends: Vec<BackendInfo>,
     last_ipc_error: Option<String>,
     last_status_refresh: Instant,
-    /// State of the history dialog (MVI pattern).
-    history_dialog: HistoryDialogState,
+    /// History dialog store (MVI pattern).
+    history_store: Store<HistoryActor>,
     /// Provider closure that fetches history entries from backend state.
     history_provider: Option<Arc<dyn Fn() -> Vec<HistoryEntry> + Send + Sync>>,
-    /// State of the settings dialog (MVI pattern).
-    settings_dialog: SettingsDialogState,
+    /// Settings dialog store (MVI pattern).
+    settings_store: Store<SettingsActor>,
     /// Claude Code settings manager (registry + current values).
     settings_manager: ClaudeSettingsManager,
     /// Snapshot of values when settings dialog was opened (for dirty check).
@@ -86,8 +78,8 @@ pub struct App {
     pty_generation: u64,
     /// Current mouse text selection (None when nothing is selected).
     selection: Option<TextSelection>,
-    /// State of the backend switch dialog (MVI pattern).
-    backend_switch: BackendSwitchState,
+    /// Backend switch dialog store (MVI pattern).
+    backend_switch_store: Store<BackendSwitchActor>,
     /// Current subagent backend (runtime state, from config on start).
     subagent_backend: Option<String>,
     /// Current teammate backend (runtime state, from config on start).
@@ -115,7 +107,7 @@ impl App {
             should_quit: false,
             focus: Focus::Terminal,
             size: None,
-            pty_lifecycle: PtyLifecycleState::default(),
+            pty_store: Store::new(PtyActor, |_| {}),
             pty_handle: None,
             config,
             error_registry: ErrorRegistry::new(100),
@@ -126,14 +118,14 @@ impl App {
             backends: Vec::new(),
             last_ipc_error: None,
             last_status_refresh: now,
-            history_dialog: HistoryDialogState::default(),
+            history_store: Store::new(HistoryActor, |_| {}),
             history_provider: None,
-            settings_dialog: SettingsDialogState::default(),
+            settings_store: Store::new(SettingsActor, |_| {}),
             settings_manager,
             settings_saved_snapshot,
             pty_generation: 0,
             selection: None,
-            backend_switch: BackendSwitchState::default(),
+            backend_switch_store: Store::new(BackendSwitchActor, |_| {}),
             subagent_backend,
             teammate_backend,
         }
@@ -190,7 +182,7 @@ impl App {
 
     /// True once the child process has produced its first output.
     pub fn is_pty_ready(&self) -> bool {
-        self.pty_lifecycle.is_ready()
+        self.pty_store.state().is_ready()
     }
 
     pub fn toggle_popup(&mut self, kind: PopupKind) -> bool {
@@ -209,7 +201,7 @@ impl App {
 
     /// Send input to PTY or buffer if not ready.
     pub fn send_input(&mut self, bytes: &[u8]) {
-        if self.pty_lifecycle.is_ready() {
+        if self.pty_store.state().is_ready() {
             if let Some(pty) = &self.pty_handle {
                 let _ = pty.send_input(bytes);
             }
@@ -251,7 +243,7 @@ impl App {
     /// By requiring rendered content we guarantee setRawMode has been called,
     /// so the PTY slave no longer echoes input.
     pub fn on_pty_output(&mut self) -> bool {
-        if self.pty_lifecycle.is_ready() {
+        if self.pty_store.state().is_ready() {
             return false;
         }
 
@@ -269,16 +261,17 @@ impl App {
             return false;
         }
 
-        // Extract buffer before state transition.
-        let buffer = match &mut self.pty_lifecycle {
-            PtyLifecycleState::Attached { buffer } => std::mem::take(buffer),
-            _ => VecDeque::new(),
-        };
-        self.dispatch_pty(PtyIntent::GotOutput);
-        // Flush buffered input now that child UI is active.
-        if let Some(pty) = &self.pty_handle {
-            for bytes in buffer {
-                let _ = pty.send_input(&bytes);
+        // Actor extracts buffer and emits FlushBuffer side effect.
+        let effects = self.pty_store.dispatch_collect(PtyIntent::GotOutput);
+        for effect in effects {
+            match effect {
+                PtySideEffect::FlushBuffer(buffer) => {
+                    if let Some(pty) = &self.pty_handle {
+                        for bytes in buffer {
+                            let _ = pty.send_input(&bytes);
+                        }
+                    }
+                }
             }
         }
         true
@@ -461,9 +454,9 @@ impl App {
     // PTY lifecycle methods (MVI pattern)
     // ========================================================================
 
-    /// Dispatch an intent to the PTY lifecycle reducer.
+    /// Dispatch an intent to the PTY lifecycle actor.
     pub fn dispatch_pty(&mut self, intent: PtyIntent) {
-        dispatch_mvi!(self, pty_lifecycle, PtyReducer, intent);
+        self.pty_store.dispatch(intent);
     }
 
     // ========================================================================
@@ -480,12 +473,12 @@ impl App {
 
     /// Get the current history dialog state.
     pub fn history_dialog(&self) -> &HistoryDialogState {
-        &self.history_dialog
+        self.history_store.state()
     }
 
-    /// Dispatch an intent to the history dialog reducer.
+    /// Dispatch an intent to the history dialog actor.
     pub fn dispatch_history(&mut self, intent: HistoryIntent) {
-        dispatch_mvi!(self, history_dialog, HistoryReducer, intent);
+        self.history_store.dispatch(intent);
     }
 
     /// Open the history dialog by loading entries from the provider.
@@ -511,7 +504,7 @@ impl App {
 
     /// Get the current settings dialog state.
     pub fn settings_dialog(&self) -> &SettingsDialogState {
-        &self.settings_dialog
+        self.settings_store.state()
     }
 
     /// Get the settings manager.
@@ -519,9 +512,9 @@ impl App {
         &self.settings_manager
     }
 
-    /// Dispatch an intent to the settings dialog reducer.
+    /// Dispatch an intent to the settings dialog actor.
     pub fn dispatch_settings(&mut self, intent: SettingsIntent) {
-        dispatch_mvi!(self, settings_dialog, SettingsReducer, intent);
+        self.settings_store.dispatch(intent);
     }
 
     /// Open the settings dialog by loading snapshots from the manager.
@@ -541,7 +534,7 @@ impl App {
     /// Request close: if dirty and not yet confirming, shows warning. Otherwise closes.
     pub fn request_close_settings(&mut self) {
         self.dispatch_settings(SettingsIntent::RequestClose);
-        if !self.settings_dialog.is_visible() {
+        if !self.settings_store.state().is_visible() {
             self.focus = Focus::Terminal;
         }
     }
@@ -564,7 +557,7 @@ impl App {
 
     /// Apply settings from the dialog. Returns true if PTY restart was requested.
     pub fn apply_settings(&mut self) -> bool {
-        let fields = match &self.settings_dialog {
+        let fields = match self.settings_store.state() {
             SettingsDialogState::Visible { fields, .. } => fields.clone(),
             _ => return false,
         };
@@ -642,12 +635,12 @@ impl App {
 
     /// Get the current backend switch dialog state.
     pub fn backend_switch(&self) -> &BackendSwitchState {
-        &self.backend_switch
+        self.backend_switch_store.state()
     }
 
-    /// Dispatch an intent to the backend switch dialog reducer.
+    /// Dispatch an intent to the backend switch dialog actor.
     pub fn dispatch_backend_switch(&mut self, intent: BackendSwitchIntent) {
-        dispatch_mvi!(self, backend_switch, BackendSwitchReducer, intent);
+        self.backend_switch_store.dispatch(intent);
     }
 
     /// Open the backend switch dialog with computed initial selections.

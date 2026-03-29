@@ -1,7 +1,7 @@
+mod actor;
 mod intent;
-mod reducer;
 mod state;
 
+pub use actor::SettingsActor;
 pub use intent::SettingsIntent;
-pub use reducer::SettingsReducer;
 pub use state::SettingsDialogState;

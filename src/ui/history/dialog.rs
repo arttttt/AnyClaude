@@ -1,5 +1,5 @@
 use crate::ui::components::PopupDialog;
-use crate::ui::history::reducer::MAX_VISIBLE_ROWS;
+use crate::ui::history::actor::MAX_VISIBLE_ROWS;
 use crate::ui::history::state::HistoryDialogState;
 use crate::ui::theme::{HEADER_TEXT, POPUP_BORDER};
 use ratatui::style::Style;

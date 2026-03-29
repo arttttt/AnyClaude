@@ -1,4 +1,4 @@
-use mvi::UiState;
+use mvi::State;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
 pub enum BackendPopupSection {
@@ -22,7 +22,7 @@ pub enum BackendSwitchState {
     },
 }
 
-impl UiState for BackendSwitchState {}
+impl State for BackendSwitchState {}
 
 impl BackendSwitchState {
     pub fn is_visible(&self) -> bool {

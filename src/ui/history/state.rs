@@ -1,4 +1,4 @@
-use mvi::UiState;
+use mvi::State;
 use std::time::SystemTime;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -18,7 +18,7 @@ pub enum HistoryDialogState {
     },
 }
 
-impl UiState for HistoryDialogState {}
+impl State for HistoryDialogState {}
 
 impl HistoryDialogState {
     pub fn is_visible(&self) -> bool {
