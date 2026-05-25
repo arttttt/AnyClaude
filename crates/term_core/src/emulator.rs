@@ -5,8 +5,8 @@
 //! DSR). The DEC mode / OSC integration layer lives in a separate
 //! commit; this one ships the core dispatch.
 
-use crate::grid::{CursorStyle, Grid, MouseMode, Row};
-use crate::parser::{Action, EraseMode, Parser, SgrAction};
+use crate::grid::{CursorStyle, Grid, MouseMode, PromptMarker, Row};
+use crate::parser::{Action, EraseMode, Parser, PromptKind, SgrAction};
 use crate::{CellFlags, TermColor};
 
 /// Cursor state surfaced to the renderer.
@@ -124,10 +124,17 @@ impl VtEmulator {
             // SGR
             Action::SetAttr(sgr) => self.apply_sgr(sgr),
 
-            // DEC modes — minimal handling here; full integration in commit 7.
             Action::DecModeSet(mode) => self.set_dec_mode(mode, true),
             Action::DecModeReset(mode) => self.set_dec_mode(mode, false),
-            Action::RequestMode(_) => { /* DECRQM reply lands in commit 7 */ }
+            Action::RequestMode(mode) => {
+                // DECRQM reply: `CSI ? mode ; state $ y`. State codes:
+                // 0 = not recognised, 1 = set, 2 = reset, 3 = permanently set,
+                // 4 = permanently reset. We answer 1/2 based on current state
+                // or 0 for modes we don't track.
+                let state = self.decrqm_state(mode);
+                let reply = format!("\x1b[?{mode};{state}$y");
+                self.response_buf.extend_from_slice(reply.as_bytes());
+            }
 
             // Device replies
             Action::DeviceStatusReport(6) => {
@@ -176,10 +183,23 @@ impl VtEmulator {
             Action::SetTabStop => { /* fixed tab=8; HTS ignored */ }
             Action::TabClear(_) => { /* fixed tab=8; TBC ignored */ }
 
-            // OSC (basics; full integration lands in commit 7)
+            // OSC
             Action::SetTitle(t) => self.title = t,
-            Action::SetCwd(_) | Action::Hyperlink { .. } | Action::PromptMarker(_) => {
-                // Wired in commit 7.
+            Action::SetCwd(path) => self.cwd = Some(path),
+            Action::Hyperlink { params, url } => {
+                self.grid.current_hyperlink = if url.is_empty() {
+                    None
+                } else {
+                    Some((params, url))
+                };
+            }
+            Action::PromptMarker(kind) => {
+                let pm = match kind {
+                    PromptKind::Start => PromptMarker::Start,
+                    PromptKind::End => PromptMarker::End,
+                    PromptKind::Cont(p) => PromptMarker::Cont(p),
+                };
+                self.grid.next_prompt = Some(pm);
             }
 
             Action::Unsupported => {}
@@ -202,9 +222,7 @@ impl VtEmulator {
         }
     }
 
-    /// Minimal DEC private mode handler — the common ones needed for the
-    /// core test surface. Full coverage (mouse, focus, sync output, paste)
-    /// lands in commit 7.
+    /// DEC private mode handler covering the modes from spec §4.2.
     fn set_dec_mode(&mut self, mode: u16, enable: bool) {
         match mode {
             1 => self.grid.cursor_keys_app = enable,
@@ -213,6 +231,18 @@ impl VtEmulator {
                 self.grid.cursor_position(1, 1);
             }
             7 => self.grid.auto_wrap = enable,
+            12 => {
+                // Blinking cursor — flip the blink variant of the current style.
+                self.grid.cursor_style = match (self.grid.cursor_style, enable) {
+                    (CursorStyle::BlockSteady, true) => CursorStyle::BlockBlink,
+                    (CursorStyle::BlockBlink, false) => CursorStyle::BlockSteady,
+                    (CursorStyle::UnderlineSteady, true) => CursorStyle::UnderlineBlink,
+                    (CursorStyle::UnderlineBlink, false) => CursorStyle::UnderlineSteady,
+                    (CursorStyle::BeamSteady, true) => CursorStyle::BeamBlink,
+                    (CursorStyle::BeamBlink, false) => CursorStyle::BeamSteady,
+                    (style, _) => style,
+                };
+            }
             25 => self.grid.cursor_visible = enable,
             47 | 1047 => {
                 if enable {
@@ -221,6 +251,17 @@ impl VtEmulator {
                     self.grid.exit_alt_screen();
                 }
             }
+            1000 => self.grid.mouse_mode = if enable { MouseMode::X10 } else { MouseMode::None },
+            1002 => {
+                self.grid.mouse_mode =
+                    if enable { MouseMode::ButtonEvent } else { MouseMode::None };
+            }
+            1003 => {
+                self.grid.mouse_mode =
+                    if enable { MouseMode::AnyEvent } else { MouseMode::None };
+            }
+            1004 => self.grid.focus_reporting = enable,
+            1006 => self.grid.mouse_mode = if enable { MouseMode::Sgr } else { MouseMode::None },
             1049 => {
                 if enable {
                     self.grid.enter_alt_screen();
@@ -229,8 +270,36 @@ impl VtEmulator {
                     self.grid.exit_alt_screen();
                 }
             }
-            _ => { /* commit 7 covers the rest */ }
+            2004 => self.grid.bracketed_paste = enable,
+            2026 => self.grid.sync_output = enable,
+            _ => { /* unknown DEC mode — ignored */ }
         }
+    }
+
+    /// DECRQM state reply: 1 = set, 2 = reset, 0 = not recognised.
+    fn decrqm_state(&self, mode: u16) -> u8 {
+        let on = match mode {
+            1 => self.grid.cursor_keys_app,
+            6 => self.grid.origin_mode,
+            7 => self.grid.auto_wrap,
+            25 => self.grid.cursor_visible,
+            1004 => self.grid.focus_reporting,
+            2004 => self.grid.bracketed_paste,
+            2026 => self.grid.sync_output,
+            _ => return 0,
+        };
+        if on { 1 } else { 2 }
+    }
+
+    /// Emit `CSI I` (focus in) / `CSI O` (focus out) when the host
+    /// signals a focus change and DEC 1004 is on. Called by the runtime,
+    /// not by the parser.
+    pub fn emit_focus(&mut self, focused: bool) {
+        if !self.grid.focus_reporting {
+            return;
+        }
+        self.response_buf
+            .extend_from_slice(if focused { b"\x1b[I" } else { b"\x1b[O" });
     }
 }
 

@@ -197,6 +197,13 @@ pub struct Grid {
     pub current_bg: TermColor,
     pub current_flags: CellFlags,
 
+    /// Active OSC 8 hyperlink target `(params, url)`. Attached to every
+    /// printed cell while set; an empty `url` clears it.
+    pub current_hyperlink: Option<(String, String)>,
+    /// One-shot OSC 133 prompt marker. Attached to the next printed cell
+    /// and then cleared.
+    pub next_prompt: Option<PromptMarker>,
+
     /// Alt screen state.
     alt_rows: Option<Vec<Row>>,
     alt_cursor: Option<(usize, usize)>,
@@ -246,6 +253,8 @@ impl Grid {
             current_fg: TermColor::Default,
             current_bg: TermColor::Default,
             current_flags: CellFlags::empty(),
+            current_hyperlink: None,
+            next_prompt: None,
             alt_rows: None,
             alt_cursor: None,
             origin_mode: false,
@@ -303,13 +312,27 @@ impl Grid {
         }
         let col = self.cursor_col.min(self.cols.saturating_sub(1));
         let (fg, bg, flags) = (self.current_fg, self.current_bg, self.current_flags);
+
+        // Attach OSC 8 hyperlink (sticky) and OSC 133 prompt marker
+        // (one-shot — taken here, not on subsequent prints).
+        let mut extra: Option<Box<CellExtra>> = None;
+        let next_prompt = self.next_prompt.take();
+        if let Some(prompt) = next_prompt {
+            extra.get_or_insert_with(Box::default).prompt = Some(prompt);
+        }
+        if let Some((_, url)) = &self.current_hyperlink {
+            if !url.is_empty() {
+                extra.get_or_insert_with(Box::default).hyperlink = Some(url.clone());
+            }
+        }
+
         let cell = &mut self.row_mut(self.cursor_row).cells[col];
         *cell = Cell {
             c,
             fg,
             bg,
             flags,
-            extra: None,
+            extra,
         };
         self.cursor_col = col + 1;
         self.last_printed = Some(c);
@@ -664,6 +687,8 @@ impl Grid {
         self.current_fg = TermColor::Default;
         self.current_bg = TermColor::Default;
         self.current_flags = CellFlags::empty();
+        self.current_hyperlink = None;
+        self.next_prompt = None;
         self.scroll_top = 0;
         self.scroll_bottom = self.visible_rows.saturating_sub(1);
         self.origin_mode = false;
