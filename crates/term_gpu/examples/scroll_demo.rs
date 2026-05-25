@@ -9,13 +9,13 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use cosmic_text::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, SwashCache};
+use cosmic_text::{FontSystem, SwashCache};
 use futures::future::{abortable, AbortHandle};
 use futures_timer::Delay;
 use glam::Vec2;
 use term_gpu::{
     decay_velocity, rasterize_glyph, GlyphAtlas, GlyphInstance, GpuRenderer, RectInstance,
-    ScrollState, ScrollVelocity, GESTURE_END_TIMEOUT, MOMENTUM_FRAME_INTERVAL,
+    ScrollState, ScrollVelocity, TextShapeCache, GESTURE_END_TIMEOUT, MOMENTUM_FRAME_INTERVAL,
     MOMENTUM_MIN_VELOCITY, MOMENTUM_THRESHOLD, NUM_PIXELS_PER_LINE,
 };
 use winit::application::ApplicationHandler;
@@ -96,6 +96,7 @@ fn build_glyph_instances(
     font_system: &mut FontSystem,
     swash_cache: &mut SwashCache,
     atlas: &mut GlyphAtlas,
+    shape_cache: &mut TextShapeCache,
     out: &mut Vec<GlyphInstance>,
     scale_factor: f32,
 ) {
@@ -104,6 +105,7 @@ fn build_glyph_instances(
         font_system,
         swash_cache,
         atlas,
+        shape_cache,
         out,
         TextDraw {
             text: "term_gpu scroll demo \u{2022} cosmic-text shaping \u{1F680}",
@@ -121,6 +123,7 @@ fn build_glyph_instances(
         font_system,
         swash_cache,
         atlas,
+        shape_cache,
         out,
         TextDraw {
             text: LOREM,
@@ -145,6 +148,7 @@ fn build_glyph_instances(
             font_system,
             swash_cache,
             atlas,
+            shape_cache,
             out,
             TextDraw {
                 text: &text,
@@ -171,28 +175,28 @@ fn shape_text_into(
     font_system: &mut FontSystem,
     swash_cache: &mut SwashCache,
     atlas: &mut GlyphAtlas,
+    shape_cache: &mut TextShapeCache,
     out: &mut Vec<GlyphInstance>,
     draw: TextDraw<'_>,
 ) {
     let sf = draw.scale_factor;
-    let physical_font_size = draw.font_size * sf;
-    let line_height = physical_font_size * 1.3;
-    let metrics = Metrics::new(physical_font_size, line_height);
-    let mut buffer = Buffer::new_empty(metrics);
-    let wrap_physical = draw.wrap_width.map(|w| w * sf);
-    buffer.set_size(font_system, wrap_physical, None);
-    let attrs = Attrs::new().family(Family::SansSerif);
-    buffer.set_text(font_system, draw.text, &attrs, Shaping::Advanced);
+    let shaped = shape_cache.shape(
+        font_system,
+        draw.text,
+        draw.font_size,
+        sf,
+        draw.wrap_width,
+    );
 
     let origin_physical_x = draw.origin_x * sf;
     let origin_physical_y = draw.origin_y * sf;
 
-    for run in buffer.layout_runs() {
-        for glyph in run.glyphs.iter() {
+    for line in &shaped.lines {
+        for glyph in &line.glyphs {
             // physical() bins the fractional position into subpixel cache
             // key variants for us. See spec §5.6.
             let physical = glyph.physical(
-                (origin_physical_x, origin_physical_y + run.line_y),
+                (origin_physical_x, origin_physical_y + line.line_y),
                 1.0,
             );
             let placed = atlas.get_or_insert(physical.cache_key, || {
@@ -286,6 +290,7 @@ struct App {
     momentum_abort: Option<AbortHandle>,
     font_system: FontSystem,
     swash_cache: SwashCache,
+    shape_cache: TextShapeCache,
     /// Mirrors `window.scale_factor()`. Updated on ScaleFactorChanged.
     scale_factor: f32,
 }
@@ -305,6 +310,7 @@ impl App {
             momentum_abort: None,
             font_system: FontSystem::new(),
             swash_cache: SwashCache::new(),
+            shape_cache: TextShapeCache::new(),
             scale_factor: 1.0,
         }
     }
@@ -408,6 +414,7 @@ impl App {
             scroll,
             font_system,
             swash_cache,
+            shape_cache,
             scale_factor,
             ..
         } = self;
@@ -423,12 +430,14 @@ impl App {
             font_system,
             swash_cache,
             renderer.atlas_mut(),
+            shape_cache,
             &mut glyphs,
             *scale_factor,
         );
 
         window.pre_present_notify();
         renderer.render(rects, &glyphs, scroll.offset_y);
+        shape_cache.end_frame();
     }
 
     fn on_momentum_tick(&mut self) {

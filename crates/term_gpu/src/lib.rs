@@ -19,4 +19,4 @@ pub use scroll::{
     decay_velocity, ScrollState, ScrollVelocity, GESTURE_END_TIMEOUT, MOMENTUM_FRAME_INTERVAL,
     MOMENTUM_MIN_VELOCITY, MOMENTUM_THRESHOLD, NUM_PIXELS_PER_LINE,
 };
-pub use text::rasterize_glyph;
+pub use text::{rasterize_glyph, ShapedLine, ShapedText, TextShapeCache};
