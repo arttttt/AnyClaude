@@ -1,77 +1,77 @@
 # GPU Terminal Specification — AnyClaude
 
-## 1. Обзор
+## 1. Overview
 
-### Цель
-Заменить текстовый TUI-рендерер (ratatui + alacritty_terminal) на кастомный GPU-рендерер с поддержкой variable-width шрифтов и системой панелей.
+### Goal
+Replace the textual TUI renderer (ratatui + alacritty_terminal) with a custom GPU renderer that supports variable-width fonts and a panel system.
 
-### Текущий стек
+### Current stack
 ```
 PTY (portable-pty) → alacritty_terminal (VT parser) → TermCell grid → ratatui → stdout
 ```
 
-**Ограничения текущего стека:**
-- Monospace-only рендеринг через ratatui
-- Фиксированная сетка ячеек (row/col), нет пиксельного позиционирования
-- Нет поддержки панелей (layout: header + body + footer, одна терминальная панель)
-- Нет GPU-ускорения, рендеринг через escape sequences в stdout
-- Зависимость от alacritty_terminal — тяжёлый полный VT-эмулятор, избыточный для Claude Code
+**Current stack limitations:**
+- Monospace-only rendering via ratatui
+- Fixed cell grid (row/col), no pixel positioning
+- No panel support (layout: header + body + footer, single terminal panel)
+- No GPU acceleration, rendering via escape sequences to stdout
+- Dependency on alacritty_terminal — a heavy full VT emulator, excessive for Claude Code
 
-### Целевой стек
+### Target stack
 ```
-PTY (portable-pty) → term_core (минимальный VT parser) → TextRun grid → wgpu → GPU
+PTY (portable-pty) → term_core (minimal VT parser) → TextRun grid → wgpu → GPU
 ```
 
-**Преимущества:**
-- Variable-width шрифты с пиксельным позиционированием
-- GPU-ускоренный рендеринг (Metal на macOS, Vulkan на Linux)
-- Система панелей (BSP tree)
-- Минимальный VT-парсер — только то, что нужно для Claude Code (ink-based TUI)
-- Минимум зависимостей
+**Advantages:**
+- Variable-width fonts with pixel positioning
+- GPU-accelerated rendering (Metal on macOS, Vulkan on Linux)
+- Panel system (BSP tree)
+- Minimal VT parser — only what Claude Code (ink-based TUI) needs
+- Minimal dependencies
 
 ---
 
-## 2. Зависимости
+## 2. Dependencies
 
-### Внешние (только 3 крейта)
+### External (only 3 crates)
 
-| Крейт | Версия | Назначение | Почему нельзя написать самим |
-|-------|--------|------------|------------------------------|
-| `wgpu` | 24 | GPU abstraction (Metal/Vulkan/DX12) | Тысячи строк платформенного кода, активная поддержка драйверов |
-| `winit` | 0.30 | Окна, события, DPI | Platform-specific windowing (Cocoa, Wayland, X11) |
-| `cosmic-text` | 0.14 | Text shaping для variable-width | Unicode shaping (HarfBuzz-level complexity), BiDi, font fallback |
+| Crate | Version | Purpose | Why we cannot write it ourselves |
+|-------|---------|---------|----------------------------------|
+| `wgpu` | 24 | GPU abstraction (Metal/Vulkan/DX12) | Thousands of lines of platform code, active driver support |
+| `winit` | 0.30 | Windows, events, DPI | Platform-specific windowing (Cocoa, Wayland, X11) |
+| `cosmic-text` | 0.14 | Text shaping for variable-width | Unicode shaping (HarfBuzz-level complexity), BiDi, font fallback |
 
-### Удаляемые зависимости
+### Removed dependencies
 
-| Крейт | Причина удаления |
-|-------|-----------------|
-| `ratatui` | Заменяется GPU рендерером |
-| `alacritty_terminal` | Заменяется term_core |
-| `crossterm` | Заменяется winit (события) |
-| `signal-hook` | Встраивается в winit event loop |
+| Crate | Reason for removal |
+|-------|--------------------|
+| `ratatui` | Replaced by GPU renderer |
+| `alacritty_terminal` | Replaced by term_core |
+| `crossterm` | Replaced by winit (events) |
+| `signal-hook` | Folded into winit event loop |
 
-### Остающиеся без изменений
+### Unchanged
 
-portable-pty, tokio, axum, reqwest, clap, serde/serde_json/toml, dirs, parking_lot, arboard, anyhow, tempfile, uuid, term_input (адаптируется).
+portable-pty, tokio, axum, reqwest, clap, serde/serde_json/toml, dirs, parking_lot, arboard, anyhow, tempfile, uuid, term_input (adapted).
 
 ---
 
-## 3. Структура крейтов
+## 3. Crate structure
 
 ```
 Cargo.toml (workspace)
 ├── src/                    # anyclaude — main app
 ├── crates/
-│   ├── term_input/         # [существующий] обработка ввода с /dev/tty
-│   ├── term_core/          # [НОВЫЙ] минимальный VT-парсер + variable-width grid
-│   ├── term_gpu/           # [НОВЫЙ] wgpu рендерер, glyph atlas, шейдеры
-│   └── term_layout/        # [НОВЫЙ] BSP panel manager
+│   ├── term_input/         # [existing] input handling from /dev/tty
+│   ├── term_core/          # [NEW] minimal VT parser + variable-width grid
+│   ├── term_gpu/           # [NEW] wgpu renderer, glyph atlas, shaders
+│   └── term_layout/        # [NEW] BSP panel manager
 ```
 
-### Зависимости между крейтами
+### Dependencies between crates
 
 ```
-term_core         (0 внешних deps, только std)
+term_core         (0 external deps, std only)
     ↑
 term_gpu          → wgpu, cosmic-text, term_core
     ↑
@@ -80,7 +80,7 @@ term_layout       → term_gpu, term_core
 anyclaude         → term_layout, term_gpu, term_core, term_input
 ```
 
-### Cargo.toml крейтов
+### Crate Cargo.toml files
 
 #### crates/term_core/Cargo.toml
 ```toml
@@ -92,7 +92,7 @@ edition = "2021"
 [lints]
 workspace = true
 
-# Ноль внешних зависимостей — только std
+# Zero external dependencies — std only
 ```
 
 #### crates/term_gpu/Cargo.toml
@@ -131,49 +131,49 @@ term_core = { path = "../term_core" }
 term_gpu = { path = "../term_gpu" }
 ```
 
-#### Обновлённый корневой Cargo.toml (изменения)
+#### Updated root Cargo.toml (changes)
 ```toml
 [workspace]
 members = [".", "crates/term_input", "crates/term_core", "crates/term_gpu", "crates/term_layout"]
 
 [dependencies]
-# УДАЛИТЬ:
+# REMOVE:
 # ratatui = "0.30"
 # alacritty_terminal = "0.25"
 # crossterm = "0.29"
 # signal-hook = "0.4"
 
-# ДОБАВИТЬ:
+# ADD:
 term_core = { path = "crates/term_core" }
 term_gpu = { path = "crates/term_gpu" }
 term_layout = { path = "crates/term_layout" }
 
-# ОСТАВИТЬ БЕЗ ИЗМЕНЕНИЙ:
-# portable-pty, tokio, axum, reqwest, clap, serde, и т.д.
+# KEEP UNCHANGED:
+# portable-pty, tokio, axum, reqwest, clap, serde, etc.
 ```
 
 ---
 
-## 4. term_core: Минимальный VT-парсер
+## 4. term_core: Minimal VT parser
 
-### 4.1 Структура файлов
+### 4.1 File structure
 
 ```
 crates/term_core/src/
-├── lib.rs          # Публичный API, реэкспорт
+├── lib.rs          # Public API, re-exports
 ├── parser.rs       # VT state machine
 ├── grid.rs         # Variable-width grid (TextRun-based)
-├── emulator.rs     # VtEmulator — реализация трейта TerminalEmulator
+├── emulator.rs     # VtEmulator — TerminalEmulator trait implementation
 ├── color.rs        # TermColor, ANSI palette
 └── attrs.rs        # TextAttrs (bold, italic, etc.)
 ```
 
-### 4.2 Поддерживаемые escape sequences
+### 4.2 Supported escape sequences
 
-Только то, что использует Claude Code (ink-based TUI):
+Only what Claude Code (ink-based TUI) uses:
 
 #### CSI sequences (`ESC [`)
-| Sequence | Код | Назначение |
+| Sequence | Code | Purpose |
 |----------|-----|-----------|
 | CUU | `ESC[{n}A` | Cursor Up |
 | CUD | `ESC[{n}B` | Cursor Down |
@@ -185,7 +185,7 @@ crates/term_core/src/
 | EL | `ESC[{n}K` | Erase Line (0=to end, 1=to start, 2=all) |
 | IL | `ESC[{n}L` | Insert Lines |
 | DL | `ESC[{n}M` | Delete Lines |
-| SGR | `ESC[{...}m` | Set Graphics Rendition (цвета, стили) |
+| SGR | `ESC[{...}m` | Set Graphics Rendition (colors, styles) |
 | DECSTBM | `ESC[{t};{b}r` | Set Scroll Region |
 | DECSET | `ESC[?{n}h` | Set DEC Private Mode |
 | DECRST | `ESC[?{n}l` | Reset DEC Private Mode |
@@ -194,7 +194,7 @@ crates/term_core/src/
 | SD | `ESC[{n}T` | Scroll Down |
 
 #### SGR parameters (`ESC[{...}m`)
-| Код | Значение |
+| Code | Meaning |
 |-----|----------|
 | 0 | Reset |
 | 1 | Bold |
@@ -220,7 +220,7 @@ crates/term_core/src/
 | 100-107 | Background (bright) |
 
 #### DEC Private Modes (`ESC[?{n}h/l`)
-| Код | Режим | Назначение |
+| Code | Mode | Purpose |
 |-----|-------|-----------|
 | 1 | DECCKM | Application cursor keys |
 | 25 | DECTCEM | Cursor visible/hidden |
@@ -233,13 +233,13 @@ crates/term_core/src/
 | 2004 | Bracketed paste | Bracketed paste mode |
 
 #### OSC sequences (`ESC ]`)
-| Sequence | Назначение |
+| Sequence | Purpose |
 |----------|-----------|
 | `ESC]0;{title}ST` | Set window title |
 | `ESC]2;{title}ST` | Set window title |
 
 #### Simple escape sequences
-| Sequence | Назначение |
+| Sequence | Purpose |
 |----------|-----------|
 | `ESC 7` | Save cursor (DECSC) |
 | `ESC 8` | Restore cursor (DECRC) |
@@ -247,7 +247,7 @@ crates/term_core/src/
 | `ESC c` | Full reset (RIS) |
 
 #### Control characters
-| Byte | Назначение |
+| Byte | Purpose |
 |------|-----------|
 | 0x07 (BEL) | Bell |
 | 0x08 (BS) | Backspace |
@@ -255,19 +255,19 @@ crates/term_core/src/
 | 0x0A (LF) | Line feed |
 | 0x0D (CR) | Carriage return |
 
-### 4.3 Что НЕ поддерживается
+### 4.3 What is NOT supported
 
 - DCS, SOS, PM, APC sequences
 - Character sets (G0/G1/G2/G3, SI/SO)
 - VT52 compatibility mode
-- Двойная ширина/высота строк (DECDWL, DECDHL)
-- Tab stops (HTS, TBC) — используем фиксированный tab = 8
+- Double width/height lines (DECDWL, DECDHL)
+- Tab stops (HTS, TBC) — fixed tab = 8 is used
 - Printer control (MC)
 - Soft fonts (DECDLD)
 - Rectangular area operations (DECRARA, DECCRA)
 - Macro sequences
 
-### 4.4 Публичный API (lib.rs)
+### 4.4 Public API (lib.rs)
 
 ```rust
 pub mod parser;
@@ -282,17 +282,17 @@ pub use grid::{Grid, Line, TextRun, PixelPos};
 pub use emulator::{TerminalEmulator, CursorState, CursorStyle, RenderSnapshot};
 pub use parser::{Parser, Action};
 
-/// Создать эмулятор терминала
+/// Create a terminal emulator
 pub fn create_emulator(width_px: u32, height_px: u32, scrollback: usize) -> Box<dyn TerminalEmulator> {
     Box::new(emulator::VtEmulator::new(width_px, height_px, scrollback))
 }
 ```
 
-### 4.5 Цвета и атрибуты (color.rs, attrs.rs)
+### 4.5 Colors and attributes (color.rs, attrs.rs)
 
 ```rust
 // color.rs
-/// Цвет терминала — совместим с текущим TermColor из emulator/mod.rs
+/// Terminal color — compatible with the current TermColor from emulator/mod.rs
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum TermColor {
     #[default]
@@ -302,7 +302,7 @@ pub enum TermColor {
 }
 
 impl TermColor {
-    /// Стандартная ANSI палитра (16 цветов)
+    /// Standard ANSI palette (16 colors)
     pub const BLACK: Self = Self::Indexed(0);
     pub const RED: Self = Self::Indexed(1);
     pub const GREEN: Self = Self::Indexed(2);
@@ -312,7 +312,7 @@ impl TermColor {
     pub const CYAN: Self = Self::Indexed(6);
     pub const WHITE: Self = Self::Indexed(7);
 
-    /// Конвертация в RGBA f32 для GPU
+    /// Convert to RGBA f32 for GPU
     pub fn to_rgba(&self, palette: &AnsiPalette) -> [f32; 4] {
         match *self {
             Self::Default => [1.0, 1.0, 1.0, 1.0],
@@ -381,7 +381,7 @@ impl AnsiPalette {
 
 ```rust
 // attrs.rs
-/// Текстовые атрибуты
+/// Text attributes
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct TextAttrs {
     bits: u8,
@@ -414,7 +414,7 @@ impl TextAttrs {
 
 ```rust
 // parser.rs
-//! Минимальный VT/ANSI parser — state machine для Claude Code
+//! Minimal VT/ANSI parser — state machine for Claude Code
 
 use crate::{TermColor, TextAttrs};
 
@@ -435,7 +435,7 @@ enum State {
     Utf8_4(u8, u8, u8),  // 3 bytes accumulated
 }
 
-/// Действия парсера — передаются в Grid/Emulator
+/// Parser actions — dispatched to Grid/Emulator
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     /// Printable character
@@ -543,8 +543,8 @@ impl Parser {
         }
     }
 
-    /// Парсит bytes, вызывает callback для каждого действия.
-    /// Zero-allocation для стандартных sequence.
+    /// Parses bytes, invokes callback for each action.
+    /// Zero-allocation for standard sequences.
     pub fn advance<F: FnMut(Action)>(&mut self, input: &[u8], mut emit: F) {
         for &byte in input {
             self.feed(byte, &mut emit);
@@ -552,7 +552,7 @@ impl Parser {
     }
 
     fn feed<F: FnMut(Action)>(&mut self, byte: u8, emit: &mut F) {
-        // ESC и C0 обрабатываются из любого состояния (кроме OSC для ESC)
+        // ESC and C0 are handled from any state (except OSC for ESC)
         if byte == 0x1B && self.state != State::OscString {
             self.state = State::Escape;
             return;
@@ -919,37 +919,37 @@ impl Default for Parser {
 
 ```rust
 // grid.rs
-//! Variable-width terminal grid — строки содержат TextRun спаны,
-//! не фиксированные ячейки
+//! Variable-width terminal grid — rows hold TextRun spans,
+//! not fixed cells
 
 use crate::{TermColor, TextAttrs};
 
-/// Пиксельная позиция
+/// Pixel position
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct PixelPos {
     pub x: f32,
     pub y: f32,
 }
 
-/// Текстовый спан с однородными атрибутами
+/// Text span with uniform attributes
 #[derive(Debug, Clone, PartialEq)]
 pub struct TextRun {
-    /// Текст (UTF-8)
+    /// Text (UTF-8)
     pub text: String,
-    /// Цвет текста
+    /// Foreground color
     pub fg: TermColor,
-    /// Цвет фона
+    /// Background color
     pub bg: TermColor,
-    /// Атрибуты
+    /// Attributes
     pub attrs: TextAttrs,
 }
 
-/// Строка терминала
+/// Terminal row
 #[derive(Debug, Clone)]
 pub struct Line {
-    /// Текстовые спаны
+    /// Text spans
     pub runs: Vec<TextRun>,
-    /// Строка была изменена с последнего рендера
+    /// Row was modified since the last render
     pub dirty: bool,
 }
 
@@ -963,7 +963,7 @@ impl Line {
         self.dirty = true;
     }
 
-    /// Получить весь текст строки
+    /// Get the full row text
     pub fn text(&self) -> String {
         let mut s = String::new();
         for run in &self.runs {
@@ -972,7 +972,7 @@ impl Line {
         s
     }
 
-    /// Длина строки в символах (для VT cursor positioning)
+    /// Row length in characters (for VT cursor positioning)
     pub fn char_count(&self) -> usize {
         self.runs.iter().map(|r| r.text.chars().count()).sum()
     }
@@ -982,22 +982,22 @@ impl Default for Line {
     fn default() -> Self { Self::new() }
 }
 
-/// Основная структура — хранит все строки + scrollback
+/// Main structure — holds all rows + scrollback
 pub struct Grid {
-    /// Строки: [scrollback..., visible...]
+    /// Rows: [scrollback..., visible...]
     lines: Vec<Line>,
-    /// Количество видимых строк (остальные — scrollback)
+    /// Number of visible rows (the rest are scrollback)
     visible_rows: usize,
-    /// Максимальный scrollback
+    /// Maximum scrollback
     max_scrollback: usize,
-    /// Пиксельные размеры viewport
+    /// Viewport pixel size
     pub width_px: u32,
     pub height_px: u32,
 
     // Cursor state
-    /// Строка курсора (0-based, относительно visible area)
+    /// Cursor row (0-based, relative to the visible area)
     pub cursor_row: usize,
-    /// Колонка курсора (0-based, в символах — для VT совместимости)
+    /// Cursor column (0-based, in characters — for VT compatibility)
     pub cursor_col: usize,
     pub cursor_visible: bool,
     pub cursor_style: CursorStyle,
@@ -1005,11 +1005,11 @@ pub struct Grid {
     /// Saved cursor (DECSC/DECRC)
     saved_cursor: Option<(usize, usize)>,
 
-    /// Scroll region (top, bottom) — 0-based, включительно
+    /// Scroll region (top, bottom) — 0-based, inclusive
     scroll_top: usize,
     scroll_bottom: usize,
 
-    /// Текущие атрибуты рисования
+    /// Current drawing attributes
     pub current_fg: TermColor,
     pub current_bg: TermColor,
     pub current_attrs: TextAttrs,
@@ -1018,7 +1018,7 @@ pub struct Grid {
     alt_lines: Option<Vec<Line>>,
     alt_cursor: Option<(usize, usize)>,
 
-    /// Режимы
+    /// Modes
     pub origin_mode: bool,
     pub auto_wrap: bool,
     pub bracketed_paste: bool,
@@ -1102,26 +1102,26 @@ impl Grid {
         &mut self.lines[idx]
     }
 
-    /// Получить ссылку на строку по visible row index
+    /// Get a reference to the row at the visible row index
     fn line(&self, row: usize) -> &Line {
         let idx = self.visible_start() + row;
         &self.lines[idx]
     }
 
-    /// Напечатать символ в текущей позиции курсора
+    /// Print a character at the current cursor position
     pub fn print(&mut self, c: char) {
         if self.cursor_row >= self.visible_rows {
             return;
         }
         let line = self.line_mut(self.cursor_row);
 
-        // Попытаться добавить к последнему run если атрибуты совпадают
+        // Try to append to the last run if attributes match
         if let Some(last) = line.runs.last_mut() {
             if last.fg == self.current_fg
                 && last.bg == self.current_bg
                 && last.attrs == self.current_attrs
             {
-                // Проверяем, что курсор в конце строки
+                // Verify the cursor is at the end of the row
                 let total_chars = line.char_count();
                 if self.cursor_col >= total_chars.saturating_sub(last.text.chars().count())  {
                     last.text.push(c);
@@ -1132,7 +1132,7 @@ impl Grid {
             }
         }
 
-        // Создаём новый run
+        // Create a new run
         line.runs.push(TextRun {
             text: c.to_string(),
             fg: self.current_fg,
@@ -1143,7 +1143,7 @@ impl Grid {
         self.cursor_col += 1;
     }
 
-    /// Новая строка (LF)
+    /// New line (LF)
     pub fn linefeed(&mut self) {
         if self.cursor_row == self.scroll_bottom {
             self.scroll_up(1);
@@ -1162,11 +1162,11 @@ impl Grid {
         for _ in 0..n {
             let remove_idx = self.visible_start() + self.scroll_top;
             if self.scroll_top == 0 {
-                // Строка уходит в scrollback
+                // Row moves into scrollback
                 if self.scrollback_len() >= self.max_scrollback {
                     self.lines.remove(0); // Remove oldest scrollback
                 }
-                // Вставляем пустую строку в scroll_bottom
+                // Insert an empty row at scroll_bottom
                 let insert_idx = self.visible_start() + self.scroll_bottom;
                 self.lines.insert(insert_idx + 1, Line::new());
             } else {
@@ -1347,7 +1347,7 @@ use crate::grid::{CursorStyle, Grid, Line, MouseMode, PixelPos, TextRun};
 use crate::parser::{Action, EraseMode, Parser, SgrAction};
 use crate::{TermColor, TextAttrs};
 
-/// Cursor state для рендерера
+/// Cursor state for the renderer
 #[derive(Debug, Clone, Copy)]
 pub struct CursorState {
     pub row: usize,
@@ -1356,22 +1356,22 @@ pub struct CursorState {
     pub style: CursorStyle,
 }
 
-/// Snapshot для рендера — все данные нужные GPU
+/// Render snapshot — all data the GPU needs
 pub struct RenderSnapshot {
     pub lines: Vec<Line>,
     pub cursor: CursorState,
     pub title: String,
 }
 
-/// Трейт терминального эмулятора
+/// Terminal emulator trait
 pub trait TerminalEmulator: Send {
     /// Feed raw bytes from PTY
     fn process(&mut self, bytes: &[u8]);
-    /// Resize — visible_rows определяется рендерером
+    /// Resize — visible_rows is determined by the renderer
     fn set_visible_rows(&mut self, rows: usize);
-    /// Pixel size для рендерера
+    /// Pixel size for the renderer
     fn set_pixel_size(&mut self, width: u32, height: u32);
-    /// Snapshot для GPU рендера
+    /// Snapshot for the GPU renderer
     fn snapshot(&self) -> RenderSnapshot;
     /// Scrollback offset in pixels (0.0 = live tail). See docs/design/gpu-terminal-scroll.md.
     fn scrollback_px(&self) -> f32;
@@ -1392,13 +1392,13 @@ pub struct VtEmulator {
     parser: Parser,
     grid: Grid,
     title: String,
-    /// Ответы для PTY (DSR, etc.)
+    /// Responses to the PTY (DSR, etc.)
     response_buf: Vec<u8>,
 }
 
 impl VtEmulator {
     pub fn new(width_px: u32, height_px: u32, scrollback: usize) -> Self {
-        // Начальное кол-во строк — будет обновлено рендерером
+        // Initial row count — will be updated by the renderer
         let rows = 24;
         let mut grid = Grid::new(rows, scrollback);
         grid.width_px = width_px;
@@ -1411,7 +1411,7 @@ impl VtEmulator {
         }
     }
 
-    /// Получить и очистить буфер ответов (для записи в PTY)
+    /// Take and clear the response buffer (for writing back to the PTY)
     pub fn take_responses(&mut self) -> Vec<u8> {
         std::mem::take(&mut self.response_buf)
     }
@@ -1603,28 +1603,28 @@ impl TerminalEmulator for VtEmulator {
 
 ---
 
-## 5. term_gpu: GPU Рендерер
+## 5. term_gpu: GPU renderer
 
-> Подробная спецификация в отдельном файле: [gpu-renderer-spec.md](gpu-renderer-spec.md)
+> Detailed specification in a separate file: [gpu-renderer-spec.md](gpu-renderer-spec.md)
 
-### 5.1 Структура файлов
+### 5.1 File structure
 
 ```
 crates/term_gpu/src/
-├── lib.rs              # Публичный API
-├── renderer.rs         # GpuRenderer — главный рендерер
+├── lib.rs              # Public API
+├── renderer.rs         # GpuRenderer — main renderer
 ├── surface.rs          # Surface management (wgpu::Surface)
 ├── pipeline.rs         # Render pipelines (text + prim)
 ├── atlas.rs            # GlyphAtlas + ShelfPacker + LRU Cache
-├── text.rs             # cosmic-text интеграция, text shaping
+├── text.rs             # cosmic-text integration, text shaping
 ├── instances.rs        # Instance buffers (GlyphInstance, PrimInstance)
-├── color.rs            # TermColor → RGBA конвертация для GPU
+├── color.rs            # TermColor → RGBA conversion for GPU
 └── shaders/
-    ├── text.wgsl       # Шейдер текста
-    └── prim.wgsl       # Шейдер примитивов
+    ├── text.wgsl       # Text shader
+    └── prim.wgsl       # Primitive shader
 ```
 
-### 5.2 WGSL шейдеры
+### 5.2 WGSL shaders
 
 #### text.wgsl
 ```wgsl
@@ -1745,7 +1745,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 ```rust
 // instances.rs
 
-/// Instance data для одного глифа
+/// Instance data for a single glyph
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct GlyphInstance {
@@ -1756,7 +1756,7 @@ pub struct GlyphInstance {
     pub color: [f32; 4],     // RGBA
 }
 
-/// Instance data для примитива (bg rect, cursor, selection)
+/// Instance data for a primitive (bg rect, cursor, selection)
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct PrimInstance {
@@ -1765,7 +1765,7 @@ pub struct PrimInstance {
     pub color: [f32; 4],
 }
 
-// Вместо bytemuck — свой unsafe cast
+// Custom unsafe cast in place of bytemuck
 impl GlyphInstance {
     pub fn as_bytes(slice: &[Self]) -> &[u8] {
         unsafe {
@@ -2068,7 +2068,7 @@ End of frame: call `atlas.end_frame()` so unused glyphs age toward eviction (§5
 
 ## 6. term_layout: BSP Panel Manager
 
-### 6.1 Структура
+### 6.1 Structure
 
 ```rust
 // lib.rs
@@ -2105,38 +2105,38 @@ impl PanelTree {
 
 ---
 
-## 7. Интеграция с текущим кодом
+## 7. Integration with existing code
 
-### Удаляемые файлы
+### Removed files
 
-| Файл | Причина |
+| File | Reason |
 |------|---------|
-| `src/ui/terminal.rs` | Заменяется GPU рендерером |
-| `src/ui/render.rs` | Заменяется GPU рендерером |
-| `src/ui/layout.rs` | Заменяется term_layout |
-| `src/ui/terminal_guard.rs` | crossterm setup — заменяется winit |
-| `src/ui/events.rs` | EventHandler через crossterm → winit |
-| `src/ui/theme.rs` | Цвета → AnsiPalette в term_core |
-| `src/ui/header.rs` | Будет перенесён в GPU рендер |
-| `src/ui/footer.rs` | Будет перенесён в GPU рендер |
-| `src/pty/emulator/alacritty_impl.rs` | Заменяется term_core::VtEmulator |
+| `src/ui/terminal.rs` | Replaced by GPU renderer |
+| `src/ui/render.rs` | Replaced by GPU renderer |
+| `src/ui/layout.rs` | Replaced by term_layout |
+| `src/ui/terminal_guard.rs` | crossterm setup — replaced by winit |
+| `src/ui/events.rs` | EventHandler via crossterm → winit |
+| `src/ui/theme.rs` | Colors → AnsiPalette in term_core |
+| `src/ui/header.rs` | Will be moved into the GPU renderer |
+| `src/ui/footer.rs` | Will be moved into the GPU renderer |
+| `src/pty/emulator/alacritty_impl.rs` | Replaced by term_core::VtEmulator |
 
-### Изменяемые файлы
+### Modified files
 
-| Файл | Изменения |
+| File | Changes |
 |------|-----------|
-| `src/pty/emulator/mod.rs` | `pub use term_core::emulator::TerminalEmulator;` — трейт из term_core |
+| `src/pty/emulator/mod.rs` | `pub use term_core::emulator::TerminalEmulator;` — trait from term_core |
 | `src/pty/session.rs` | `emulator::create()` → `term_core::create_emulator()` |
-| `src/pty/handle.rs` | Адаптировать под новый трейт (set_visible_rows вместо set_size) |
-| `src/ui/runtime.rs` | Главная перестройка: ratatui loop → winit ApplicationHandler |
-| `src/ui/app.rs` | Адаптировать под новый трейт TerminalEmulator |
-| `src/ui/input.rs` | classify_key адаптировать под winit KeyEvent |
-| `src/ui/selection.rs` | Pixel-based selection вместо grid-based |
-| `Cargo.toml` | Описано в секции 3 |
+| `src/pty/handle.rs` | Adapt to the new trait (set_visible_rows instead of set_size) |
+| `src/ui/runtime.rs` | Main rewrite: ratatui loop → winit ApplicationHandler |
+| `src/ui/app.rs` | Adapt to the new TerminalEmulator trait |
+| `src/ui/input.rs` | Adapt classify_key to winit KeyEvent |
+| `src/ui/selection.rs` | Pixel-based selection instead of grid-based |
+| `Cargo.toml` | Described in section 3 |
 
-### Файлы без изменений
+### Unchanged files
 
-Всё в `src/proxy/`, `src/config/`, `src/metrics/`, `src/ipc/`, `src/shim/`, `src/args/`, `src/clipboard/`, `src/error/`, `src/shutdown/`.
+Everything in `src/proxy/`, `src/config/`, `src/metrics/`, `src/ipc/`, `src/shim/`, `src/args/`, `src/clipboard/`, `src/error/`, `src/shutdown/`.
 
 ---
 
