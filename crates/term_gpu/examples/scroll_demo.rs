@@ -26,6 +26,15 @@ const STRIPE_HEIGHT: f32 = 24.0;
 const STRIPE_GAP: f32 = 2.0;
 const STRIPE_X_MARGIN: f32 = 48.0;
 
+// Ruler overlay parameters. Thin horizontal lines tick along the scroll
+// space; their sub-pixel motion during inertia is the visible proof that
+// scroll_offset_y is `f32`, not an integer line count.
+const RULER_X: f32 = 8.0;
+const RULER_SMALL_WIDTH: f32 = 16.0;
+const RULER_BIG_WIDTH: f32 = 32.0;
+const RULER_TICK_INTERVAL: f32 = 10.0;
+const RULER_BIG_EVERY: usize = 10; // every 10 small ticks → 100 px
+
 #[derive(Debug, Clone, Copy)]
 enum CustomEvent {
     GestureEnded,
@@ -59,6 +68,27 @@ fn build_stripes(window_width: f32) -> Vec<RectInstance> {
             pos: [STRIPE_X_MARGIN, i as f32 * (STRIPE_HEIGHT + STRIPE_GAP)],
             size: [width, STRIPE_HEIGHT],
             color: hsv_to_rgb((i as f32 * 1.7) % 360.0, 0.55, 0.92),
+        })
+        .collect()
+}
+
+fn build_ruler(total_height: f32) -> Vec<RectInstance> {
+    let count = (total_height / RULER_TICK_INTERVAL) as usize;
+    (0..count)
+        .map(|i| {
+            let big = i % RULER_BIG_EVERY == 0;
+            RectInstance {
+                pos: [RULER_X, i as f32 * RULER_TICK_INTERVAL],
+                size: [
+                    if big { RULER_BIG_WIDTH } else { RULER_SMALL_WIDTH },
+                    1.0,
+                ],
+                color: if big {
+                    [1.0, 1.0, 1.0, 0.9]
+                } else {
+                    [1.0, 0.95, 0.45, 0.6]
+                },
+            }
         })
         .collect()
 }
@@ -103,7 +133,9 @@ struct App {
     proxy: EventLoopProxy<CustomEvent>,
     window: Option<Arc<Window>>,
     renderer: Option<GpuRenderer>,
-    stripes: Vec<RectInstance>,
+    /// Concatenated instance buffer: stripes first, then ruler overlay.
+    /// One draw call renders both — the shader doesn't care about ordering.
+    rects: Vec<RectInstance>,
     scroll: ScrollState,
     velocity: Option<ScrollVelocity>,
     gesture_end_abort: Option<AbortHandle>,
@@ -116,12 +148,19 @@ impl App {
             proxy,
             window: None,
             renderer: None,
-            stripes: Vec::new(),
+            rects: Vec::new(),
             scroll: ScrollState::default(),
             velocity: None,
             gesture_end_abort: None,
             momentum_abort: None,
         }
+    }
+
+    fn rebuild_geometry(&mut self, width_px: f32) {
+        let total = stripes_total_height();
+        let mut all = build_stripes(width_px);
+        all.extend(build_ruler(total));
+        self.rects = all;
     }
 
     fn cancel_momentum(&mut self) {
@@ -214,11 +253,13 @@ impl ApplicationHandler<CustomEvent> for App {
         );
 
         let renderer = GpuRenderer::new(window.clone());
-        self.stripes = build_stripes(renderer.size().width as f32);
+        let width = renderer.size().width as f32;
+        let height = renderer.size().height as f32;
+        self.rebuild_geometry(width);
         self.scroll = ScrollState {
             offset_y: 0.0,
             total_size_px: stripes_total_height(),
-            visible_px: renderer.size().height as f32,
+            visible_px: height,
         };
         self.window = Some(window);
         self.renderer = Some(renderer);
@@ -234,7 +275,7 @@ impl ApplicationHandler<CustomEvent> for App {
             WindowEvent::Resized(new_size) => {
                 if let Some(r) = self.renderer.as_mut() {
                     r.resize(new_size);
-                    self.stripes = build_stripes(new_size.width as f32);
+                    self.rebuild_geometry(new_size.width as f32);
                     self.scroll.visible_px = new_size.height as f32;
                     self.scroll.scroll_by(0.0);
                 }
@@ -252,7 +293,7 @@ impl ApplicationHandler<CustomEvent> for App {
             WindowEvent::RedrawRequested => {
                 if let (Some(r), Some(w)) = (self.renderer.as_ref(), self.window.as_ref()) {
                     w.pre_present_notify();
-                    r.render(&self.stripes, self.scroll.offset_y);
+                    r.render(&self.rects, self.scroll.offset_y);
                 }
             }
             _ => {}
