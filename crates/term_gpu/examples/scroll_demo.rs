@@ -92,53 +92,88 @@ struct TextDraw<'a> {
     scale_factor: f32,
 }
 
+/// Per-frame context for `build_glyph_instances`. Groups scalars so the
+/// builder's signature stays within clippy's `too_many_arguments` limit and
+/// the culling logic is centralised in one place.
+#[derive(Clone, Copy)]
+struct FrameContext {
+    scale_factor: f32,
+    /// Scroll position in logical pixels.
+    scroll_top: f32,
+    /// Viewport height in logical pixels.
+    viewport_height: f32,
+}
+
+impl FrameContext {
+    /// Returns true if `[origin_y, origin_y + height]` overlaps the viewport.
+    /// Used to skip shaping and atlas lookups for off-screen text.
+    fn in_view(&self, origin_y: f32, height: f32) -> bool {
+        origin_y + height > self.scroll_top
+            && origin_y < self.scroll_top + self.viewport_height
+    }
+}
+
 fn build_glyph_instances(
     font_system: &mut FontSystem,
     swash_cache: &mut SwashCache,
     atlas: &mut GlyphAtlas,
     shape_cache: &mut TextShapeCache,
     out: &mut Vec<GlyphInstance>,
-    scale_factor: f32,
+    frame: FrameContext,
 ) {
-    // 1. Banner at the very top of scroll space.
-    shape_text_into(
-        font_system,
-        swash_cache,
-        atlas,
-        shape_cache,
-        out,
-        TextDraw {
-            text: "term_gpu scroll demo \u{2022} cosmic-text shaping \u{1F680}",
-            font_size: 18.0,
-            color: [0.95, 0.95, 0.95, 1.0],
-            origin_x: STRIPE_X_MARGIN + 8.0,
-            origin_y: 4.0,
-            wrap_width: None,
-            scale_factor,
-        },
-    );
+    let sf = frame.scale_factor;
 
-    // 2. Lorem ipsum paragraph below the banner, wrapped.
-    shape_text_into(
-        font_system,
-        swash_cache,
-        atlas,
-        shape_cache,
-        out,
-        TextDraw {
-            text: LOREM,
-            font_size: 14.0,
-            color: [0.05, 0.05, 0.08, 1.0],
-            origin_x: STRIPE_X_MARGIN + 8.0,
-            origin_y: 36.0,
-            wrap_width: Some(700.0),
-            scale_factor,
-        },
-    );
+    // 1. Banner at the very top of scroll space.
+    let banner_height = 18.0 * 1.5;
+    if frame.in_view(4.0, banner_height) {
+        shape_text_into(
+            font_system,
+            swash_cache,
+            atlas,
+            shape_cache,
+            out,
+            TextDraw {
+                text: "term_gpu scroll demo \u{2022} cosmic-text shaping \u{1F680}",
+                font_size: 18.0,
+                color: [0.95, 0.95, 0.95, 1.0],
+                origin_x: STRIPE_X_MARGIN + 8.0,
+                origin_y: 4.0,
+                wrap_width: None,
+                scale_factor: sf,
+            },
+        );
+    }
+
+    // 2. Lorem ipsum paragraph below the banner, wrapped. Pessimistic height
+    // estimate is fine — culling only matters when the user scrolls past it.
+    let lorem_height = 14.0 * 1.5 * 8.0;
+    if frame.in_view(36.0, lorem_height) {
+        shape_text_into(
+            font_system,
+            swash_cache,
+            atlas,
+            shape_cache,
+            out,
+            TextDraw {
+                text: LOREM,
+                font_size: 14.0,
+                color: [0.05, 0.05, 0.08, 1.0],
+                origin_x: STRIPE_X_MARGIN + 8.0,
+                origin_y: 36.0,
+                wrap_width: Some(700.0),
+                scale_factor: sf,
+            },
+        );
+    }
 
     // 3. "Row N" labels for every 10th stripe. Every 100th gets an emoji.
+    // On a 720 logical px viewport this culls ~90 of 100 labels per frame.
+    let row_height = 12.0 * 1.5;
     for i in (0..STRIPE_COUNT).step_by(10) {
         let y = i as f32 * (STRIPE_HEIGHT + STRIPE_GAP) + 4.0;
+        if !frame.in_view(y, row_height) {
+            continue;
+        }
         let text = if i > 0 && i % 100 == 0 {
             format!("Row {i} \u{1F389}")
         } else {
@@ -157,7 +192,7 @@ fn build_glyph_instances(
                 origin_x: STRIPE_X_MARGIN + 12.0,
                 origin_y: y,
                 wrap_width: None,
-                scale_factor,
+                scale_factor: sf,
             },
         );
     }
@@ -426,13 +461,18 @@ impl App {
         };
 
         let mut glyphs = Vec::new();
+        let frame_ctx = FrameContext {
+            scale_factor: *scale_factor,
+            scroll_top: scroll.offset_y,
+            viewport_height: scroll.visible_px,
+        };
         build_glyph_instances(
             font_system,
             swash_cache,
             renderer.atlas_mut(),
             shape_cache,
             &mut glyphs,
-            *scale_factor,
+            frame_ctx,
         );
 
         window.pre_present_notify();
