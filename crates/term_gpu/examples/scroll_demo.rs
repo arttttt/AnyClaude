@@ -14,9 +14,9 @@ use futures::future::{abortable, AbortHandle};
 use futures_timer::Delay;
 use glam::Vec2;
 use term_gpu::{
-    decay_velocity, rasterize_glyph, GlyphAtlas, GlyphInstance, GpuRenderer, RectInstance,
-    ScrollState, ScrollVelocity, TextShapeCache, GESTURE_END_TIMEOUT, MOMENTUM_FRAME_INTERVAL,
-    MOMENTUM_MIN_VELOCITY, MOMENTUM_THRESHOLD, NUM_PIXELS_PER_LINE,
+    decay_velocity, rasterize_glyph, FontFamily, GlyphAtlas, GlyphInstance, GpuRenderer,
+    RectInstance, ScrollState, ScrollVelocity, TextShapeCache, GESTURE_END_TIMEOUT,
+    MOMENTUM_FRAME_INTERVAL, MOMENTUM_MIN_VELOCITY, MOMENTUM_THRESHOLD, NUM_PIXELS_PER_LINE,
 };
 use winit::application::ApplicationHandler;
 use winit::event::{MouseScrollDelta, TouchPhase, WindowEvent};
@@ -345,7 +345,9 @@ impl App {
             momentum_abort: None,
             font_system: FontSystem::new(),
             swash_cache: SwashCache::new(),
-            shape_cache: TextShapeCache::new(),
+            // Explicit sans-serif UI family; emoji and CJK fall back through
+            // the system font database automatically (see text.rs docs).
+            shape_cache: TextShapeCache::with_family(FontFamily::SansSerif),
             scale_factor: 1.0,
         }
     }

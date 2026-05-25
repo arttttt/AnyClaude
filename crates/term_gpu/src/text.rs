@@ -19,6 +19,22 @@
 //! for crisper Y positioning and zero hand-rolled code. See
 //! `docs/gpu-terminal-spec.md` §5.6 for the rationale and
 //! `memory/gpu-terminal-architecture.md` for the locked-in decision.
+//!
+//! ## Font fallback
+//!
+//! cosmic-text's `FontSystem` scans the OS font database on construction
+//! (`fontdb` under the hood) and resolves missing glyphs by walking the
+//! database — so colour emoji (`Apple Color Emoji`, `Noto Color Emoji`,
+//! `Segoe UI Emoji`), CJK, and other scripts work out of the box on a
+//! system with the corresponding fonts installed. We do not configure an
+//! explicit fallback chain — the OS already provides one, and overriding
+//! it tends to make things worse, not better.
+//!
+//! What we **do** expose is the *primary* family preference via
+//! [`FontFamily`] and [`TextShapeCache::with_family`]. Pick `SansSerif` for
+//! UI text, `Monospace` for code/terminal cell rendering, or `Named` for a
+//! specific face. Cache instances are family-scoped: keep separate
+//! `TextShapeCache`s for distinct families to avoid spurious cache misses.
 
 use std::collections::HashMap;
 
@@ -26,6 +42,33 @@ use cosmic_text::{
     Attrs, Buffer, CacheKey, Family, FontSystem, LayoutGlyph, Metrics, Shaping, SwashCache,
     SwashContent,
 };
+
+/// Primary font family preference for a `TextShapeCache`. Maps onto
+/// `cosmic_text::Family`. Glyphs absent from the primary face are resolved
+/// from the system font database automatically — emoji, CJK, RTL scripts
+/// work without further configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum FontFamily {
+    SansSerif,
+    Serif,
+    Monospace,
+    Cursive,
+    Fantasy,
+    Named(String),
+}
+
+impl FontFamily {
+    fn as_cosmic(&self) -> Family<'_> {
+        match self {
+            FontFamily::SansSerif => Family::SansSerif,
+            FontFamily::Serif => Family::Serif,
+            FontFamily::Monospace => Family::Monospace,
+            FontFamily::Cursive => Family::Cursive,
+            FontFamily::Fantasy => Family::Fantasy,
+            FontFamily::Named(name) => Family::Name(name.as_str()),
+        }
+    }
+}
 
 use crate::atlas::{GlyphFormat, RasterizedGlyph};
 
@@ -77,6 +120,7 @@ struct CachedShape {
 pub struct TextShapeCache {
     entries: HashMap<ShapeKey, CachedShape>,
     frame: u32,
+    family: FontFamily,
 }
 
 impl Default for TextShapeCache {
@@ -86,11 +130,21 @@ impl Default for TextShapeCache {
 }
 
 impl TextShapeCache {
+    /// Default cache: `FontFamily::SansSerif`. Good for UI labels.
     pub fn new() -> Self {
+        Self::with_family(FontFamily::SansSerif)
+    }
+
+    pub fn with_family(family: FontFamily) -> Self {
         Self {
             entries: HashMap::new(),
             frame: 0,
+            family,
         }
+    }
+
+    pub fn family(&self) -> &FontFamily {
+        &self.family
     }
 
     /// Look up or shape. Sizes are in **logical** pixels; the cache shapes
@@ -111,12 +165,14 @@ impl TextShapeCache {
             wrap_width_bits: wrap_width.map(|w| w.to_bits()),
         };
         let frame = self.frame;
+        let family = &self.family;
         let entry = self.entries.entry(key).or_insert_with(|| CachedShape {
             text: shape_text_inline(
                 font_system,
                 text,
                 font_size * scale_factor,
                 wrap_width.map(|w| w * scale_factor),
+                family,
             ),
             last_used_frame: frame,
         });
@@ -139,12 +195,13 @@ fn shape_text_inline(
     text: &str,
     font_size_physical: f32,
     wrap_width_physical: Option<f32>,
+    family: &FontFamily,
 ) -> ShapedText {
     let line_height = font_size_physical * 1.3;
     let metrics = Metrics::new(font_size_physical, line_height);
     let mut buffer = Buffer::new_empty(metrics);
     buffer.set_size(font_system, wrap_width_physical, None);
-    let attrs = Attrs::new().family(Family::SansSerif);
+    let attrs = Attrs::new().family(family.as_cosmic());
     buffer.set_text(font_system, text, &attrs, Shaping::Advanced);
 
     ShapedText {
