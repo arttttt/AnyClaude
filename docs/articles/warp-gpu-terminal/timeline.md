@@ -144,11 +144,32 @@ research-notes, timeline, quotes-and-numbers — collected immediately
 while the work was fresh. Without this, the article would later have
 to be rebuilt from commit messages and memory.
 
-## 8. Branch state at end of Phase 3
+## 8. Phase 1 — term_core (8 commits + dump example)
 
-26 commits on `feat/gpu-terminal`:
+After the GPU stack worked end-to-end, time for the parser. Started
+with a second delegated research pass against Warp to find what our
+spec missed — turned up two material decisions before any code was
+written. Then 8 atomic commits, all compiling, integration tests
+green at the end:
 
-- 4 doc/research commits (research, scroll design, spec updates, articles)
+| Commit | Adds |
+|---|---|
+| `492e34f` | `docs(analysis): add Warp VT parser research` — what Warp uses (`vte` fork), grid model (fixed-cell alacritty-style), 30+ sequences our spec was missing, P0/P1/P2/P3 priorities, what NOT to do |
+| `337c081` | `docs(gpu-terminal): rewrite term_core spec for Cell grid + extended VT` — full §4 rewrite: Cell-based grid, added all P0/P1 sequences with Priority column, OSC 7/8/133, full DEC modes list, "not supported" expanded to match research §4 |
+| `aa14950` | `feat(term_core): bootstrap crate with color, attrs, and Cell primitives` — `TermColor`/`AnsiPalette` (default_dark with 16+216+24 ramp), `CellFlags` (u16 bitset, 12 flags), `Cell { c, fg, bg, flags, Option<Box<CellExtra>> }`, `PromptMarker`. Zero deps. |
+| `a710e21` | `feat(term_core): add Paul Williams VT parser state machine` — 770 LoC. State enum (Ground/Escape/CSI/OSC/DCS/SOS-PM-APC/UTF8), `Action` enum with 30+ variants, full CSI/SGR/OSC/ESC dispatch |
+| `541a26b` | `feat(term_core): add fixed-cell grid with scroll region and alt screen` — `Row`, `Grid`, `CursorStyle` (6 variants matching DECSCUSR), `MouseMode`. All operations: print/erase/insert/delete/scroll/alt/save/restore/resize/reset. DECOM-aware `cursor_position` |
+| `c9c6536` | `feat(term_core): wire parser actions into VtEmulator` — `TerminalEmulator` trait, `RenderSnapshot`, `VtEmulator`. `apply_action` dispatch + `apply_sgr`. DA replies `\x1b[?6c`, DSR cursor pos `\x1b[r;cR` |
+| `d83c53d` | `feat(term_core): support full DEC mode set and shell integration OSCs` — DEC 12/1000/1002/1003/1004/1006/2004/2026, DECRQM replies, OSC 7 CWD, OSC 8 sticky hyperlinks, OSC 133 one-shot prompt markers, `emit_focus` helper |
+| `dd60a29` | `test(term_core): integration tests for parser and emulator` — 39 tests in `crates/term_core/tests/` (parser_smoke 20 + emulator_smoke 19). All green. Caught and fixed the "tests in `src/`" policy violation along the way |
+| `bbf6ea5` | `feat(term_core): add dump example for visual smoke testing` — `examples/dump.rs`: stdin → grid snapshot with ASCII frame + cursor/title/cwd/responses. `COLOR=1` re-emits SGR so the dump itself shows in colour |
+
+## 9. Branch state at end of Phase 1
+
+34 commits on `feat/gpu-terminal`:
+
+- 5 doc/research commits (rendering research, scroll design, spec
+  updates, articles, VT parser research)
 - 1 docs translation cleanup
 - 1 docs subpixel decision
 - 2 Cargo.lock chores
@@ -157,6 +178,10 @@ to be rebuilt from commit messages and memory.
 - 6 Phase 3 features (text rendering)
 - 4 Phase 3 finishing (DPI, shape cache, culling, font fallback)
 - 1 fix (WGSL alignment)
+- 1 docs spec rewrite (term_core)
+- 6 Phase 1 features + 1 test commit + 1 example (term_core)
 
-Renderer crate compiles clean, clippy clean, demo runs at 120fps on
-Retina with crisp text, momentum, sub-pixel motion, emoji.
+`term_core` compiles with zero external dependencies; 39 integration
+tests green. `term_gpu` runs the scroll demo at 120 fps on Retina
+with text, momentum, emoji, sub-pixel motion. Both crates clippy
+clean.

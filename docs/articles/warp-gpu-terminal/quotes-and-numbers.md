@@ -324,6 +324,101 @@ first frame, before cache is warm): ~5 µs per label × 100 labels =
 26 commits on `feat/gpu-terminal`. See `timeline.md` §8 for the
 breakdown by category.
 
+## term_core (Phase 1) numbers
+
+- 8 atomic feature/docs commits + 1 example commit.
+- ~770 LoC for the Paul Williams parser, std-only, 0 external deps.
+- ~600 LoC for the Grid (cursor, scroll region, alt screen, all
+  edit primitives).
+- 30+ `Action` enum variants covering all P0+P1 sequences from the
+  research priority list.
+- 39 integration tests (20 parser_smoke + 19 emulator_smoke), all
+  green.
+- 34 commits on `feat/gpu-terminal` at end of Phase 1.
+
+## Cell layout (alacritty-style, Warp-style)
+
+```rust
+pub struct Cell {
+    pub c: char,                     // 4 bytes
+    pub fg: TermColor,               // 4 bytes (Default | Indexed(u8) | Rgb(u8,u8,u8))
+    pub bg: TermColor,               // 4 bytes
+    pub flags: CellFlags,            // 2 bytes (u16 bitset)
+    pub extra: Option<Box<CellExtra>>, // 8 bytes (rare metadata heap-indirected)
+}
+```
+
+Hot path stays small; combining marks, OSC 8 hyperlinks, OSC 133
+prompt markers live on the heap via `extra`.
+
+## The "DA must reply" trap
+
+`CSI c` (Device Attributes) is sent by many apps at startup and
+they **block waiting for a reply**. Warp answers with `?6c` (VT102
+primary). If you forget to answer at all — silence, the app hangs.
+
+```rust
+Action::DeviceAttributes => {
+    self.response_buf.extend_from_slice(b"\x1b[?6c");
+}
+```
+
+Sample app symptoms: cursor frozen, no output, no input.
+Easy bug to make, easy to miss because most apps don't send DA.
+
+## OSC 8 (sticky) vs OSC 133 (one-shot) attachment
+
+OSC 8 hyperlinks apply to every cell printed until closed:
+
+```
+OSC 8;params;url ST  <text>  OSC 8;;ST
+       │                        │
+       └─ sticks ─────────────┘
+```
+
+OSC 133 prompt markers tag the next cell only:
+
+```
+OSC 133;A ST  <one cell tagged>  <subsequent cells un-tagged>
+```
+
+Implementation:
+- `Grid.current_hyperlink: Option<(String, String)>` — sticky, set/cleared by OSC 8.
+- `Grid.next_prompt: Option<PromptMarker>` — `Grid.print` takes (clears) on first attach.
+- Either active → `Grid.print` lazily allocates `Cell.extra`.
+
+## Project policy nuance: tests in `tests/`, never `src/`
+
+```
+crates/term_core/
+├── src/
+│   ├── parser.rs       ← no `mod tests` here
+│   └── …
+└── tests/              ← integration tests live here
+    ├── parser_smoke.rs (20 tests)
+    └── emulator_smoke.rs (19 tests)
+```
+
+Two reasons:
+1. `dead_code = "deny"` workspace lint can fire on test-only helpers.
+2. Integration tests exercise the public API; unit tests inside
+   `src/` can rely on private state and silently break.
+
+Caught the violation in commit 4 (parser) before it landed.
+
+## Locked-in `term_core` decisions
+
+- **Hand-roll Paul Williams state machine, no `vte` dep.** ~770 LoC vs one
+  dependency. Worth it for the self-contained crate.
+- **Fixed-cell logical grid + variable-width render.** ink demands
+  monospace for CUP correctness; cosmic-text shapes variable-width
+  in `term_gpu`. Logical and visual models can disagree.
+- **Frame-counter eviction reused.** Both `GlyphAtlas` (10 frames)
+  and `TextShapeCache` (60 frames). Simpler than LRU.
+- **`?6c` (VT102) for DA reply.** Matches Warp; ink doesn't care.
+- **DCS / SOS / PM / APC eaten without dispatch.** Out of scope but
+  must traverse them so they don't corrupt input.
+
 ## License attribution snippet
 
 For files containing code ported from Warp:

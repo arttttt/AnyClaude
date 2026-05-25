@@ -158,6 +158,47 @@ Worth a callout in the article: WGSL/std140 alignment rules are
 non-obvious, and writing uniforms by hand (without `bytemuck` or
 `encase`) means owning that rulebook yourself.
 
+## Act 9 — Phase 1: the actual VT parser
+
+With rendering working, time to handle real ANSI bytes. Two big
+decisions before any code, both made after a second research pass
+against Warp:
+
+1. **Hand-roll the Paul Williams state machine, no `vte` crate.**
+   Warp uses (a fork of) `vte`. We don't, to keep `term_core`
+   dependency-free. Trade-off: ~770 LoC of careful state-transition
+   code. Worth it for the simplicity.
+
+2. **Fixed-cell logical grid (alacritty-style), variable-width
+   render.** ink (Claude Code's TUI framework) assumes a monospace
+   cell grid for cursor positioning — `CUP row 5 col 10` must
+   address one definite cell. Our earlier "variable-width spans"
+   plan would have broken VT semantics. Variable-width happens in
+   `term_gpu` at shape time. Logical model is monospace; visual
+   model isn't.
+
+The implementation: 8 atomic commits. Highlights:
+
+- `Cell { c, fg, bg, flags, extra: Option<Box<CellExtra>> }` with
+  heap-indirected metadata for rare features (combining marks,
+  hyperlinks, prompt markers).
+- 30+ `Action` variants covering all P0 + P1 sequences from the
+  research priority list — including the ones our first spec missed:
+  ICH, DCH, ECH, REP, VPA, CNL/CPL, DA (must reply, apps hang
+  otherwise), DECSCUSR cursor style, OSC 7 CWD, OSC 8 hyperlinks,
+  OSC 133 prompt markers, DEC 1004 focus reporting, DECSET 2026
+  sync output.
+- OSC 8 stickiness model: `Grid.current_hyperlink` is `Some(...)`
+  until an empty-URL OSC 8 closes it; `Grid.print` attaches it to
+  every cell while active.
+- OSC 133 one-shot model: `Grid.next_prompt` is a tag attached to
+  the next printed cell and cleared. Different semantics from OSC 8.
+- 39 integration tests in `crates/term_core/tests/` (parser_smoke +
+  emulator_smoke). Per project policy, no `#[cfg(test)]` in `src/`.
+- `examples/dump.rs`: pipe raw ANSI into stdin, get a framed ASCII
+  grid plus cursor/title/cwd state out. Useful for replaying real
+  Claude Code captures.
+
 ## Outro — Takeaways
 
 1. **Read the source.** Warp's MIT crates contain answers to questions
@@ -182,9 +223,25 @@ non-obvious, and writing uniforms by hand (without `bytemuck` or
 9. **Don't defer features your reference implementation ships.**
    "I'll add caching later" creates technical debt that compounds
    across phases. Build the real thing each phase.
+10. **A 770-LoC hand-rolled VT parser beats a dependency** when the
+    crate is meant to be self-contained. The Paul Williams diagram
+    is well-trodden ground; following it carefully is less work than
+    living with someone else's API decisions.
+11. **Logical and visual models can disagree.** Our cell grid is
+    monospace (VT semantics demand it). Our renderer shapes
+    variable-width fonts. Separating "what the cursor addresses"
+    from "what the user sees" is the unlock.
+12. **DA replies are not optional.** Apps that send `CSI c` block
+    waiting for an answer. Always answer.
+13. **Read the research, then build.** Each phase we did
+    delegated-agent research against Warp before writing code. Both
+    times we found something the spec missed (subpixel via
+    cosmic-text, Cell vs TextRun grid). Cheap to ask, expensive to
+    rewrite.
 
 ## Possible follow-up articles
 
-- "Building the term_core VT parser: what Claude Code actually emits"
 - "From 60 to 240 FPS: profiling a wgpu terminal"
 - "Why we chose `Vec<Row>` over `sum_tree` for a terminal grid"
+- "BSP panels for terminal UI: lessons from tmux"
+- "Integration day: wiring term_core into anyclaude"

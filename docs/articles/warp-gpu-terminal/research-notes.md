@@ -235,7 +235,130 @@ Generalisable: if writing uniforms by hand (we don't use `bytemuck`
 intentionally — see spec §5.3), avoid `vec3` and `mat3` in struct
 fields. Use `vec4`/`mat4` or scalar pads.
 
-## 11. The "don't defer features Warp ships" rule
+## 11. Phase 1: VT parser as a 0-dep crate
+
+After rendering was solid, we ran a second research pass against
+Warp focused on VT parsing. Two material findings shifted the plan
+before we wrote a line of `term_core`.
+
+### Warp uses (a fork of) `vte`, but we don't
+
+Warp wraps the `vte` crate (originally an Alacritty subproject) and
+implements `vte::Perform`. We could have done the same; we chose to
+hand-roll the Paul Williams state machine in ~770 lines of std-only
+Rust. Reasons:
+
+- `term_core` is the dependency root of the whole terminal pipeline.
+  Keeping it self-contained makes blame trivial.
+- The state diagram is exhaustively documented
+  (<https://vt100.net/emu/dec_ansi_parser>). Following it is less
+  work than living with someone else's `Perform` API.
+- Our `Action` enum exposes exactly the variants we handle, no more,
+  no less. No "this method exists but does nothing".
+
+The "don't defer features Warp ships" rule didn't apply here — `vte`
+is an implementation choice, not a feature. We ship the same
+*capabilities* (P0+P1 sequences) without the dep.
+
+### Fixed-cell grid, alacritty-style — not our original TextRun plan
+
+Our first spec had a variable-width grid: `Row { runs: Vec<TextRun> }`
+with `TextRun { text: String, fg, bg, flags }`. Beautiful for a
+text editor; broken for a terminal:
+
+- `CUP row 5 col 10` must address a definite cell. With variable-
+  width spans, "col 10" is ambiguous — is it the 10th char of `text`
+  concatenated, or the 10th visual column?
+- ECH/DCH/ICH (the P0 edit primitives ink uses constantly) operate
+  on cell ranges. Translating to span-rewrites is awkward and slow.
+
+Warp uses `Row { cells: Vec<Cell> }` with `Cell { c: char, fg, bg,
+flags, extra: Option<Box<CellExtra>> }`. We took the same model.
+Variable-width *rendering* happens in `term_gpu` — at shape time, we
+ask cosmic-text for per-cell advances and lay glyphs accordingly.
+Logical model is monospace; visual model is variable. Best of both.
+
+The `Box<CellExtra>` indirection is a classic optimisation: the
+common-case cell stays small (~24 bytes), the rare cases
+(combining marks, OSC 8 hyperlinks, OSC 133 prompt markers) live on
+the heap.
+
+### Sequences our first spec missed
+
+Research §3 identified ~30 P0/P1 sequences our spec didn't list.
+The critical ones:
+
+- **`CSI X` ECH** — erase chars at cursor without moving it. ink
+  uses this on every redraw to clear partial lines.
+- **`CSI P` DCH / `CSI @` ICH** — delete/insert chars; ink uses these
+  for in-place editing.
+- **`CSI b` REP** — repeat last char N times. Box-drawing apps use
+  this a lot.
+- **`CSI c` DA** — device attributes. Apps **send this and block
+  waiting**. Without a reply (we answer `\x1b[?6c`), some apps hang
+  at startup.
+- **`CSI d` VPA + `CSI E`/`F` CNL/CPL** — vertical positioning.
+- **DEC 6 DECOM** — origin mode. Without it, `CUP` inside a
+  scrolling region is wrong.
+- **DEC 7 DECAWM** — autowrap. Almost universally on.
+- **DEC 1004 focus reporting** — apps subscribe and expect
+  `CSI I` / `CSI O` on focus changes. ink uses this to dim
+  background panels.
+- **DECSET 2026 synchronized output** — modern, batches output
+  frames to eliminate flicker.
+
+We also missed three OSCs worth implementing:
+
+- **OSC 7** — shell announces its CWD as a `file://` URI.
+- **OSC 8** — hyperlinks. Warp doesn't actually handle these (their
+  `osc_dispatch` falls through), but modern apps emit them and our
+  attaching them to `Cell::extra.hyperlink` is cheap.
+- **OSC 133** — FinalTerm prompt markers (A/B/P). Lets the renderer
+  identify prompt regions for future block-style UI.
+
+### OSC stickiness model
+
+Two different attachment semantics emerged:
+
+- **OSC 8 hyperlinks are sticky** — once set, they apply to every
+  subsequent printed cell until a closing OSC 8 (empty URL) appears.
+  Implemented as `Grid.current_hyperlink: Option<(String, String)>`.
+- **OSC 133 prompt markers are one-shot** — they tag the next
+  printed cell only. Implemented as `Grid.next_prompt: Option<…>`
+  that `Grid.print` takes (clears) on first attach.
+
+`Grid::print` checks both and lazily allocates `Cell.extra` only if
+either is active. Common path stays a flat copy.
+
+### Tests in `tests/`, not `src/`
+
+Project policy is "no `#[cfg(test)] mod tests` in `src/`; integration
+tests in `crates/<crate>/tests/`". We violated this in commit 4
+(parser) and caught it before the commit landed. Two reasons it
+matters:
+
+- `dead_code = "deny"` workspace lint can fire on test-only helpers.
+- Integration tests prove the public API works as advertised; unit
+  tests inside `src/` can rely on private state and silently break.
+
+The fix is mechanical: move the `mod tests` block to a sibling file
+in `tests/`. We ended up with 39 tests across `parser_smoke.rs`
+(20) and `emulator_smoke.rs` (19), all hitting public API only.
+
+### What we still don't ship (and won't)
+
+Per spec §4.3 + research §4:
+
+- Tmux control mode (Warp-specific UX).
+- Image protocols (Kitty APC, iTerm OSC 1337, sixel). Claude Code
+  doesn't emit images.
+- OSC 4 / 10 / 11 / 12 palette manipulation. Claude Code doesn't
+  change the palette.
+- Warp's own OSC ID space (9277..9280, 781378).
+- Kitty keyboard protocol — defer until observed in real traces.
+- DEC charsets G2/G3. G0+G1 covers 99.9% of TUI apps.
+
+## 12. The "don't defer features Warp ships" rule
 
 The most important process lesson came from a user pushback. When we
 demoed text rendering, three optimisations weren't in: shape caching,
