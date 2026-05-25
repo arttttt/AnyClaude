@@ -9,12 +9,14 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use cosmic_text::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, SwashCache};
 use futures::future::{abortable, AbortHandle};
 use futures_timer::Delay;
 use glam::Vec2;
 use term_gpu::{
-    decay_velocity, GpuRenderer, RectInstance, ScrollState, ScrollVelocity, GESTURE_END_TIMEOUT,
-    MOMENTUM_FRAME_INTERVAL, MOMENTUM_MIN_VELOCITY, MOMENTUM_THRESHOLD, NUM_PIXELS_PER_LINE,
+    decay_velocity, rasterize_glyph, GlyphAtlas, GlyphInstance, GpuRenderer, RectInstance,
+    ScrollState, ScrollVelocity, GESTURE_END_TIMEOUT, MOMENTUM_FRAME_INTERVAL,
+    MOMENTUM_MIN_VELOCITY, MOMENTUM_THRESHOLD, NUM_PIXELS_PER_LINE,
 };
 use winit::application::ApplicationHandler;
 use winit::event::{MouseScrollDelta, TouchPhase, WindowEvent};
@@ -70,6 +72,127 @@ fn build_stripes(window_width: f32) -> Vec<RectInstance> {
             color: hsv_to_rgb((i as f32 * 1.7) % 360.0, 0.55, 0.92),
         })
         .collect()
+}
+
+const LOREM: &str = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod \
+tempor incididunt ut labore et dolore magna aliqua. Variable-width fonts \
+look great with cosmic-text shaping and our subpixel-aware glyph atlas. \
+\u{1F3A8} Emoji also work because the atlas is RGBA8, not single-channel.";
+
+struct TextDraw<'a> {
+    text: &'a str,
+    font_size: f32,
+    color: [f32; 4],
+    origin_x: f32,
+    origin_y: f32,
+    wrap_width: Option<f32>,
+}
+
+fn build_glyph_instances(
+    font_system: &mut FontSystem,
+    swash_cache: &mut SwashCache,
+    atlas: &mut GlyphAtlas,
+    out: &mut Vec<GlyphInstance>,
+) {
+    // 1. Banner at the very top of scroll space.
+    shape_text_into(
+        font_system,
+        swash_cache,
+        atlas,
+        out,
+        TextDraw {
+            text: "term_gpu scroll demo \u{2022} cosmic-text shaping \u{1F680}",
+            font_size: 18.0,
+            color: [0.95, 0.95, 0.95, 1.0],
+            origin_x: STRIPE_X_MARGIN + 8.0,
+            origin_y: 4.0,
+            wrap_width: None,
+        },
+    );
+
+    // 2. Lorem ipsum paragraph below the banner, wrapped.
+    shape_text_into(
+        font_system,
+        swash_cache,
+        atlas,
+        out,
+        TextDraw {
+            text: LOREM,
+            font_size: 14.0,
+            color: [0.05, 0.05, 0.08, 1.0],
+            origin_x: STRIPE_X_MARGIN + 8.0,
+            origin_y: 36.0,
+            wrap_width: Some(700.0),
+        },
+    );
+
+    // 3. "Row N" labels for every 10th stripe. Every 100th gets an emoji.
+    for i in (0..STRIPE_COUNT).step_by(10) {
+        let y = i as f32 * (STRIPE_HEIGHT + STRIPE_GAP) + 4.0;
+        let text = if i > 0 && i % 100 == 0 {
+            format!("Row {i} \u{1F389}")
+        } else {
+            format!("Row {i}")
+        };
+        shape_text_into(
+            font_system,
+            swash_cache,
+            atlas,
+            out,
+            TextDraw {
+                text: &text,
+                font_size: 12.0,
+                color: [0.05, 0.05, 0.08, 1.0],
+                origin_x: STRIPE_X_MARGIN + 12.0,
+                origin_y: y,
+                wrap_width: None,
+            },
+        );
+    }
+}
+
+/// Shape `draw.text` at `draw.origin_{x,y}` (top-left in scroll coordinates),
+/// look each glyph up in the atlas, and push a `GlyphInstance` per glyph
+/// into `out`. `draw.wrap_width` enables word wrapping at the given pixel
+/// width.
+fn shape_text_into(
+    font_system: &mut FontSystem,
+    swash_cache: &mut SwashCache,
+    atlas: &mut GlyphAtlas,
+    out: &mut Vec<GlyphInstance>,
+    draw: TextDraw<'_>,
+) {
+    let line_height = draw.font_size * 1.3;
+    let metrics = Metrics::new(draw.font_size, line_height);
+    let mut buffer = Buffer::new_empty(metrics);
+    buffer.set_size(font_system, draw.wrap_width, None);
+    let attrs = Attrs::new().family(Family::SansSerif);
+    buffer.set_text(font_system, draw.text, &attrs, Shaping::Advanced);
+
+    for run in buffer.layout_runs() {
+        for glyph in run.glyphs.iter() {
+            // physical() bins the fractional position into subpixel cache
+            // key variants for us. See spec §5.6.
+            let physical = glyph.physical((draw.origin_x, draw.origin_y + run.line_y), 1.0);
+            let placed = atlas.get_or_insert(physical.cache_key, || {
+                rasterize_glyph(font_system, swash_cache, physical.cache_key)
+            });
+            let Some(placed) = placed else {
+                continue;
+            };
+            // cosmic-text yields baseline-relative positions; PlacedGlyph
+            // bearings convert to top-left quad coordinates.
+            let pos_x = physical.x as f32 + placed.offset_x;
+            let pos_y = physical.y as f32 - placed.offset_y;
+            out.push(GlyphInstance {
+                pos: [pos_x, pos_y],
+                size: [placed.width, placed.height],
+                uv_min: placed.uv_min,
+                uv_max: placed.uv_max,
+                color: draw.color,
+            });
+        }
+    }
 }
 
 fn build_ruler(total_height: f32) -> Vec<RectInstance> {
@@ -140,10 +263,14 @@ struct App {
     velocity: Option<ScrollVelocity>,
     gesture_end_abort: Option<AbortHandle>,
     momentum_abort: Option<AbortHandle>,
+    font_system: FontSystem,
+    swash_cache: SwashCache,
 }
 
 impl App {
     fn new(proxy: EventLoopProxy<CustomEvent>) -> Self {
+        // FontSystem scans system fonts on first construction — heavy.
+        // Keep one for the lifetime of the App.
         Self {
             proxy,
             window: None,
@@ -153,6 +280,8 @@ impl App {
             velocity: None,
             gesture_end_abort: None,
             momentum_abort: None,
+            font_system: FontSystem::new(),
+            swash_cache: SwashCache::new(),
         }
     }
 
@@ -245,6 +374,32 @@ impl App {
         ));
     }
 
+    fn on_redraw(&mut self) {
+        // Destructure to split-borrow font_system, swash_cache, and the
+        // renderer's atlas simultaneously (each is a distinct field).
+        let Self {
+            renderer,
+            window,
+            rects,
+            scroll,
+            font_system,
+            swash_cache,
+            ..
+        } = self;
+        let Some(renderer) = renderer.as_mut() else {
+            return;
+        };
+        let Some(window) = window.as_ref() else {
+            return;
+        };
+
+        let mut glyphs = Vec::new();
+        build_glyph_instances(font_system, swash_cache, renderer.atlas_mut(), &mut glyphs);
+
+        window.pre_present_notify();
+        renderer.render(rects, &glyphs, scroll.offset_y);
+    }
+
     fn on_momentum_tick(&mut self) {
         let Some(v) = self.velocity.as_mut() else {
             return;
@@ -317,16 +472,7 @@ impl ApplicationHandler<CustomEvent> for App {
                 };
                 self.on_wheel(-dy, phase, precise);
             }
-            WindowEvent::RedrawRequested => {
-                if let (Some(r), Some(w)) = (self.renderer.as_mut(), self.window.as_ref()) {
-                    w.pre_present_notify();
-                    // No glyphs yet — those land in the next commit when we
-                    // wire shaping into the demo. The text pipeline is
-                    // already initialised; calling render with an empty
-                    // glyph slice exercises the path without rendering text.
-                    r.render(&self.rects, &[], self.scroll.offset_y);
-                }
-            }
+            WindowEvent::RedrawRequested => self.on_redraw(),
             _ => {}
         }
     }
