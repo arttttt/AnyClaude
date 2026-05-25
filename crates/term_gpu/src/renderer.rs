@@ -6,17 +6,24 @@ use std::sync::Arc;
 
 use winit::window::Window;
 
-use crate::instances::{RectInstance, Uniforms};
-use crate::pipeline::{create_prim_pipeline, create_uniform_bind_group_layout};
+use crate::atlas::GlyphAtlas;
+use crate::instances::{GlyphInstance, RectInstance, Uniforms};
+use crate::pipeline::{
+    create_atlas_bind_group_layout, create_prim_pipeline, create_text_pipeline,
+    create_uniform_bind_group_layout,
+};
 
 pub struct GpuRenderer {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
-    pipeline: wgpu::RenderPipeline,
+    prim_pipeline: wgpu::RenderPipeline,
+    text_pipeline: wgpu::RenderPipeline,
     uniform_bind_group: wgpu::BindGroup,
     uniform_buffer: wgpu::Buffer,
+    atlas: GlyphAtlas,
+    atlas_bind_group: wgpu::BindGroup,
     size: winit::dpi::PhysicalSize<u32>,
 }
 
@@ -67,6 +74,7 @@ impl GpuRenderer {
         surface.configure(&device, &config);
 
         let uniform_bgl = create_uniform_bind_group_layout(&device);
+        let atlas_bgl = create_atlas_bind_group_layout(&device);
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("term_gpu/uniform_buffer"),
             size: std::mem::size_of::<Uniforms>() as u64,
@@ -82,18 +90,54 @@ impl GpuRenderer {
             }],
         });
 
-        let pipeline = create_prim_pipeline(&device, format, &uniform_bgl);
+        let atlas = GlyphAtlas::new(&device);
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("term_gpu/atlas_sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let atlas_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("term_gpu/atlas_bind_group"),
+            layout: &atlas_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(atlas.view()),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
+        });
+
+        let prim_pipeline = create_prim_pipeline(&device, format, &uniform_bgl);
+        let text_pipeline = create_text_pipeline(&device, format, &uniform_bgl, &atlas_bgl);
 
         Self {
             surface,
             device,
             queue,
             config,
-            pipeline,
+            prim_pipeline,
+            text_pipeline,
             uniform_bind_group,
             uniform_buffer,
+            atlas,
+            atlas_bind_group,
             size,
         }
+    }
+
+    /// Mutable access to the glyph atlas. Use this from the per-frame text
+    /// path: shape glyphs, then `atlas_mut().get_or_insert(cache_key, …)`
+    /// for each one to obtain its `PlacedGlyph` for `GlyphInstance`.
+    pub fn atlas_mut(&mut self) -> &mut GlyphAtlas {
+        &mut self.atlas
     }
 
     pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
@@ -110,7 +154,15 @@ impl GpuRenderer {
         self.size
     }
 
-    pub fn render(&self, rects: &[RectInstance], scroll_offset_y: f32) {
+    pub fn render(
+        &mut self,
+        rects: &[RectInstance],
+        glyphs: &[GlyphInstance],
+        scroll_offset_y: f32,
+    ) {
+        // Flush any pending atlas updates from this frame's get_or_insert calls.
+        self.atlas.upload(&self.queue);
+
         let frame = match self.surface.get_current_texture() {
             Ok(f) => f,
             Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
@@ -133,15 +185,26 @@ impl GpuRenderer {
         self.queue
             .write_buffer(&self.uniform_buffer, 0, uniforms.as_bytes());
 
-        let instance_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("term_gpu/instance_buffer"),
+        let rect_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("term_gpu/rect_instance_buffer"),
             size: (std::mem::size_of::<RectInstance>() * rects.len().max(1)) as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         if !rects.is_empty() {
             self.queue
-                .write_buffer(&instance_buffer, 0, RectInstance::as_bytes(rects));
+                .write_buffer(&rect_buffer, 0, RectInstance::as_bytes(rects));
+        }
+
+        let glyph_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("term_gpu/glyph_instance_buffer"),
+            size: (std::mem::size_of::<GlyphInstance>() * glyphs.len().max(1)) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        if !glyphs.is_empty() {
+            self.queue
+                .write_buffer(&glyph_buffer, 0, GlyphInstance::as_bytes(glyphs));
         }
 
         let mut encoder = self
@@ -169,14 +232,26 @@ impl GpuRenderer {
                 occlusion_query_set: None,
                 timestamp_writes: None,
             });
-            pass.set_pipeline(&self.pipeline);
+            // Rect pass first — backgrounds, ruler, etc.
+            pass.set_pipeline(&self.prim_pipeline);
             pass.set_bind_group(0, &self.uniform_bind_group, &[]);
-            pass.set_vertex_buffer(0, instance_buffer.slice(..));
+            pass.set_vertex_buffer(0, rect_buffer.slice(..));
             if !rects.is_empty() {
                 pass.draw(0..6, 0..rects.len() as u32);
+            }
+            // Glyph pass — text on top. Uniform bind group at @group(0) is
+            // still bound; only @group(1) needs to change.
+            pass.set_pipeline(&self.text_pipeline);
+            pass.set_bind_group(1, &self.atlas_bind_group, &[]);
+            pass.set_vertex_buffer(0, glyph_buffer.slice(..));
+            if !glyphs.is_empty() {
+                pass.draw(0..6, 0..glyphs.len() as u32);
             }
         }
         self.queue.submit(std::iter::once(encoder.finish()));
         frame.present();
+
+        // Age unused atlas entries; entries reused this frame stay fresh.
+        self.atlas.end_frame();
     }
 }

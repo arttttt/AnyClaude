@@ -318,9 +318,13 @@ impl ApplicationHandler<CustomEvent> for App {
                 self.on_wheel(-dy, phase, precise);
             }
             WindowEvent::RedrawRequested => {
-                if let (Some(r), Some(w)) = (self.renderer.as_ref(), self.window.as_ref()) {
+                if let (Some(r), Some(w)) = (self.renderer.as_mut(), self.window.as_ref()) {
                     w.pre_present_notify();
-                    r.render(&self.rects, self.scroll.offset_y);
+                    // No glyphs yet — those land in the next commit when we
+                    // wire shaping into the demo. The text pipeline is
+                    // already initialised; calling render with an empty
+                    // glyph slice exercises the path without rendering text.
+                    r.render(&self.rects, &[], self.scroll.offset_y);
                 }
             }
             _ => {}
