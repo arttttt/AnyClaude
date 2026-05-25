@@ -21,5 +21,5 @@ pub mod parser;
 
 pub use attrs::CellFlags;
 pub use color::{AnsiPalette, TermColor};
-pub use grid::{Cell, CellExtra, PromptMarker};
+pub use grid::{Cell, CellExtra, CursorStyle, Grid, MouseMode, PromptMarker, Row};
 pub use parser::{Action, EraseMode, Parser, PromptKind, SgrAction, TabClear};
