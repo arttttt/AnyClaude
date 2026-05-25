@@ -194,3 +194,74 @@ fn tmux_shim_injects_both_url_and_headers() {
     assert!(script.contains("/api/teammate-start"));
     assert!(script.contains("extract_agent_id"));
 }
+
+// ── tmux.conf (mouse / scroll) ───────────────────────────────────────
+
+#[test]
+fn tmux_conf_is_created_with_mouse_and_history() {
+    let shim = match TeammateShim::create(12345, "test-token", "test-session", true) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let dir = shim_dir(&shim);
+    let conf_path = Path::new(&dir).join("tmux.conf");
+    assert!(conf_path.exists(), "tmux.conf should be created alongside shim");
+
+    let conf = std::fs::read_to_string(&conf_path).unwrap();
+    assert!(
+        conf.contains("set -g mouse on"),
+        "tmux.conf should enable mouse for scroll"
+    );
+    assert!(
+        conf.contains("set -g history-limit"),
+        "tmux.conf should set history-limit for larger scroll buffer"
+    );
+}
+
+#[test]
+fn tmux_shim_loads_conf_via_f_flag_on_isolated_socket() {
+    let shim = match TeammateShim::create(12345, "test-token", "test-session", true) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let dir = shim_dir(&shim);
+    let script = std::fs::read_to_string(Path::new(&dir).join("tmux")).unwrap();
+
+    // CONF_FLAGS must carry both -L (isolated socket per session) and -f
+    // (our tmux.conf). -L is required because -f is a start-only flag —
+    // attaching to the user's pre-existing tmux server would silently drop it.
+    assert!(
+        script.contains(
+            "CONF_FLAGS=(-L \"anyclaude-test-session\" -f \"$SHIM_DIR/tmux.conf\")"
+        ),
+        "shim should define CONF_FLAGS with -L (per-session socket) and -f (tmux.conf)"
+    );
+    assert!(
+        script.contains("exec \"$REAL_TMUX\" \"${CONF_FLAGS[@]}\" \"${args[@]}\""),
+        "injected branch should exec real tmux with CONF_FLAGS"
+    );
+    assert!(
+        script.contains("exec \"$REAL_TMUX\" \"${CONF_FLAGS[@]}\" \"$@\""),
+        "forward branch should exec real tmux with CONF_FLAGS"
+    );
+}
+
+#[test]
+fn tmux_shim_uses_distinct_socket_per_session() {
+    let shim_a = match TeammateShim::create(12345, "test-token", "session-aaa", true) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let shim_b = match TeammateShim::create(12345, "test-token", "session-bbb", true) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+
+    let script_a = std::fs::read_to_string(Path::new(&shim_dir(&shim_a)).join("tmux")).unwrap();
+    let script_b = std::fs::read_to_string(Path::new(&shim_dir(&shim_b)).join("tmux")).unwrap();
+
+    assert!(script_a.contains("-L \"anyclaude-session-aaa\""));
+    assert!(script_b.contains("-L \"anyclaude-session-bbb\""));
+    assert!(!script_a.contains("anyclaude-session-bbb"));
+    assert!(!script_b.contains("anyclaude-session-aaa"));
+}

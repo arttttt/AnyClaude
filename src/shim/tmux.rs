@@ -13,16 +13,30 @@
 //! not on the binary path — works across all Claude Code installation
 //! methods (Homebrew, install.sh, npm, etc.).
 //!
-//! All other tmux commands are forwarded unchanged to the real binary.
+//! All other tmux commands are forwarded unchanged to the real binary,
+//! but always with `-L anyclaude-<session_id> -f <shim_dir>/tmux.conf`
+//! so teammate sessions run on their own tmux server with mouse scroll
+//! enabled, independent of the user's existing tmux server and config.
 
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use super::write_executable;
 
 /// Log file name inside the shim directory.
 pub const LOG_FILENAME: &str = "tmux_shim.log";
+
+/// Tmux config file name inside the shim directory.
+/// Loaded via `-f` on an isolated `-L anyclaude-<session_id>` server so
+/// mouse/scroll work in teammate sessions regardless of whether the user
+/// already has a tmux server running or has a custom `~/.tmux.conf`.
+const CONF_FILENAME: &str = "tmux.conf";
+
+const CONF_CONTENT: &str = "\
+set -g mouse on
+set -g history-limit 100000
+";
 
 const TEMPLATE: &str = r#"#!/bin/bash
 # AnyClaude tmux shim — intercepts send-keys to inject teammate routing.
@@ -125,21 +139,40 @@ for arg in "$@"; do
   args+=("$arg")
 done
 
+# Pin every tmux call to an isolated server with our config preloaded.
+# -L gives this anyclaude session its own socket so we always start the
+# server ourselves; otherwise CC would attach to the user's existing
+# tmux server and our -f (a start-only flag) would be silently ignored.
+# Both flags are server-side and must precede any subcommand.
+CONF_FLAGS=(-L "anyclaude-__SESSION_ID__" -f "$SHIM_DIR/tmux.conf")
+
 if $injected; then
   slog "EXEC: $(printf '%q ' "${args[@]}")"
-  exec "$REAL_TMUX" "${args[@]}"
+  exec "$REAL_TMUX" "${CONF_FLAGS[@]}" "${args[@]}"
 else
   slog "tmux $*"
-  exec "$REAL_TMUX" "$@"
+  exec "$REAL_TMUX" "${CONF_FLAGS[@]}" "$@"
 fi
 "#;
 
-/// Install the tmux shim script into `dir`.
+/// Install the tmux shim script and its config into `dir`.
+///
+/// Writes two files:
+/// - `tmux` — the executable bash shim that intercepts CC's tmux calls
+///   and pins every call to `-L anyclaude-<session_id>` so teammate
+///   sessions run on a dedicated tmux server we always start ourselves.
+/// - `tmux.conf` — loaded via `-f` from the shim; enables mouse mode and
+///   a larger scrollback so scroll works in teammate sessions.
 pub fn install(dir: &Path, proxy_port: u16, session_token: &str, session_id: &str, log_enabled: bool) -> Result<()> {
     let script = TEMPLATE
         .replace("__PORT__", &proxy_port.to_string())
         .replace("__SESSION_TOKEN__", session_token)
         .replace("__SESSION_ID__", session_id)
         .replace("__LOG_ENABLED__", if log_enabled { "true" } else { "false" });
-    write_executable(dir, "tmux", &script)
+    write_executable(dir, "tmux", &script)?;
+
+    let conf_path = dir.join(CONF_FILENAME);
+    std::fs::write(&conf_path, CONF_CONTENT)
+        .with_context(|| format!("failed to write tmux config to {}", conf_path.display()))?;
+    Ok(())
 }

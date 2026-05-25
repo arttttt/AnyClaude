@@ -20,12 +20,16 @@ pub struct TeammateShim {
 }
 
 impl TeammateShim {
-    /// Create the tmux shim script in a temp directory.
+    /// Create the tmux shim script and its config in a temp directory.
     ///
     /// `session_token` is injected as `ANTHROPIC_CUSTOM_HEADERS` so that
     /// teammate processes spawned via tmux `send-keys` can authenticate
     /// with the proxy.
     /// `log_enabled` controls whether the shim writes to tmux_shim.log.
+    /// `session_id` also names the isolated tmux socket
+    /// (`-L anyclaude-<session_id>`) so each anyclaude run gets its own
+    /// tmux server and our `tmux.conf` (mouse + larger scrollback) always
+    /// applies, regardless of the user's existing tmux server.
     pub fn create(proxy_port: u16, session_token: &str, session_id: &str, log_enabled: bool) -> Result<Self> {
         let dir = tempfile::tempdir()
             .context("failed to create temp directory for teammate shims")?;
