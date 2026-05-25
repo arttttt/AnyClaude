@@ -1661,10 +1661,9 @@ const QUAD: array<vec2<f32>, 6> = array(
 @vertex
 fn vs_main(@builtin(vertex_index) vi: u32, g: GlyphInput) -> VsOut {
     let q = QUAD[vi];
-    // Snap Y to integer pixels for subpixel rasterization (X subpixel handled
-    // by 3 cached variants — see §5.6). Subtract scroll offset before NDC.
-    var px = g.pos + q * g.size - uniforms.scroll_offset;
-    px.y = floor(px.y);
+    // Subpixel-correct glyph images come from cosmic-text's SubpixelBin
+    // (see §5.6) — no shader-side snap needed. Just subtract scroll offset.
+    let px = g.pos + q * g.size - uniforms.scroll_offset;
     let ndc = (px / uniforms.screen_size) * 2.0 - 1.0;
 
     var out: VsOut;
@@ -2009,27 +2008,28 @@ pub enum GlyphFormat {
 
 ### 5.6 Subpixel positioning
 
-> Adapted from Warp's `SubpixelAlignment` ([crates/warpui_core/src/fonts.rs#L135-L159](https://github.com/warpdotdev/warp/blob/main/crates/warpui_core/src/fonts.rs#L135-L159), MIT).
+> Originally inspired by Warp's `SubpixelAlignment` ([crates/warpui_core/src/fonts.rs#L135-L159](https://github.com/warpdotdev/warp/blob/main/crates/warpui_core/src/fonts.rs#L135-L159), MIT). While prototyping we discovered cosmic-text already ships subpixel positioning, so we use the built-in mechanism instead of hand-rolling Warp's.
 
-Each glyph is rasterized at **3 horizontal sub-pixel offsets** and snapped to the integer pixel grid vertically. Memory cost is ×3 per glyph, but artifacts from continuous sub-pixel sampling disappear. Y snapping is done in the vertex shader (`px.y = floor(px.y)`, see §5.2 `text.wgsl`).
+`cosmic_text::CacheKey` includes `x_bin: SubpixelBin` and `y_bin: SubpixelBin`, each a 4-variant enum (`Zero`, `One`, `Two`, `Three`). When the shaper produces a glyph, `glyph.physical(offset, scale)` bins the fractional part of the position into one of 16 combinations, and swash rasterizes the image aligned to that subpixel offset.
+
+For us this means **no hand-rolled subpixel code**. Cache by the full `CacheKey` (which already encodes the bins) and the correct image lands in the atlas:
 
 ```rust
-// text.rs (excerpt) — choose subpixel variant at shape time.
+// text.rs (sketch) — at shape time the cache key is built for us.
 
-pub const SUBPIXEL_STEPS: u8 = 3;
-
-pub fn subpixel_alignment(pos_x: f32) -> u8 {
-    let scaled = pos_x.fract() * SUBPIXEL_STEPS as f32;
-    (scaled.round() as i32 % SUBPIXEL_STEPS as i32).rem_euclid(SUBPIXEL_STEPS as i32) as u8
+for run in buffer.layout_runs() {
+    for glyph in run.glyphs {
+        let physical = glyph.physical((pen_x, pen_y), scale);
+        // physical.cache_key.x_bin / .y_bin are already set.
+        let placed = atlas.get_or_insert(physical.cache_key, || {
+            rasterize_glyph(font_system, swash_cache, physical.cache_key)
+        })?;
+        // ... emit GlyphInstance at (physical.x, physical.y) + placed.offset_*
+    }
 }
-
-// At shape time:
-let key = GlyphCacheKey {
-    base: cache_key,
-    subpixel_x: subpixel_alignment(glyph_position.x),
-};
-let glyph = atlas.get_or_insert(key, || rasterize_at(glyph_id, font, size, key.subpixel_x))?;
 ```
+
+Trade-off vs Warp: memory cost is ×16 per glyph variant (4×4 bins) vs Warp's ×3 (X-only, snap Y). We accept the extra memory for crisper Y positioning and zero hand-rolled code. The Y snap pattern from earlier drafts (`px.y = floor(px.y)` in `text.wgsl`) is therefore unnecessary and removed.
 
 ### 5.7 Scroll uniform & viewport culling
 

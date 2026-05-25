@@ -36,10 +36,15 @@ result — it tells you what you don't need.
 - Eviction is a per-glyph `last_used_frame` counter. Drop anything
   unused for 10 consecutive frames. Beats an intrusive LRU at the
   cost of zero accuracy that matters here.
-- Subpixel positioning: each glyph is rasterized at 3 horizontal
-  offsets and cached. The fragment shader snaps Y with `floor(px.y)`.
-  Memory cost ×3 per glyph; quality indistinguishable from continuous
-  subpixel. We adopted this verbatim.
+- Subpixel positioning: Warp rasterizes each glyph at 3 horizontal
+  offsets and snaps Y with `floor(px.y)`. Memory cost ×3 per glyph;
+  quality indistinguishable from continuous subpixel. We **planned**
+  to adopt this verbatim, but during the prototype we discovered
+  cosmic-text already ships built-in `SubpixelBin` (4×4 bins per glyph)
+  via `CacheKey`. Using the built-in costs us ×16 memory per glyph
+  variant instead of ×3, in exchange for zero hand-rolled code and
+  crisper Y positioning. Worth flagging in the article as a "read
+  the docs before reimplementing the cool thing" moment.
 
 ## 3. Shaders — small tricks that punch above their weight
 

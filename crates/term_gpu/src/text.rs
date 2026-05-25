@@ -2,8 +2,23 @@
 //!
 //! Owns nothing — the caller passes in `&mut FontSystem` and `&mut SwashCache`
 //! so they can be shared across whatever owns the long-lived text state
-//! (a single `GpuRenderer`, a panel, a `Buffer`, etc.). Subpixel positioning
-//! arrives in the next commit; this one is the minimal rasterization path.
+//! (a single `GpuRenderer`, a panel, a `Buffer`, etc.).
+//!
+//! ## Subpixel positioning
+//!
+//! `cosmic_text::CacheKey` already includes `x_bin` and `y_bin` of type
+//! `SubpixelBin` (4 variants each: `Zero`, `One`, `Two`, `Three`). When the
+//! shaper computes `glyph.physical(offset, scale)`, the fractional part of
+//! the position bins into one of 16 combinations, and the rasterizer
+//! produces the glyph image aligned to that subpixel offset.
+//!
+//! So **subpixel positioning is automatic for us** — we cache by the full
+//! `CacheKey` (which includes both bins) and the right image lands in the
+//! atlas. Memory cost is ×16 per glyph variant vs Warp's ×3 (Warp does
+//! 3 X-bins and snaps Y in the vertex shader); we accept the extra memory
+//! for crisper Y positioning and zero hand-rolled code. See
+//! `docs/gpu-terminal-spec.md` §5.6 for the rationale and
+//! `memory/gpu-terminal-architecture.md` for the locked-in decision.
 
 use cosmic_text::{CacheKey, FontSystem, SwashCache, SwashContent};
 

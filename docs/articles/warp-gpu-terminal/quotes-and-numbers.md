@@ -93,6 +93,8 @@ No layout recompute.
 
 ## Subpixel positioning, exact
 
+### Warp's approach
+
 ```rust
 pub const SUBPIXEL_STEPS: u8 = 3;
 
@@ -103,14 +105,30 @@ pub fn subpixel_alignment(pos_x: f32) -> u8 {
 }
 ```
 
-Cache key:
+Plus `px.y = floor(px.y)` in the vertex shader.
+
+### Our approach (cosmic-text built-in)
+
+`cosmic_text::CacheKey` already encodes the subpixel bins:
 
 ```rust
-struct GlyphCacheKey {
-    base:        CacheKey,
-    subpixel_x:  u8,  // 0..3
+pub struct CacheKey {
+    pub font_id: fontdb::ID,
+    pub glyph_id: u16,
+    pub font_size_bits: u32,
+    pub x_bin: SubpixelBin,   // 4 variants
+    pub y_bin: SubpixelBin,   // 4 variants
+    pub flags: CacheKeyFlags,
+}
+
+pub enum SubpixelBin {
+    Zero, One, Two, Three,
 }
 ```
+
+So we just key the atlas on the full `CacheKey` — no hand-rolled
+alignment math, no Y snap in the shader. Trade-off: 16 variants per
+glyph (4×4) vs Warp's 3 (X-only, snap Y).
 
 ## `enhance_contrast` for thin glyphs on dark themes
 
