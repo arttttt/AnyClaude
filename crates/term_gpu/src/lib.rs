@@ -10,6 +10,7 @@ pub mod instances;
 pub mod pipeline;
 pub mod renderer;
 pub mod scroll;
+pub mod text;
 
 pub use atlas::{GlyphAtlas, GlyphFormat, PlacedGlyph, RasterizedGlyph, ShelfPacker};
 pub use instances::{RectInstance, Uniforms};
@@ -18,3 +19,4 @@ pub use scroll::{
     decay_velocity, ScrollState, ScrollVelocity, GESTURE_END_TIMEOUT, MOMENTUM_FRAME_INTERVAL,
     MOMENTUM_MIN_VELOCITY, MOMENTUM_THRESHOLD, NUM_PIXELS_PER_LINE,
 };
+pub use text::rasterize_glyph;

@@ -1,24 +1,27 @@
-//! Glyph atlas: RGBA8 texture + Shelf-Next-Fit packer.
+//! Glyph atlas: RGBA8 texture + Shelf-Next-Fit packer + frame-counter
+//! eviction.
 //!
-//! Adapted from warpdotdev/warp (MIT). Source:
-//! crates/warpui/src/rendering/atlas/allocator.rs
+//! Adapted from warpdotdev/warp (MIT). Sources:
+//! - crates/warpui/src/rendering/atlas/allocator.rs (packer)
+//! - crates/warpui_core/src/rendering/texture_cache.rs (frame-counter eviction)
 //!
-//! Two intentional choices documented in
-//! `docs/gpu-terminal-spec.md` §5.4:
+//! Three intentional choices documented in `docs/gpu-terminal-spec.md` §5.4:
 //!
 //! 1. **`RGBA8Unorm`, not `R8Unorm`** — one atlas holds both mono glyphs
 //!    (data in the alpha channel) and colour glyphs (emoji), avoiding a
 //!    second texture and the branch logic that would entail.
-//! 2. **Shelf-Next-Fit packer** — three state fields, ~50 lines. The
-//!    algorithm is "fill the current shelf left-to-right; when an item
-//!    doesn't fit, start a new shelf below as tall as the previous tallest
-//!    item; when no more shelves fit, the atlas is full".
-//!
-//! Cache lookup, rasterization, and eviction land in subsequent commits
-//! alongside the cosmic-text integration.
+//! 2. **Shelf-Next-Fit packer** — three state fields, ~50 lines.
+//! 3. **`MAX_UNUSED_FRAMES = 10` frame counter, not an LRU** — call
+//!    `end_frame()` once per rendered frame; entries unused for 10
+//!    consecutive frames are dropped from the lookup map.
+
+use std::collections::HashMap;
+
+use cosmic_text::CacheKey;
 
 const ATLAS_SIZE: u32 = 1024;
 const GLYPH_PAD: u32 = 1;
+const MAX_UNUSED_FRAMES: u32 = 10;
 
 /// Shelf-Next-Fit bin packer. Tracks three things: the Y of the current
 /// shelf's top edge, the tallest item placed on it so far, and the right
@@ -114,14 +117,24 @@ pub struct PlacedGlyph {
     pub height: f32,
 }
 
-/// RGBA8 glyph atlas. Owns a single `wgpu::Texture` plus its CPU mirror.
-/// `dirty` tracks whether the GPU copy is stale.
+/// Atlas entry: where the glyph sits in the texture plus the frame it was
+/// last sampled on (used by `end_frame()` to evict stale entries).
+#[derive(Debug, Clone, Copy)]
+struct AtlasEntry {
+    placed: PlacedGlyph,
+    last_used_frame: u32,
+}
+
+/// RGBA8 glyph atlas. Owns a single `wgpu::Texture` plus its CPU mirror
+/// and a lookup map from cosmic-text `CacheKey` to placement.
 pub struct GlyphAtlas {
     packer: ShelfPacker,
+    entries: HashMap<CacheKey, AtlasEntry>,
     cpu_data: Vec<u8>,
     texture: wgpu::Texture,
     view: wgpu::TextureView,
     dirty: bool,
+    frame: u32,
 }
 
 impl GlyphAtlas {
@@ -143,10 +156,12 @@ impl GlyphAtlas {
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         Self {
             packer: ShelfPacker::new(ATLAS_SIZE, ATLAS_SIZE),
+            entries: HashMap::with_capacity(2048),
             cpu_data: vec![0u8; (ATLAS_SIZE * ATLAS_SIZE * 4) as usize],
             texture,
             view,
             dirty: false,
+            frame: 0,
         }
     }
 
@@ -158,12 +173,49 @@ impl GlyphAtlas {
         &self.view
     }
 
+    /// Look up `key` in the cache, or rasterize and insert it. The
+    /// `rasterize` closure is only invoked on a miss. Returns `None` if the
+    /// glyph has no visual representation or the atlas is out of space.
+    ///
+    /// Sets `last_used_frame` on a hit, so `end_frame()` keeps active glyphs
+    /// alive.
+    pub fn get_or_insert<F>(&mut self, key: CacheKey, rasterize: F) -> Option<PlacedGlyph>
+    where
+        F: FnOnce() -> Option<RasterizedGlyph>,
+    {
+        if let Some(entry) = self.entries.get_mut(&key) {
+            entry.last_used_frame = self.frame;
+            return Some(entry.placed);
+        }
+        let raster = rasterize()?;
+        let placed = self.insert_raw(&raster)?;
+        self.entries.insert(
+            key,
+            AtlasEntry {
+                placed,
+                last_used_frame: self.frame,
+            },
+        );
+        Some(placed)
+    }
+
+    /// Advance the frame counter and evict entries unused for
+    /// `MAX_UNUSED_FRAMES` consecutive frames. Call once per rendered frame.
+    /// Eviction frees the HashMap entry but does not reclaim atlas space —
+    /// fragmentation accumulates until a future `reset()` (not yet wired).
+    pub fn end_frame(&mut self) {
+        self.frame = self.frame.wrapping_add(1);
+        let now = self.frame;
+        self.entries
+            .retain(|_, e| now.wrapping_sub(e.last_used_frame) <= MAX_UNUSED_FRAMES);
+    }
+
     /// Pack a rasterized glyph into the atlas and copy its pixels into the
     /// CPU mirror. Returns the placement, or `None` if the atlas is full.
     ///
-    /// The texture is not uploaded here — call `upload()` once per frame
-    /// after all inserts.
-    pub fn insert(&mut self, raster: &RasterizedGlyph) -> Option<PlacedGlyph> {
+    /// Bypasses the cache — usually you want `get_or_insert`. Exposed for
+    /// callers that have their own keying scheme.
+    pub fn insert_raw(&mut self, raster: &RasterizedGlyph) -> Option<PlacedGlyph> {
         let (x, y) = self.packer.pack(raster.width, raster.height)?;
         let bpp = raster.bytes_per_pixel();
         let atlas_w = ATLAS_SIZE as usize;
