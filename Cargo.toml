@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/term_input", "crates/mvi"]
+members = [".", "crates/term_input", "crates/mvi", "crates/term_gpu"]
 
 [workspace.lints.rust]
 dead_code = "deny"

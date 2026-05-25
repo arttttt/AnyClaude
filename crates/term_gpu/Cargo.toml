@@ -1,0 +1,20 @@
+[package]
+name = "term_gpu"
+version = "0.1.0"
+edition = "2021"
+description = "GPU-accelerated terminal renderer for AnyClaude. Phase 3.5 prototype validates pixel-based scroll with momentum (see docs/design/gpu-terminal-scroll.md)."
+
+[lints]
+workspace = true
+
+[dependencies]
+wgpu = "24"
+winit = "0.30"
+futures = "0.3"
+futures-timer = "3"
+glam = "0.30"
+pollster = "0.4"
+
+[[example]]
+name = "scroll_demo"
+path = "examples/scroll_demo.rs"
