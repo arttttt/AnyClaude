@@ -4093,6 +4093,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "term_core"
+version = "0.1.0"
+
+[[package]]
 name = "term_gpu"
 version = "0.1.0"
 dependencies = [
