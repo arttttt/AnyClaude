@@ -17,7 +17,7 @@ use term_gpu::{
     MOMENTUM_FRAME_INTERVAL, MOMENTUM_MIN_VELOCITY, MOMENTUM_THRESHOLD, NUM_PIXELS_PER_LINE,
 };
 use winit::application::ApplicationHandler;
-use winit::event::{MouseScrollDelta, WindowEvent};
+use winit::event::{MouseScrollDelta, TouchPhase, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
 use winit::window::{Window, WindowAttributes, WindowId};
 
@@ -175,7 +175,18 @@ impl App {
         }
     }
 
-    fn on_wheel(&mut self, applied_dy: f32) {
+    /// Apply a wheel delta and decide when momentum should kick in.
+    ///
+    /// Trackpads (precise pixel deltas) deliver `TouchPhase::Ended` when the
+    /// user lifts their fingers — we kick momentum off that explicit signal.
+    /// For non-precise wheels (mice, scroll wheels) winit reports
+    /// `TouchPhase::Started` on each tick with no `Ended`, so we fall back to
+    /// a silence timeout.
+    ///
+    /// Using `Ended` for trackpads is the fix for "scroll-fling conflict":
+    /// continuous trackpad scroll never starts momentum, so there is no
+    /// race between an in-flight inertia tick and an arriving wheel event.
+    fn on_wheel(&mut self, applied_dy: f32, phase: TouchPhase, precise: bool) {
         // A new wheel event interrupts any in-flight inertia or pending kickoff.
         self.cancel_momentum();
         self.cancel_gesture_end();
@@ -187,12 +198,28 @@ impl App {
             Instant::now(),
         ));
 
-        // Arm gesture-end detection for inertia kickoff.
-        self.gesture_end_abort = Some(schedule_once(
-            self.proxy.clone(),
-            GESTURE_END_TIMEOUT,
-            CustomEvent::GestureEnded,
-        ));
+        match phase {
+            TouchPhase::Ended => {
+                // Trackpad fingers lifted — kick momentum immediately if the
+                // velocity warrants it.
+                self.on_gesture_end();
+            }
+            TouchPhase::Cancelled => {
+                // Trackpad gesture cancelled (e.g. another app took focus).
+                self.velocity = None;
+            }
+            TouchPhase::Started | TouchPhase::Moved => {
+                if !precise {
+                    // Wheel mouse fallback: arm the silence timeout. Trackpads
+                    // skip this — `Ended` will arrive cleanly.
+                    self.gesture_end_abort = Some(schedule_once(
+                        self.proxy.clone(),
+                        GESTURE_END_TIMEOUT,
+                        CustomEvent::GestureEnded,
+                    ));
+                }
+            }
+        }
 
         if let Some(w) = self.window.as_ref() {
             w.request_redraw();
@@ -283,12 +310,12 @@ impl ApplicationHandler<CustomEvent> for App {
                     w.request_redraw();
                 }
             }
-            WindowEvent::MouseWheel { delta, .. } => {
-                let dy = match delta {
-                    MouseScrollDelta::PixelDelta(p) => p.y as f32,
-                    MouseScrollDelta::LineDelta(_, v) => v * NUM_PIXELS_PER_LINE,
+            WindowEvent::MouseWheel { delta, phase, .. } => {
+                let (precise, dy) = match delta {
+                    MouseScrollDelta::PixelDelta(p) => (true, p.y as f32),
+                    MouseScrollDelta::LineDelta(_, v) => (false, v * NUM_PIXELS_PER_LINE),
                 };
-                self.on_wheel(-dy);
+                self.on_wheel(-dy, phase, precise);
             }
             WindowEvent::RedrawRequested => {
                 if let (Some(r), Some(w)) = (self.renderer.as_ref(), self.window.as_ref()) {
