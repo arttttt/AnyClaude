@@ -22,6 +22,28 @@ pub const MOMENTUM_DECAY_INTERVAL: f32 = 0.008;
 /// time_delta near-zero and velocity explodes.
 pub const MIN_VELOCITY_TIME_DELTA: f32 = 0.004;
 
+/// Multiplicative decay applied once per `MOMENTUM_DECAY_INTERVAL`. Over one
+/// second of momentum, velocity multiplies by ~0.018 (near-stop in ~1.5 s).
+pub const MOMENTUM_DECAY: f32 = 0.968;
+
+/// Momentum tick frequency: 8 ms = ~125 Hz, decoupled from display vsync.
+pub const MOMENTUM_FRAME_INTERVAL: std::time::Duration = std::time::Duration::from_millis(8);
+
+/// Minimum velocity (px/s) at swipe-end required to kick off momentum.
+pub const MOMENTUM_THRESHOLD: f32 = 50.0;
+
+/// Below this velocity (px/s) the momentum loop stops.
+pub const MOMENTUM_MIN_VELOCITY: f32 = 1.0;
+
+/// Clamp on initial momentum velocity (px/s). Defends against batched-event
+/// spikes that survive `MIN_VELOCITY_TIME_DELTA`.
+pub const MOMENTUM_MAX_VELOCITY: f32 = 2000.0;
+
+/// Time after the last wheel event before we consider a gesture "ended" and
+/// inertia can kick in. winit does not deliver a Phase::Ended event for
+/// trackpads on macOS, so we infer end-of-gesture by silence.
+pub const GESTURE_END_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(50);
+
 /// Pixel-precise scroll position. Replaces the line-based `scrollback_offset`
 /// that produced tmux-style stepping.
 #[derive(Debug, Default, Clone, Copy)]
@@ -66,4 +88,21 @@ impl ScrollVelocity {
             last_update: now,
         }
     }
+
+    /// Clamp velocity magnitude to `MOMENTUM_MAX_VELOCITY`. Returns the
+    /// possibly-rescaled velocity vector.
+    pub fn clamped_for_momentum(self) -> Vec2 {
+        let speed = self.velocity.length();
+        if speed > MOMENTUM_MAX_VELOCITY {
+            self.velocity * (MOMENTUM_MAX_VELOCITY / speed)
+        } else {
+            self.velocity
+        }
+    }
+}
+
+/// Apply exponential decay to `velocity` over `elapsed` seconds, at the
+/// reference cadence `MOMENTUM_DECAY_INTERVAL` with factor `MOMENTUM_DECAY`.
+pub fn decay_velocity(velocity: Vec2, elapsed: f32) -> Vec2 {
+    velocity * MOMENTUM_DECAY.powf(elapsed / MOMENTUM_DECAY_INTERVAL)
 }

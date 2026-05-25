@@ -12,4 +12,7 @@ pub mod scroll;
 
 pub use instances::{RectInstance, Uniforms};
 pub use renderer::GpuRenderer;
-pub use scroll::{ScrollState, ScrollVelocity, NUM_PIXELS_PER_LINE};
+pub use scroll::{
+    decay_velocity, ScrollState, ScrollVelocity, GESTURE_END_TIMEOUT, MOMENTUM_FRAME_INTERVAL,
+    MOMENTUM_MIN_VELOCITY, MOMENTUM_THRESHOLD, NUM_PIXELS_PER_LINE,
+};

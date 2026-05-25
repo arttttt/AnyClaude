@@ -1,20 +1,36 @@
-//! Scroll prototype demo. Renders a column of coloured stripes; subsequent
-//! commits add scroll input, velocity tracking, and the momentum integrator.
+//! Scroll prototype demo with pixel-based scroll + momentum integrator.
+//!
+//! Architecture follows `docs/design/gpu-terminal-scroll.md`:
+//! - winit `MouseWheel` events feed `ScrollState` and `ScrollVelocity`
+//! - after `GESTURE_END_TIMEOUT` of silence, a momentum timer kicks in
+//! - the timer ticks every `MOMENTUM_FRAME_INTERVAL` and decays velocity
+//! - both timers are abortable; a new wheel event cancels them
 
 use std::sync::Arc;
 use std::time::Instant;
 
+use futures::future::{abortable, AbortHandle};
+use futures_timer::Delay;
 use glam::Vec2;
-use term_gpu::{GpuRenderer, RectInstance, ScrollState, ScrollVelocity, NUM_PIXELS_PER_LINE};
+use term_gpu::{
+    decay_velocity, GpuRenderer, RectInstance, ScrollState, ScrollVelocity, GESTURE_END_TIMEOUT,
+    MOMENTUM_FRAME_INTERVAL, MOMENTUM_MIN_VELOCITY, MOMENTUM_THRESHOLD, NUM_PIXELS_PER_LINE,
+};
 use winit::application::ApplicationHandler;
 use winit::event::{MouseScrollDelta, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
 use winit::window::{Window, WindowAttributes, WindowId};
 
 const STRIPE_COUNT: usize = 1000;
 const STRIPE_HEIGHT: f32 = 24.0;
 const STRIPE_GAP: f32 = 2.0;
 const STRIPE_X_MARGIN: f32 = 48.0;
+
+#[derive(Debug, Clone, Copy)]
+enum CustomEvent {
+    GestureEnded,
+    MomentumTick,
+}
 
 fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [f32; 4] {
     let h = h.rem_euclid(360.0);
@@ -32,34 +48,161 @@ fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [f32; 4] {
     [r1 + m, g1 + m, b1 + m, 1.0]
 }
 
+fn stripes_total_height() -> f32 {
+    STRIPE_COUNT as f32 * (STRIPE_HEIGHT + STRIPE_GAP) - STRIPE_GAP
+}
+
 fn build_stripes(window_width: f32) -> Vec<RectInstance> {
     let width = (window_width - STRIPE_X_MARGIN * 2.0).max(64.0);
     (0..STRIPE_COUNT)
         .map(|i| RectInstance {
-            pos: [
-                STRIPE_X_MARGIN,
-                i as f32 * (STRIPE_HEIGHT + STRIPE_GAP),
-            ],
+            pos: [STRIPE_X_MARGIN, i as f32 * (STRIPE_HEIGHT + STRIPE_GAP)],
             size: [width, STRIPE_HEIGHT],
             color: hsv_to_rgb((i as f32 * 1.7) % 360.0, 0.55, 0.92),
         })
         .collect()
 }
 
-fn stripes_total_height() -> f32 {
-    STRIPE_COUNT as f32 * (STRIPE_HEIGHT + STRIPE_GAP) - STRIPE_GAP
+/// Spawn a one-shot abortable timer that sends `event` to the event loop
+/// after `delay`. Returns the `AbortHandle` so the caller can cancel.
+fn schedule_once(
+    proxy: EventLoopProxy<CustomEvent>,
+    delay: std::time::Duration,
+    event: CustomEvent,
+) -> AbortHandle {
+    let (fut, abort) = abortable(async move {
+        Delay::new(delay).await;
+        let _ = proxy.send_event(event);
+    });
+    std::thread::spawn(move || {
+        let _ = futures::executor::block_on(fut);
+    });
+    abort
 }
 
-#[derive(Default)]
+/// Spawn an abortable loop that sends `MomentumTick` every `interval`.
+fn schedule_momentum_loop(
+    proxy: EventLoopProxy<CustomEvent>,
+    interval: std::time::Duration,
+) -> AbortHandle {
+    let (fut, abort) = abortable(async move {
+        loop {
+            Delay::new(interval).await;
+            if proxy.send_event(CustomEvent::MomentumTick).is_err() {
+                break;
+            }
+        }
+    });
+    std::thread::spawn(move || {
+        let _ = futures::executor::block_on(fut);
+    });
+    abort
+}
+
 struct App {
+    proxy: EventLoopProxy<CustomEvent>,
     window: Option<Arc<Window>>,
     renderer: Option<GpuRenderer>,
     stripes: Vec<RectInstance>,
     scroll: ScrollState,
     velocity: Option<ScrollVelocity>,
+    gesture_end_abort: Option<AbortHandle>,
+    momentum_abort: Option<AbortHandle>,
 }
 
-impl ApplicationHandler for App {
+impl App {
+    fn new(proxy: EventLoopProxy<CustomEvent>) -> Self {
+        Self {
+            proxy,
+            window: None,
+            renderer: None,
+            stripes: Vec::new(),
+            scroll: ScrollState::default(),
+            velocity: None,
+            gesture_end_abort: None,
+            momentum_abort: None,
+        }
+    }
+
+    fn cancel_momentum(&mut self) {
+        if let Some(h) = self.momentum_abort.take() {
+            h.abort();
+        }
+    }
+
+    fn cancel_gesture_end(&mut self) {
+        if let Some(h) = self.gesture_end_abort.take() {
+            h.abort();
+        }
+    }
+
+    fn on_wheel(&mut self, applied_dy: f32) {
+        // A new wheel event interrupts any in-flight inertia or pending kickoff.
+        self.cancel_momentum();
+        self.cancel_gesture_end();
+
+        self.scroll.scroll_by(applied_dy);
+        self.velocity = Some(ScrollVelocity::record(
+            self.velocity,
+            Vec2::new(0.0, applied_dy),
+            Instant::now(),
+        ));
+
+        // Arm gesture-end detection for inertia kickoff.
+        self.gesture_end_abort = Some(schedule_once(
+            self.proxy.clone(),
+            GESTURE_END_TIMEOUT,
+            CustomEvent::GestureEnded,
+        ));
+
+        if let Some(w) = self.window.as_ref() {
+            w.request_redraw();
+        }
+    }
+
+    fn on_gesture_end(&mut self) {
+        let Some(v) = self.velocity else { return };
+        let speed = v.velocity.length();
+        if speed < MOMENTUM_THRESHOLD {
+            self.velocity = None;
+            return;
+        }
+        // Re-anchor velocity to "now" with the clamped vector so the first
+        // momentum tick computes a sensible elapsed delta.
+        self.velocity = Some(ScrollVelocity {
+            velocity: v.clamped_for_momentum(),
+            last_update: Instant::now(),
+        });
+        self.momentum_abort = Some(schedule_momentum_loop(
+            self.proxy.clone(),
+            MOMENTUM_FRAME_INTERVAL,
+        ));
+    }
+
+    fn on_momentum_tick(&mut self) {
+        let Some(v) = self.velocity.as_mut() else {
+            return;
+        };
+        let now = Instant::now();
+        let elapsed = now.duration_since(v.last_update).as_secs_f32();
+        v.last_update = now;
+        v.velocity = decay_velocity(v.velocity, elapsed);
+
+        if v.velocity.length() < MOMENTUM_MIN_VELOCITY {
+            self.cancel_momentum();
+            self.velocity = None;
+            return;
+        }
+
+        let delta = v.velocity * elapsed;
+        self.scroll.scroll_by(delta.y);
+        if let Some(w) = self.window.as_ref() {
+            w.request_redraw();
+        }
+    }
+}
+
+impl ApplicationHandler<CustomEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let attrs = WindowAttributes::default()
             .with_title("term_gpu scroll demo")
@@ -83,13 +226,17 @@ impl ApplicationHandler for App {
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => {
+                self.cancel_momentum();
+                self.cancel_gesture_end();
+                event_loop.exit();
+            }
             WindowEvent::Resized(new_size) => {
                 if let Some(r) = self.renderer.as_mut() {
                     r.resize(new_size);
                     self.stripes = build_stripes(new_size.width as f32);
                     self.scroll.visible_px = new_size.height as f32;
-                    self.scroll.scroll_by(0.0); // re-clamp against new max
+                    self.scroll.scroll_by(0.0);
                 }
                 if let Some(w) = self.window.as_ref() {
                     w.request_redraw();
@@ -100,18 +247,7 @@ impl ApplicationHandler for App {
                     MouseScrollDelta::PixelDelta(p) => p.y as f32,
                     MouseScrollDelta::LineDelta(_, v) => v * NUM_PIXELS_PER_LINE,
                 };
-                // winit reports positive y for "swipe up" / "wheel away".
-                // We treat swipe-up as "show content below" → offset grows.
-                let applied_dy = -dy;
-                self.scroll.scroll_by(applied_dy);
-                self.velocity = Some(ScrollVelocity::record(
-                    self.velocity,
-                    Vec2::new(0.0, applied_dy),
-                    Instant::now(),
-                ));
-                if let Some(w) = self.window.as_ref() {
-                    w.request_redraw();
-                }
+                self.on_wheel(-dy);
             }
             WindowEvent::RedrawRequested => {
                 if let (Some(r), Some(w)) = (self.renderer.as_ref(), self.window.as_ref()) {
@@ -122,10 +258,20 @@ impl ApplicationHandler for App {
             _ => {}
         }
     }
+
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: CustomEvent) {
+        match event {
+            CustomEvent::GestureEnded => self.on_gesture_end(),
+            CustomEvent::MomentumTick => self.on_momentum_tick(),
+        }
+    }
 }
 
 fn main() {
-    let event_loop = EventLoop::new().expect("failed to create event loop");
-    let mut app = App::default();
+    let event_loop = EventLoop::<CustomEvent>::with_user_event()
+        .build()
+        .expect("failed to create event loop");
+    let proxy = event_loop.create_proxy();
+    let mut app = App::new(proxy);
     event_loop.run_app(&mut app).expect("event loop failed");
 }
