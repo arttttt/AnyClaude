@@ -47,6 +47,62 @@ impl RectInstance {
     }
 }
 
+/// Per-glyph instance data for the text pipeline. `color` is the tint
+/// applied to monochrome glyphs; colour glyphs (emoji) ignore it and use
+/// their atlas RGBA verbatim.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct GlyphInstance {
+    pub pos: [f32; 2],
+    pub size: [f32; 2],
+    pub uv_min: [f32; 2],
+    pub uv_max: [f32; 2],
+    pub color: [f32; 4],
+}
+
+impl GlyphInstance {
+    pub fn as_bytes(slice: &[Self]) -> &[u8] {
+        // Safety: `GlyphInstance` is `#[repr(C)]` and `Copy`.
+        unsafe { std::slice::from_raw_parts(slice.as_ptr() as *const u8, size_of_val(slice)) }
+    }
+
+    pub const ATTRIBS: [wgpu::VertexAttribute; 5] = [
+        wgpu::VertexAttribute {
+            offset: 0,
+            shader_location: 0,
+            format: wgpu::VertexFormat::Float32x2,
+        },
+        wgpu::VertexAttribute {
+            offset: 8,
+            shader_location: 1,
+            format: wgpu::VertexFormat::Float32x2,
+        },
+        wgpu::VertexAttribute {
+            offset: 16,
+            shader_location: 2,
+            format: wgpu::VertexFormat::Float32x2,
+        },
+        wgpu::VertexAttribute {
+            offset: 24,
+            shader_location: 3,
+            format: wgpu::VertexFormat::Float32x2,
+        },
+        wgpu::VertexAttribute {
+            offset: 32,
+            shader_location: 4,
+            format: wgpu::VertexFormat::Float32x4,
+        },
+    ];
+
+    pub const fn layout() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: size_of::<Self>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &Self::ATTRIBS,
+        }
+    }
+}
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Uniforms {

@@ -13,7 +13,7 @@ pub mod scroll;
 pub mod text;
 
 pub use atlas::{GlyphAtlas, GlyphFormat, PlacedGlyph, RasterizedGlyph, ShelfPacker};
-pub use instances::{RectInstance, Uniforms};
+pub use instances::{GlyphInstance, RectInstance, Uniforms};
 pub use renderer::GpuRenderer;
 pub use scroll::{
     decay_velocity, ScrollState, ScrollVelocity, GESTURE_END_TIMEOUT, MOMENTUM_FRAME_INTERVAL,
