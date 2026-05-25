@@ -87,6 +87,77 @@ Concrete contrast:
   a fallback for wheel mice (`LineDelta`) which never report `Ended`.
 - One commit. Bug gone.
 
+## Act 6 — Adding real text rendering
+
+Once scroll feel was nailed, we built the actual text pipeline:
+
+- `RGBA8` glyph atlas with a 100-line Shelf-Next-Fit packer ported
+  from Warp.
+- `cosmic-text` for shaping (upstream, not Warp's fork).
+- A second wgpu pipeline (`text.wgsl`) reusing the same instanced quad
+  pattern, plus an atlas texture+sampler bind group at `@group(1)`.
+- A subtle decision: cosmic-text already does subpixel positioning
+  via `CacheKey::SubpixelBin` (4 X-bins × 4 Y-bins = 16 variants per
+  glyph). We had planned to port Warp's hand-rolled `SubpixelAlignment`
+  (3 X-bins + Y-snap in the shader), but the library version costs us
+  zero hand-rolled code in exchange for ×16 vs ×3 memory per glyph.
+  Worth flagging as a "read the docs before reimplementing the cool
+  thing" moment.
+
+## Act 7 — "Why isn't this implemented?"
+
+Demo shipped. First user reaction:
+
+> "Text is visible but everything is too small — about ×5 larger needed.
+> And why aren't these optimizations done? Warp does them."
+
+Two distinct mistakes:
+
+1. **DPI bug.** Our coordinate system treated logical pixels as
+   physical, halving everything on Retina. Fix: move scale_factor into
+   the Uniforms struct, multiply in the vertex shader, author all
+   instance data in logical pixels.
+
+2. **The "for the prototype" trap.** I'd labeled shape caching, CPU
+   culling, and font fallback configuration as "polish for later" when
+   Warp ships all three at parity. User correctly pushed back: this is
+   the real implementation, not a prototype.
+
+The lesson got encoded as a memory rule
+([feedback_no_phase_deferral_for_warp_features.md](../../../memory/)):
+when implementing GPU terminal pieces, anything Warp does in the
+comparable area belongs in the current phase. No "I'll catch up later"
+deferrals.
+
+What got built in response:
+
+- DPI uniform + shader scaling
+- `TextShapeCache` keyed by `(text, font_size, scale_factor,
+  wrap_width)` with frame-counter eviction mirroring the atlas
+- CPU viewport culling via a `FrameContext::in_view()` predicate —
+  on a 720 px viewport, 90 of 100 row labels get skipped per frame
+- `FontFamily` enum + `TextShapeCache::with_family()` for explicit
+  primary family choice; emoji and CJK fallback automatic via
+  cosmic-text/fontdb
+
+## Act 8 — One more gotcha: WGSL alignment
+
+Release build failed at first draw:
+
+> `Buffer is bound with size 32 where the shader expects 48 in
+> group[0] compact index 0`
+
+Root cause: `vec3<f32>` in WGSL has **alignment 16** (not 12). Putting
+a `vec3` pad at the end of a uniform struct rounds the struct size up
+to 48 bytes — but our hand-written Rust `Uniforms` was 32 bytes.
+
+Fix: replace `_pad: vec3<f32>` with three scalar `f32` pads in both
+shaders. Scalar f32 has align 4, so the struct stays 32 bytes.
+
+Worth a callout in the article: WGSL/std140 alignment rules are
+non-obvious, and writing uniforms by hand (without `bytemuck` or
+`encase`) means owning that rulebook yourself.
+
 ## Outro — Takeaways
 
 1. **Read the source.** Warp's MIT crates contain answers to questions
@@ -99,6 +170,18 @@ Concrete contrast:
    platform. Skip the AppKit FFI temptation.
 5. **A 100-line shelf allocator is enough** for a glyph atlas. SDF /
    MSDF / compute shaders are over-engineering for a fixed-size UI font.
+6. **Use libraries' built-in subpixel before rolling your own.**
+   cosmic-text bins to 16 variants per glyph at zero code cost.
+7. **DPI awareness lives in the uniform, not the call site.** Author
+   instance data in logical pixels; multiply by `scale_factor` in the
+   vertex shader. One field, one multiplication, no bug-prone scattered
+   `* dpi` calls.
+8. **`vec3` in a WGSL uniform aligns to 16.** If you write uniforms by
+   hand, use scalar pads or `vec4`. The validator catches it
+   immediately but the error message is cryptic.
+9. **Don't defer features your reference implementation ships.**
+   "I'll add caching later" creates technical debt that compounds
+   across phases. Build the real thing each phase.
 
 ## Possible follow-up articles
 

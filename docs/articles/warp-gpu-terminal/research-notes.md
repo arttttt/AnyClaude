@@ -145,16 +145,120 @@ Single commit. Bug gone.
 
 ## 9. The minimal architecture we ended up with
 
-- 3 custom crates: `term_core` (VT parser), `term_gpu` (renderer +
-  atlas + scroll), `term_layout` (BSP panels).
+- 3 custom crates: `term_core` (VT parser, not yet built), `term_gpu`
+  (renderer + atlas + scroll + text), `term_layout` (BSP panels, not
+  yet built).
 - 6 external deps: `wgpu`, `winit`, `cosmic-text`, `futures`,
   `futures-timer`, `glam`.
-- 2 render pipelines: `rect` and `glyph`. (Image is optional, planned
+- 2 render pipelines: `rect` and `text`. (Image is optional, planned
   for later.)
 - `Vec<Row>` of `TextRun` for the cell grid. No `sum_tree`.
 - Pixel-based scroll with Warp's 7-constant momentum integrator.
-- `RGBA8Unorm` glyph atlas with frame-counter eviction and 3-step
-  subpixel positioning.
+- `RGBA8Unorm` glyph atlas with frame-counter eviction.
+- cosmic-text shape cache with the same frame-counter eviction.
 
-Everything else (selection, scrollback navigation, font fallback,
-drop-shadow on overlays) is polish.
+## 10. Lessons learned during text rendering
+
+### DPI awareness: one field, one multiplication
+
+The naive way of doing high-DPI is to scatter `* scale_factor` calls
+through every layout site. That's a recipe for bugs (we shipped one —
+text was half size on Retina).
+
+The clean way: author every instance position and size in **logical
+pixels**, add `scale_factor` to the `Uniforms` struct, and multiply
+once in the vertex shader before the NDC transform:
+
+```wgsl
+let px_logical = in.pos + q * in.size - uniforms.scroll_offset;
+let px_physical = px_logical * uniforms.scale_factor;
+let ndc = (px_physical / uniforms.screen_size) * 2.0 - 1.0;
+```
+
+cosmic-text gets `font_size * scale_factor` so it rasterizes at
+physical density; we divide returned glyph positions by `scale_factor`
+to get logical coordinates back. One conversion at the rasterization
+boundary, then everything is logical.
+
+### cosmic-text subpixel is automatic
+
+We planned to port Warp's `SubpixelAlignment` (3 X-bins, snap Y in
+shader). Then we read the cosmic-text source: `CacheKey` already
+includes `x_bin` and `y_bin` of type `SubpixelBin` (4 variants each).
+Caching by the full `CacheKey` gets us subpixel-correct glyph images
+for free. Memory cost ×16 per glyph variant vs Warp's ×3 — we accept
+the extra memory for zero hand-rolled code.
+
+Lesson: read library docs before reimplementing the cool thing.
+
+### Shape cache mirrors atlas eviction
+
+Like the atlas, the shape cache uses a frame-counter (`last_used_frame
++ MAX_UNUSED_FRAMES`) instead of an LRU. Pattern is identical: simpler
+than intrusive linked lists and adequate for the workload.
+
+Two thresholds: atlas at 10 frames (~0.16 s) because glyphs come and
+go fast during scroll; shape cache at 60 frames (~1 s) because shaped
+text tends to be more stable. Both tuned empirically; either could
+move.
+
+### CPU culling is a one-liner
+
+The cull predicate is two comparisons:
+
+```rust
+fn in_view(origin_y: f32, height: f32, scroll_top: f32, viewport_h: f32) -> bool {
+    origin_y + height > scroll_top && origin_y < scroll_top + viewport_h
+}
+```
+
+Per-frame impact on the demo (1000 stripes × 1 row label per 10
+stripes = 100 labels): with culling on a 720 px viewport, ~10
+labels actually shape and atlas-lookup; 90 get skipped.
+
+### WGSL `vec3` alignment is 16, not 12
+
+We tried to add a `vec3<f32>` pad at the end of a uniform struct.
+Both shaders compiled, validation failed at first draw:
+
+> Buffer is bound with size 32 where the shader expects 48
+
+`vec3<f32>` in WGSL has alignment 16 (not 12 — the WGSL spec is
+explicit about this, matching std140 historical rules). The struct's
+final size rounds up to a multiple of the largest member's alignment,
+so the vec3 pushed total size from 32 to 48 bytes.
+
+Fix: three scalar `f32` pads instead. Each has align 4, so the struct
+stays 32 bytes and matches the Rust `repr(C)` layout.
+
+Generalisable: if writing uniforms by hand (we don't use `bytemuck`
+intentionally — see spec §5.3), avoid `vec3` and `mat3` in struct
+fields. Use `vec4`/`mat4` or scalar pads.
+
+## 11. The "don't defer features Warp ships" rule
+
+The most important process lesson came from a user pushback. When we
+demoed text rendering, three optimisations weren't in: shape caching,
+CPU culling, font fallback config. The plan was "Phase 3 = baseline,
+Phase 5 = polish".
+
+User response:
+
+> "Why aren't these implemented? Warp is right there as a reference."
+
+He was right. Phase 5 was supposed to be integration, not catch-up.
+Deferring optimisations the reference implementation already does
+creates technical debt that compounds across phases, and ships a
+weaker product at every milestone.
+
+The rule, now encoded as a memory: **anything Warp does in the area
+you're working on belongs in the current phase**. Not "I'll add later",
+not "for the prototype". The plan is to match Warp's quality, full
+stop. If a feature legitimately doesn't apply, say so explicitly with
+a reason (e.g. we skip `sum_tree` because a VT cell grid isn't a code
+editor) — but don't pretend it's phasing.
+
+Good rule to print on a wall: **build the real thing each phase.**
+
+Everything else (selection, scrollback navigation, drop-shadow on
+overlays) is genuine polish — features Warp also defers until later.

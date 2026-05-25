@@ -185,7 +185,7 @@ match phase {
 
 ## Standout user quotes
 
-After running the prototype the first time:
+After running the scroll prototype the first time:
 
 > "Уже работает очень круто и приятно. Есть один момент: флинг жест
 > сам по себе работает хорошо, но если скроллить не отрывая пальцы от
@@ -197,6 +197,20 @@ After running the prototype the first time:
 After the TouchPhase fix:
 
 > "Сейчас проблему не увидел."
+
+After the first text-rendering build:
+
+> "Текст виден, но всё слишком мелкое, раз в 5 как будто увеличить
+> надо. Почему не реализовано это [shape caching, CPU culling, font
+> fallback]? Всегда есть Варп в качестве референса."
+
+— the single most useful piece of feedback in the project. Triggered
+the rule against deferring features Warp ships, and pulled three
+"polish later" items into Phase 3 where they belonged.
+
+After the four finishing commits:
+
+> "Всё отлично, обновляем доки для статьи и двигаемся дальше."
 
 ## License summary
 
@@ -218,7 +232,7 @@ Attribution comment we add to ported code:
 // Source: crates/warpui/src/rendering/atlas/allocator.rs
 ```
 
-## Our prototype dependencies (final)
+## Our dependencies (end of Phase 3)
 
 ```toml
 wgpu          = "24"
@@ -227,8 +241,94 @@ futures       = "0.3"
 futures-timer = "3"
 glam          = "0.30"
 pollster      = "0.4"
+cosmic-text   = "0.14"
 ```
 
-Six crates. No `tokio` on the render side. No `bytemuck` (manual
-`repr(C)` casts). No `cosmic-text` yet (the prototype renders coloured
-rects, not text — that's Phase 3 of the roadmap).
+Seven crates. No `tokio` on the render side. No `bytemuck` (manual
+`repr(C)` casts). Forking cosmic-text not needed — upstream is enough.
+
+## DPI scaling pattern
+
+Author every instance position and size in **logical pixels**.
+Convert once in the vertex shader:
+
+```wgsl
+struct Uniforms {
+    screen_size: vec2<f32>,    // physical
+    scroll_offset: vec2<f32>,  // logical
+    scale_factor: f32,
+    _pad_a: f32,
+    _pad_b: f32,
+    _pad_c: f32,
+};
+
+@vertex
+fn vs_main(...) -> VsOut {
+    let px_logical = r.pos + q * r.size - uniforms.scroll_offset;
+    let px_physical = px_logical * uniforms.scale_factor;
+    let ndc = (px_physical / uniforms.screen_size) * 2.0 - 1.0;
+    // ...
+}
+```
+
+For text: shape at `font_size * scale_factor` so swash rasterizes at
+physical density; divide returned glyph positions by `scale_factor`
+to get logical back. One conversion at the rasterization boundary.
+
+## WGSL alignment gotcha
+
+`vec3<f32>` in WGSL has **alignment 16, not 12**. Adding a
+`_pad: vec3<f32>` at the end of a uniform struct rounds the struct
+size up to 48 bytes — even though three floats are only 12 bytes
+themselves.
+
+If writing uniforms by hand (no `bytemuck`, no `encase`), use scalar
+`f32` pads or `vec4`. Validation error you'll see:
+
+> Buffer is bound with size 32 where the shader expects 48 in
+> group[0] compact index 0
+
+## Shape cache + atlas eviction
+
+Identical pattern in both:
+
+```rust
+struct Cached {
+    payload: T,
+    last_used_frame: u32,
+}
+
+pub fn end_frame(&mut self) {
+    self.frame = self.frame.wrapping_add(1);
+    let now = self.frame;
+    self.entries.retain(|_, c| {
+        now.wrapping_sub(c.last_used_frame) <= MAX_UNUSED_FRAMES
+    });
+}
+```
+
+Atlas: `MAX_UNUSED_FRAMES = 10` (~0.16 s @ 60 fps). Shape cache:
+`MAX_UNUSED_FRAMES = 60` (~1 s). Glyphs come and go faster than
+shaped lines.
+
+## Frame counts
+
+Phase 3 demo: 1000 stripes + ~100 ruler ticks + 100 row labels
+shaped → with culling, ~10 labels actually shape per frame on a 720
+logical px viewport. 90% cull rate. cosmic-text shape cost (per the
+first frame, before cache is warm): ~5 µs per label × 100 labels =
+~0.5 ms total. After cache is warm: ~0 ms.
+
+## Branch state at end of Phase 3
+
+26 commits on `feat/gpu-terminal`. See `timeline.md` §8 for the
+breakdown by category.
+
+## License attribution snippet
+
+For files containing code ported from Warp:
+
+```rust
+// Adapted from warpdotdev/warp (MIT)
+// Source: crates/warpui/src/rendering/atlas/allocator.rs
+```

@@ -93,9 +93,70 @@ across sessions:
 > silence timeout. The two have different gesture-end semantics in
 > winit and the timeout-only approach causes scroll-fling collisions.
 
-## 5. Materials saved for the article
+## 5. Phase 3 — Real text rendering (7 commits + 1 chore)
+
+After the user confirmed the prototype was good ("uses crisp scroll"),
+we moved to actual text rendering. Six atomic commits + one missed
+Cargo.lock chore:
+
+| Commit | Adds |
+|---|---|
+| `4874d71` | `feat(term_gpu): add GlyphAtlas with RGBA8 texture and shelf packer` — packer, RasterizedGlyph, PlacedGlyph; no cache yet |
+| `f103f41` | `feat(term_gpu): integrate cosmic-text and swash rasterizer` — FontSystem, SwashCache, `rasterize_glyph()`; HashMap cache with frame-counter eviction |
+| `f2f2dc5` | `chore: update Cargo.lock for cosmic-text 0.14.2` — missed in the previous commit's `git add` |
+| `d432712` | `docs(term_gpu): use cosmic-text built-in subpixel positioning` — discovered cosmic-text's `SubpixelBin`; rewrote spec §5.6 and dropped the shader Y-snap |
+| `be8d8a9` | `feat(term_gpu): add glyph render pipeline with enhance_contrast` — text.wgsl, GlyphInstance, `create_text_pipeline()` |
+| `d3c4c2e` | `feat(term_gpu): wire glyph rendering into GpuRenderer` — atlas+sampler bind group, two-pass single render pass |
+| `2b3e12d` | `feat(term_gpu): show shaped text in scroll_demo example` — banner + Lorem ipsum + Row N labels, all with emoji |
+
+## 6. The pushback (4 commits + 1 alignment fix)
+
+User feedback after running the demo:
+
+> "Text is visible but everything is too small, ×5 larger needed.
+> Why aren't these optimisations done? Warp is the reference."
+
+Two distinct issues:
+- DPI bug (Retina rendered everything at half size)
+- Three features I'd labeled "for the prototype" that Warp actually
+  ships at parity
+
+I'd violated my own goal of matching Warp. The lesson got encoded as
+[memory feedback_no_phase_deferral_for_warp_features.md](../../../memory/)
+so I don't repeat it in future sessions.
+
+Four atomic commits in response, plus one alignment hotfix:
+
+| Commit | Fix |
+|---|---|
+| `03d0363` | `fix(term_gpu): scale geometry and text by window DPI factor` — Uniforms gain `scale_factor`, shaders multiply, instances authored in logical pixels |
+| `8615827` | `feat(term_gpu): cache shaped text per (text, font_size, scale_factor)` — `TextShapeCache` keyed on text + style, frame-counter eviction (60 frames) mirroring atlas |
+| `5e27c4d` | `feat(term_gpu): cull off-viewport text shaping` — `FrameContext::in_view()` skips ~90 of 100 row labels per frame |
+| `47d38e0` | `feat(term_gpu): configure cosmic-text font fallback explicitly` — `FontFamily` enum, `TextShapeCache::with_family()`; doc the automatic fallback chain |
+| `0bea2c3` | `fix(term_gpu): match WGSL Uniforms layout to Rust 32-byte struct` — `vec3<f32>` align-16 forced 48-byte struct; replaced with three scalar pads |
+
+User on second run: "everything works great."
+
+## 7. Materials saved for the article
 
 This folder (`docs/articles/warp-gpu-terminal/`) — outline,
 research-notes, timeline, quotes-and-numbers — collected immediately
 while the work was fresh. Without this, the article would later have
 to be rebuilt from commit messages and memory.
+
+## 8. Branch state at end of Phase 3
+
+26 commits on `feat/gpu-terminal`:
+
+- 4 doc/research commits (research, scroll design, spec updates, articles)
+- 1 docs translation cleanup
+- 1 docs subpixel decision
+- 2 Cargo.lock chores
+- 6 Phase 3.5 features (smooth scroll prototype)
+- 1 fix (TouchPhase trackpad gesture end)
+- 6 Phase 3 features (text rendering)
+- 4 Phase 3 finishing (DPI, shape cache, culling, font fallback)
+- 1 fix (WGSL alignment)
+
+Renderer crate compiles clean, clippy clean, demo runs at 120fps on
+Retina with crisp text, momentum, sub-pixel motion, emoji.
