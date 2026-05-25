@@ -2,8 +2,10 @@
 //! commits add scroll input, velocity tracking, and the momentum integrator.
 
 use std::sync::Arc;
+use std::time::Instant;
 
-use term_gpu::{GpuRenderer, RectInstance, ScrollState, NUM_PIXELS_PER_LINE};
+use glam::Vec2;
+use term_gpu::{GpuRenderer, RectInstance, ScrollState, ScrollVelocity, NUM_PIXELS_PER_LINE};
 use winit::application::ApplicationHandler;
 use winit::event::{MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
@@ -54,6 +56,7 @@ struct App {
     renderer: Option<GpuRenderer>,
     stripes: Vec<RectInstance>,
     scroll: ScrollState,
+    velocity: Option<ScrollVelocity>,
 }
 
 impl ApplicationHandler for App {
@@ -99,7 +102,13 @@ impl ApplicationHandler for App {
                 };
                 // winit reports positive y for "swipe up" / "wheel away".
                 // We treat swipe-up as "show content below" → offset grows.
-                self.scroll.scroll_by(-dy);
+                let applied_dy = -dy;
+                self.scroll.scroll_by(applied_dy);
+                self.velocity = Some(ScrollVelocity::record(
+                    self.velocity,
+                    Vec2::new(0.0, applied_dy),
+                    Instant::now(),
+                ));
                 if let Some(w) = self.window.as_ref() {
                     w.request_redraw();
                 }
