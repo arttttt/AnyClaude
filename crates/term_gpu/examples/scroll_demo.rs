@@ -3,9 +3,9 @@
 
 use std::sync::Arc;
 
-use term_gpu::{GpuRenderer, RectInstance};
+use term_gpu::{GpuRenderer, RectInstance, ScrollState, NUM_PIXELS_PER_LINE};
 use winit::application::ApplicationHandler;
-use winit::event::WindowEvent;
+use winit::event::{MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowAttributes, WindowId};
 
@@ -44,11 +44,16 @@ fn build_stripes(window_width: f32) -> Vec<RectInstance> {
         .collect()
 }
 
+fn stripes_total_height() -> f32 {
+    STRIPE_COUNT as f32 * (STRIPE_HEIGHT + STRIPE_GAP) - STRIPE_GAP
+}
+
 #[derive(Default)]
 struct App {
     window: Option<Arc<Window>>,
     renderer: Option<GpuRenderer>,
     stripes: Vec<RectInstance>,
+    scroll: ScrollState,
 }
 
 impl ApplicationHandler for App {
@@ -64,6 +69,11 @@ impl ApplicationHandler for App {
 
         let renderer = GpuRenderer::new(window.clone());
         self.stripes = build_stripes(renderer.size().width as f32);
+        self.scroll = ScrollState {
+            offset_y: 0.0,
+            total_size_px: stripes_total_height(),
+            visible_px: renderer.size().height as f32,
+        };
         self.window = Some(window);
         self.renderer = Some(renderer);
     }
@@ -75,7 +85,21 @@ impl ApplicationHandler for App {
                 if let Some(r) = self.renderer.as_mut() {
                     r.resize(new_size);
                     self.stripes = build_stripes(new_size.width as f32);
+                    self.scroll.visible_px = new_size.height as f32;
+                    self.scroll.scroll_by(0.0); // re-clamp against new max
                 }
+                if let Some(w) = self.window.as_ref() {
+                    w.request_redraw();
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let dy = match delta {
+                    MouseScrollDelta::PixelDelta(p) => p.y as f32,
+                    MouseScrollDelta::LineDelta(_, v) => v * NUM_PIXELS_PER_LINE,
+                };
+                // winit reports positive y for "swipe up" / "wheel away".
+                // We treat swipe-up as "show content below" → offset grows.
+                self.scroll.scroll_by(-dy);
                 if let Some(w) = self.window.as_ref() {
                     w.request_redraw();
                 }
@@ -83,7 +107,7 @@ impl ApplicationHandler for App {
             WindowEvent::RedrawRequested => {
                 if let (Some(r), Some(w)) = (self.renderer.as_ref(), self.window.as_ref()) {
                     w.pre_present_notify();
-                    r.render(&self.stripes, 0.0);
+                    r.render(&self.stripes, self.scroll.offset_y);
                 }
             }
             _ => {}

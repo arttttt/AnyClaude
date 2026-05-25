@@ -8,6 +8,8 @@
 pub mod instances;
 pub mod pipeline;
 pub mod renderer;
+pub mod scroll;
 
 pub use instances::{RectInstance, Uniforms};
 pub use renderer::GpuRenderer;
+pub use scroll::{ScrollState, NUM_PIXELS_PER_LINE};
