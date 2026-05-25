@@ -14,8 +14,9 @@
 //! methods (Homebrew, install.sh, npm, etc.).
 //!
 //! All other tmux commands are forwarded unchanged to the real binary,
-//! but always with `-f <shim_dir>/tmux.conf` so mouse scroll works in
-//! teammate sessions without requiring the user to edit `~/.tmux.conf`.
+//! but always with `-L anyclaude-<session_id> -f <shim_dir>/tmux.conf`
+//! so teammate sessions run on their own tmux server with mouse scroll
+//! enabled, independent of the user's existing tmux server and config.
 
 use std::path::Path;
 
@@ -27,8 +28,9 @@ use super::write_executable;
 pub const LOG_FILENAME: &str = "tmux_shim.log";
 
 /// Tmux config file name inside the shim directory.
-/// Loaded via `-f` so mouse/scroll work in teammate sessions without
-/// requiring the user to edit their `~/.tmux.conf`.
+/// Loaded via `-f` on an isolated `-L anyclaude-<session_id>` server so
+/// mouse/scroll work in teammate sessions regardless of whether the user
+/// already has a tmux server running or has a custom `~/.tmux.conf`.
 const CONF_FILENAME: &str = "tmux.conf";
 
 const CONF_CONTENT: &str = "\
@@ -137,9 +139,12 @@ for arg in "$@"; do
   args+=("$arg")
 done
 
-# Always load our config so mouse/scroll work in teammate sessions.
-# -f is a server-side flag and must precede any subcommand.
-CONF_FLAGS=(-f "$SHIM_DIR/tmux.conf")
+# Pin every tmux call to an isolated server with our config preloaded.
+# -L gives this anyclaude session its own socket so we always start the
+# server ourselves; otherwise CC would attach to the user's existing
+# tmux server and our -f (a start-only flag) would be silently ignored.
+# Both flags are server-side and must precede any subcommand.
+CONF_FLAGS=(-L "anyclaude-__SESSION_ID__" -f "$SHIM_DIR/tmux.conf")
 
 if $injected; then
   slog "EXEC: $(printf '%q ' "${args[@]}")"
@@ -153,9 +158,11 @@ fi
 /// Install the tmux shim script and its config into `dir`.
 ///
 /// Writes two files:
-/// - `tmux` — the executable bash shim that intercepts CC's tmux calls.
-/// - `tmux.conf` — loaded via `-f` from the shim so mouse/scroll work
-///   in teammate sessions regardless of the user's `~/.tmux.conf`.
+/// - `tmux` — the executable bash shim that intercepts CC's tmux calls
+///   and pins every call to `-L anyclaude-<session_id>` so teammate
+///   sessions run on a dedicated tmux server we always start ourselves.
+/// - `tmux.conf` — loaded via `-f` from the shim; enables mouse mode and
+///   a larger scrollback so scroll works in teammate sessions.
 pub fn install(dir: &Path, proxy_port: u16, session_token: &str, session_id: &str, log_enabled: bool) -> Result<()> {
     let script = TEMPLATE
         .replace("__PORT__", &proxy_port.to_string())

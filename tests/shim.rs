@@ -219,7 +219,7 @@ fn tmux_conf_is_created_with_mouse_and_history() {
 }
 
 #[test]
-fn tmux_shim_loads_conf_via_f_flag() {
+fn tmux_shim_loads_conf_via_f_flag_on_isolated_socket() {
     let shim = match TeammateShim::create(12345, "test-token", "test-session", true) {
         Ok(s) => s,
         Err(_) => return,
@@ -227,11 +227,14 @@ fn tmux_shim_loads_conf_via_f_flag() {
     let dir = shim_dir(&shim);
     let script = std::fs::read_to_string(Path::new(&dir).join("tmux")).unwrap();
 
-    // -f must point at the conf in the shim dir; both exec branches use it
-    // via the shared CONF_FLAGS array.
+    // CONF_FLAGS must carry both -L (isolated socket per session) and -f
+    // (our tmux.conf). -L is required because -f is a start-only flag —
+    // attaching to the user's pre-existing tmux server would silently drop it.
     assert!(
-        script.contains("CONF_FLAGS=(-f \"$SHIM_DIR/tmux.conf\")"),
-        "shim should define CONF_FLAGS array with -f and tmux.conf path"
+        script.contains(
+            "CONF_FLAGS=(-L \"anyclaude-test-session\" -f \"$SHIM_DIR/tmux.conf\")"
+        ),
+        "shim should define CONF_FLAGS with -L (per-session socket) and -f (tmux.conf)"
     );
     assert!(
         script.contains("exec \"$REAL_TMUX\" \"${CONF_FLAGS[@]}\" \"${args[@]}\""),
@@ -241,4 +244,24 @@ fn tmux_shim_loads_conf_via_f_flag() {
         script.contains("exec \"$REAL_TMUX\" \"${CONF_FLAGS[@]}\" \"$@\""),
         "forward branch should exec real tmux with CONF_FLAGS"
     );
+}
+
+#[test]
+fn tmux_shim_uses_distinct_socket_per_session() {
+    let shim_a = match TeammateShim::create(12345, "test-token", "session-aaa", true) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let shim_b = match TeammateShim::create(12345, "test-token", "session-bbb", true) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+
+    let script_a = std::fs::read_to_string(Path::new(&shim_dir(&shim_a)).join("tmux")).unwrap();
+    let script_b = std::fs::read_to_string(Path::new(&shim_dir(&shim_b)).join("tmux")).unwrap();
+
+    assert!(script_a.contains("-L \"anyclaude-session-aaa\""));
+    assert!(script_b.contains("-L \"anyclaude-session-bbb\""));
+    assert!(!script_a.contains("anyclaude-session-bbb"));
+    assert!(!script_b.contains("anyclaude-session-aaa"));
 }
