@@ -19,7 +19,7 @@ PTY (portable-pty) → alacritty_terminal (VT parser) → TermCell grid → rata
 
 ### Target stack
 ```
-PTY (portable-pty) → term_core (minimal VT parser) → TextRun grid → wgpu → GPU
+PTY (portable-pty) → term_core (minimal VT parser) → Cell grid → wgpu → GPU
 ```
 
 **Advantages:**
@@ -161,111 +161,190 @@ term_layout = { path = "crates/term_layout" }
 ```
 crates/term_core/src/
 ├── lib.rs          # Public API, re-exports
-├── parser.rs       # VT state machine
-├── grid.rs         # Variable-width grid (TextRun-based)
+├── parser.rs       # Paul Williams VT state machine (hand-rolled, ~500 LoC)
+├── grid.rs         # Fixed-cell grid (Cell, Row, Grid; alacritty-style)
 ├── emulator.rs     # VtEmulator — TerminalEmulator trait implementation
 ├── color.rs        # TermColor, ANSI palette
-└── attrs.rs        # TextAttrs (bold, italic, etc.)
+└── attrs.rs        # CellFlags (bold, italic, underline, …)
 ```
+
+**Why fixed-cell instead of variable-width spans?** ink (Claude Code's
+TUI framework) assumes a monospace grid for cursor positioning — `CUP
+row 5 col 10` must address a definite cell, not a pixel range.
+Variable-width rendering happens in `term_gpu`, which shapes each row
+with cosmic-text and lays out glyphs by their actual advance widths.
+Logical model is fixed; visual model is variable. See
+[`docs/analysis/warp-vt-parser-research.md`](analysis/warp-vt-parser-research.md)
+§1 for Warp's identical choice.
 
 ### 4.2 Supported escape sequences
 
 Only what Claude Code (ink-based TUI) uses:
 
 #### CSI sequences (`ESC [`)
-| Sequence | Code | Purpose |
-|----------|-----|-----------|
-| CUU | `ESC[{n}A` | Cursor Up |
-| CUD | `ESC[{n}B` | Cursor Down |
-| CUF | `ESC[{n}C` | Cursor Forward |
-| CUB | `ESC[{n}D` | Cursor Back |
-| CUP | `ESC[{r};{c}H` | Cursor Position |
-| CHA | `ESC[{n}G` | Cursor Horizontal Absolute |
-| ED | `ESC[{n}J` | Erase Display (0=to end, 1=to start, 2=all, 3=scrollback) |
-| EL | `ESC[{n}K` | Erase Line (0=to end, 1=to start, 2=all) |
-| IL | `ESC[{n}L` | Insert Lines |
-| DL | `ESC[{n}M` | Delete Lines |
-| SGR | `ESC[{...}m` | Set Graphics Rendition (colors, styles) |
-| DECSTBM | `ESC[{t};{b}r` | Set Scroll Region |
-| DECSET | `ESC[?{n}h` | Set DEC Private Mode |
-| DECRST | `ESC[?{n}l` | Reset DEC Private Mode |
-| DSR | `ESC[{n}n` | Device Status Report |
-| SU | `ESC[{n}S` | Scroll Up |
-| SD | `ESC[{n}T` | Scroll Down |
+
+Priority tags follow the research recommendations
+([`warp-vt-parser-research.md`](analysis/warp-vt-parser-research.md) §3):
+**P0** required for Claude Code to render correctly, **P1** modern UX
+with low complexity, **P2** robustness improvements. Lines without a
+tag were in the original spec before the research.
+
+| Sequence | Code | Priority | Purpose |
+|----------|-----|----------|-----------|
+| ICH | `ESC[{n}@` | **P0** | Insert blank chars |
+| CUU | `ESC[{n}A` | | Cursor Up |
+| CUD | `ESC[{n}B` | | Cursor Down |
+| CUF | `ESC[{n}C` | | Cursor Forward |
+| CUB | `ESC[{n}D` | | Cursor Back |
+| CNL | `ESC[{n}E` | **P0** | Cursor next line (CUD + col 1) |
+| CPL | `ESC[{n}F` | **P0** | Cursor previous line (CUU + col 1) |
+| CHA | `ESC[{n}G` | | Cursor Horizontal Absolute |
+| CUP | `ESC[{r};{c}H` | | Cursor Position |
+| CHT | `ESC[{n}I` | **P2** | Cursor forward tabs |
+| ED | `ESC[{n}J` | | Erase Display (0=to end, 1=to start, 2=all, 3=scrollback) |
+| EL | `ESC[{n}K` | | Erase Line (0=to end, 1=to start, 2=all) |
+| IL | `ESC[{n}L` | | Insert Lines |
+| DL | `ESC[{n}M` | | Delete Lines |
+| DCH | `ESC[{n}P` | **P0** | Delete chars at cursor |
+| SU | `ESC[{n}S` | | Scroll Up |
+| SD | `ESC[{n}T` | | Scroll Down |
+| ECH | `ESC[{n}X` | **P0** | Erase chars at cursor (no cursor move) |
+| CBT | `ESC[{n}Z` | **P2** | Cursor backward tabs |
+| HPA | `ESC[{n}\`` | **P2** | Horizontal position absolute (same as CHA) |
+| REP | `ESC[{n}b` | **P0** | Repeat last character N times |
+| DA | `ESC[c` | **P0** | Device attributes — emulator must reply `ESC[?6c` |
+| VPA | `ESC[{n}d` | **P0** | Vertical position absolute |
+| HVP | `ESC[{r};{c}f` | | Horizontal-vertical position (same as CUP) |
+| TBC | `ESC[{n}g` | **P2** | Tab clear |
+| SGR | `ESC[{...}m` | | Set Graphics Rendition (colors, styles) |
+| DSR | `ESC[{n}n` | | Device Status Report (n=6 → report cursor pos) |
+| DECRQM | `ESC[?{n}p` | **P1** | Request DEC mode state |
+| DECSCUSR | `ESC[{n} q` | **P1** | Set cursor style (1-2 block, 3-4 underline, 5-6 beam) |
+| DECSTBM | `ESC[{t};{b}r` | | Set Scroll Region |
+| SCOSC | `ESC[s` | **P2** | Save cursor (SCO variant) |
+| DECSET | `ESC[?{n}h` | | Set DEC Private Mode |
+| DECRST | `ESC[?{n}l` | | Reset DEC Private Mode |
+| SCORC | `ESC[u` | **P2** | Restore cursor (SCO variant) |
 
 #### SGR parameters (`ESC[{...}m`)
-| Code | Meaning |
-|-----|----------|
-| 0 | Reset |
-| 1 | Bold |
-| 2 | Faint |
-| 3 | Italic |
-| 4 | Underline |
-| 7 | Inverse |
-| 9 | Strikethrough |
-| 22 | Normal intensity |
-| 23 | Not italic |
-| 24 | Not underline |
-| 27 | Not inverse |
-| 29 | Not strikethrough |
-| 30-37 | Foreground (standard) |
-| 38;5;{n} | Foreground (256-color) |
-| 38;2;{r};{g};{b} | Foreground (truecolor) |
-| 39 | Default foreground |
-| 40-47 | Background (standard) |
-| 48;5;{n} | Background (256-color) |
-| 48;2;{r};{g};{b} | Background (truecolor) |
-| 49 | Default background |
-| 90-97 | Foreground (bright) |
-| 100-107 | Background (bright) |
+| Code | Priority | Meaning |
+|-----|----------|----------|
+| 0 | | Reset |
+| 1 | | Bold |
+| 2 | | Faint |
+| 3 | | Italic |
+| 4 | | Underline |
+| 4;2 | **P2** | Double underline |
+| 4;0 | **P2** | Cancel underline |
+| 5 | **P2** | Blink (slow) |
+| 6 | **P2** | Blink (fast) |
+| 7 | | Inverse |
+| 8 | **P2** | Hidden |
+| 9 | | Strikethrough |
+| 21 | **P2** | Cancel bold (different from 22) |
+| 22 | | Normal intensity |
+| 23 | | Not italic |
+| 24 | | Not underline |
+| 27 | | Not inverse |
+| 28 | **P2** | Cancel hidden |
+| 29 | | Not strikethrough |
+| 30-37 | | Foreground (standard) |
+| 38;5;{n} | | Foreground (256-color) |
+| 38;2;{r};{g};{b} | | Foreground (truecolor) |
+| 39 | | Default foreground |
+| 40-47 | | Background (standard) |
+| 48;5;{n} | | Background (256-color) |
+| 48;2;{r};{g};{b} | | Background (truecolor) |
+| 49 | | Default background |
+| 90-97 | | Foreground (bright) |
+| 100-107 | | Background (bright) |
 
 #### DEC Private Modes (`ESC[?{n}h/l`)
-| Code | Mode | Purpose |
-|-----|-------|-----------|
-| 1 | DECCKM | Application cursor keys |
-| 25 | DECTCEM | Cursor visible/hidden |
-| 47 | Alt screen (save) | Alternate screen buffer |
-| 1000 | X10 mouse | Basic mouse tracking |
-| 1002 | Button event | Mouse button events |
-| 1003 | Any event | All mouse events |
-| 1006 | SGR mouse | SGR mouse encoding |
-| 1049 | Alt screen (save+clear) | Alternate screen buffer + clear |
-| 2004 | Bracketed paste | Bracketed paste mode |
+| Code | Mode | Priority | Purpose |
+|-----|-------|----------|-----------|
+| 1 | DECCKM | | Application cursor keys |
+| 6 | DECOM | **P0** | Origin mode — CUP within scrolling region |
+| 7 | DECAWM | **P0** | Autowrap at right margin |
+| 12 | | **P1** | Blinking cursor |
+| 25 | DECTCEM | | Cursor visible/hidden |
+| 47 | Alt screen (save) | | Alternate screen buffer |
+| 1000 | X10 mouse | | Basic mouse tracking |
+| 1002 | Button event | | Mouse button events |
+| 1003 | Any event | | All mouse events |
+| 1004 | Focus events | **P1** | Emit `CSI I` on focus, `CSI O` on blur |
+| 1006 | SGR mouse | | SGR mouse encoding |
+| 1007 | Alt scroll | **P2** | Wheel produces arrow keys in alt screen |
+| 1049 | Alt screen (save+clear) | | Alternate screen buffer + clear |
+| 2004 | Bracketed paste | | Bracketed paste mode |
+| 2026 | Sync output | **P2** | Buffer output frames atomically (150 ms / 2 MiB cap) |
 
 #### OSC sequences (`ESC ]`)
-| Sequence | Purpose |
-|----------|-----------|
-| `ESC]0;{title}ST` | Set window title |
-| `ESC]2;{title}ST` | Set window title |
+| Sequence | Priority | Purpose |
+|----------|----------|-----------|
+| `OSC 0;{title} ST` | | Set window title (and icon name) |
+| `OSC 2;{title} ST` | | Set window title only |
+| `OSC 7;file://host/{path} ST` | **P1** | Notify shell CWD |
+| `OSC 8;params;url ST` | **P2** | Hyperlink (modern apps; Warp ignores, we may want) |
+| `OSC 133;A ST` | **P1** | Prompt start marker (FinalTerm/shell integration) |
+| `OSC 133;B ST` | **P1** | Prompt end marker |
+| `OSC 133;P;k=v ST` | **P1** | Prompt param payload |
+
+OSC strings are terminated by `ST` (`ESC \`, two bytes) or `BEL`
+(`0x07`, one byte). The parser must accept both.
 
 #### Simple escape sequences
-| Sequence | Purpose |
-|----------|-----------|
-| `ESC 7` | Save cursor (DECSC) |
-| `ESC 8` | Restore cursor (DECRC) |
-| `ESC M` | Reverse index (scroll down) |
-| `ESC c` | Full reset (RIS) |
+| Sequence | Priority | Purpose |
+|----------|----------|-----------|
+| `ESC 7` | | Save cursor (DECSC) |
+| `ESC 8` | | Restore cursor (DECRC) |
+| `ESC D` | **P2** | Index (IND) — move cursor down, scroll if at bottom |
+| `ESC E` | **P2** | Next line (NEL) — equivalent to CR + LF |
+| `ESC M` | | Reverse index — move up, scroll down if at top |
+| `ESC =` | **P2** | Application keypad mode (DECPAM) |
+| `ESC >` | **P2** | Numeric keypad mode (DECPNM) |
+| `ESC c` | | Full reset (RIS) |
 
 #### Control characters
-| Byte | Purpose |
-|------|-----------|
-| 0x07 (BEL) | Bell |
-| 0x08 (BS) | Backspace |
-| 0x09 (HT) | Tab |
-| 0x0A (LF) | Line feed |
-| 0x0D (CR) | Carriage return |
+| Byte | Priority | Purpose |
+|------|----------|-----------|
+| 0x07 (BEL) | | Bell |
+| 0x08 (BS) | | Backspace |
+| 0x09 (HT) | | Tab (fixed at 8 columns) |
+| 0x0A (LF) | | Line feed |
+| 0x0B (VT) | **P2** | Vertical tab — treat as LF |
+| 0x0C (FF) | **P2** | Form feed — treat as LF |
+| 0x0D (CR) | | Carriage return |
+| 0x1A (SUB) | **P2** | Substitute — abort current escape sequence |
 
 ### 4.3 What is NOT supported
 
-- DCS, SOS, PM, APC sequences
-- Character sets (G0/G1/G2/G3, SI/SO)
-- VT52 compatibility mode
-- Double width/height lines (DECDWL, DECDHL)
-- Tab stops (HTS, TBC) — fixed tab = 8 is used
-- Printer control (MC)
-- Soft fonts (DECDLD)
-- Rectangular area operations (DECRARA, DECCRA)
-- Macro sequences
+Either out of scope for our use case (Claude Code wrapping) or
+explicitly skipped per the [Warp VT research](analysis/warp-vt-parser-research.md) §4.
+
+- **DCS, SOS, PM, APC** sequences — eaten without dispatch (state
+  machine consumes them so they don't corrupt subsequent input)
+- **Character sets G2/G3** (`ESC * / +`). G0/G1 + the line-drawing
+  table (`ESC ( 0`) is P3 — add only if observed in real traces.
+- **VT52 compatibility mode**
+- **Double width/height lines** (DECDWL, DECDHL)
+- **Custom tab stops** (HTS sets, TBC clears — P2; otherwise fixed
+  tab = 8 is used)
+- **Printer control** (MC)
+- **Soft fonts** (DECDLD)
+- **Rectangular area operations** (DECRARA, DECCRA)
+- **Macro sequences**
+- **iTerm inline images** (OSC 1337) and **Kitty image protocol**
+  (APC). Claude Code does not emit images.
+- **Sixel graphics**
+- **Tmux control mode** (Warp's `TmuxControlModeParser`) — we wrap
+  Claude Code, not tmux
+- **OSC 4 palette manipulation** and **OSC 10/11/12 dynamic colors
+  with `?` query** — Warp uses these for theme integration; Claude
+  Code does not change palette
+- **Warp-specific OSCs** (`OSC 9277..9280`, `OSC 781378`) — Warp-only
+- **Kitty keyboard protocol** (`CSI u`) — P3, add only if Claude Code
+  uses modifiers beyond Alt-prefixed
+- **OSC 52 clipboard**, **OSC 10/11/12 color queries** — niche
 
 ### 4.4 Public API (lib.rs)
 
@@ -276,15 +355,17 @@ pub mod emulator;
 pub mod color;
 pub mod attrs;
 
-pub use color::TermColor;
-pub use attrs::TextAttrs;
-pub use grid::{Grid, Line, TextRun, PixelPos};
-pub use emulator::{TerminalEmulator, CursorState, CursorStyle, RenderSnapshot};
-pub use parser::{Parser, Action};
+pub use color::{AnsiPalette, TermColor};
+pub use attrs::CellFlags;
+pub use grid::{Cell, Grid, Row};
+pub use emulator::{CursorState, CursorStyle, MouseMode, RenderSnapshot, TerminalEmulator};
+pub use parser::{Action, EraseMode, Parser, SgrAction};
 
-/// Create a terminal emulator
-pub fn create_emulator(width_px: u32, height_px: u32, scrollback: usize) -> Box<dyn TerminalEmulator> {
-    Box::new(emulator::VtEmulator::new(width_px, height_px, scrollback))
+/// Create a terminal emulator with the given visible grid size and
+/// scrollback line cap. `cols` and `rows` are in cells (variable-width
+/// rendering happens in `term_gpu`, the logical grid is fixed-cell).
+pub fn create_emulator(cols: usize, rows: usize, scrollback: usize) -> Box<dyn TerminalEmulator> {
+    Box::new(emulator::VtEmulator::new(cols, rows, scrollback))
 }
 ```
 
@@ -383,11 +464,11 @@ impl AnsiPalette {
 // attrs.rs
 /// Text attributes
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub struct TextAttrs {
+pub struct CellFlags {
     bits: u8,
 }
 
-impl TextAttrs {
+impl CellFlags {
     pub const BOLD: u8      = 1 << 0;
     pub const FAINT: u8     = 1 << 1;
     pub const ITALIC: u8    = 1 << 2;
@@ -416,7 +497,7 @@ impl TextAttrs {
 // parser.rs
 //! Minimal VT/ANSI parser — state machine for Claude Code
 
-use crate::{TermColor, TextAttrs};
+use crate::{TermColor, CellFlags};
 
 const MAX_PARAMS: usize = 16;
 const MAX_OSC: usize = 256;
@@ -507,8 +588,8 @@ pub enum EraseMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SgrAction {
     Reset,
-    SetAttr(u8),       // TextAttrs flag to set
-    ClearAttr(u8),     // TextAttrs flag to clear
+    SetAttr(u8),       // CellFlags flag to set
+    ClearAttr(u8),     // CellFlags flag to clear
     Foreground(TermColor),
     Background(TermColor),
     DefaultForeground,
@@ -816,21 +897,21 @@ impl Parser {
             let p = self.params[i];
             match p {
                 0 => emit(Action::SetAttr(SgrAction::Reset)),
-                1 => emit(Action::SetAttr(SgrAction::SetAttr(TextAttrs::BOLD))),
-                2 => emit(Action::SetAttr(SgrAction::SetAttr(TextAttrs::FAINT))),
-                3 => emit(Action::SetAttr(SgrAction::SetAttr(TextAttrs::ITALIC))),
-                4 => emit(Action::SetAttr(SgrAction::SetAttr(TextAttrs::UNDERLINE))),
-                5 => emit(Action::SetAttr(SgrAction::SetAttr(TextAttrs::BLINK))),
-                7 => emit(Action::SetAttr(SgrAction::SetAttr(TextAttrs::INVERSE))),
-                9 => emit(Action::SetAttr(SgrAction::SetAttr(TextAttrs::STRIKE))),
+                1 => emit(Action::SetAttr(SgrAction::SetAttr(CellFlags::BOLD))),
+                2 => emit(Action::SetAttr(SgrAction::SetAttr(CellFlags::FAINT))),
+                3 => emit(Action::SetAttr(SgrAction::SetAttr(CellFlags::ITALIC))),
+                4 => emit(Action::SetAttr(SgrAction::SetAttr(CellFlags::UNDERLINE))),
+                5 => emit(Action::SetAttr(SgrAction::SetAttr(CellFlags::BLINK))),
+                7 => emit(Action::SetAttr(SgrAction::SetAttr(CellFlags::INVERSE))),
+                9 => emit(Action::SetAttr(SgrAction::SetAttr(CellFlags::STRIKE))),
                 22 => {
-                    emit(Action::SetAttr(SgrAction::ClearAttr(TextAttrs::BOLD)));
-                    emit(Action::SetAttr(SgrAction::ClearAttr(TextAttrs::FAINT)));
+                    emit(Action::SetAttr(SgrAction::ClearAttr(CellFlags::BOLD)));
+                    emit(Action::SetAttr(SgrAction::ClearAttr(CellFlags::FAINT)));
                 }
-                23 => emit(Action::SetAttr(SgrAction::ClearAttr(TextAttrs::ITALIC))),
-                24 => emit(Action::SetAttr(SgrAction::ClearAttr(TextAttrs::UNDERLINE))),
-                27 => emit(Action::SetAttr(SgrAction::ClearAttr(TextAttrs::INVERSE))),
-                29 => emit(Action::SetAttr(SgrAction::ClearAttr(TextAttrs::STRIKE))),
+                23 => emit(Action::SetAttr(SgrAction::ClearAttr(CellFlags::ITALIC))),
+                24 => emit(Action::SetAttr(SgrAction::ClearAttr(CellFlags::UNDERLINE))),
+                27 => emit(Action::SetAttr(SgrAction::ClearAttr(CellFlags::INVERSE))),
+                29 => emit(Action::SetAttr(SgrAction::ClearAttr(CellFlags::STRIKE))),
                 30..=37 => emit(Action::SetAttr(SgrAction::Foreground(TermColor::Indexed(p as u8 - 30)))),
                 38 => {
                     if let Some(color) = self.parse_extended_color(&mut i) {
@@ -915,437 +996,471 @@ impl Default for Parser {
 }
 ```
 
-### 4.7 Variable-Width Grid (grid.rs)
+### 4.7 Fixed-Cell Grid (grid.rs)
+
+> Adapted from `alacritty_terminal` (Apache-2.0) — same model Warp uses
+> (see [`analysis/warp-vt-parser-research.md`](analysis/warp-vt-parser-research.md) §1).
+> Cell holds a single grapheme cluster; wide characters use a `WIDE_CHAR`
+> + `WIDE_CHAR_SPACER` flag pair so column arithmetic stays simple.
+> Variable-width *rendering* happens in `term_gpu` — `term_core` is
+> logically monospace-grid for VT correctness.
 
 ```rust
 // grid.rs
-//! Variable-width terminal grid — rows hold TextRun spans,
-//! not fixed cells
+//! Fixed-cell terminal grid.
 
-use crate::{TermColor, TextAttrs};
+use crate::{CellFlags, TermColor};
 
-/// Pixel position
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct PixelPos {
-    pub x: f32,
-    pub y: f32,
-}
-
-/// Text span with uniform attributes
-#[derive(Debug, Clone, PartialEq)]
-pub struct TextRun {
-    /// Text (UTF-8)
-    pub text: String,
-    /// Foreground color
-    pub fg: TermColor,
-    /// Background color
-    pub bg: TermColor,
-    /// Attributes
-    pub attrs: TextAttrs,
-}
-
-/// Terminal row
+/// One grid cell. ~24 bytes target; we use a Box for the rare
+/// per-cell metadata (combining marks, prompt markers) to keep the
+/// hot path compact. For Claude Code we don't expect huge cell
+/// volumes, so the packing isn't load-bearing — readability wins.
 #[derive(Debug, Clone)]
-pub struct Line {
-    /// Text spans
-    pub runs: Vec<TextRun>,
-    /// Row was modified since the last render
-    pub dirty: bool,
+pub struct Cell {
+    /// Primary character. For wide characters this is on the left half;
+    /// the right half is a spacer cell with `WIDE_CHAR_SPACER`.
+    pub c: char,
+    pub fg: TermColor,
+    pub bg: TermColor,
+    pub flags: CellFlags,
+    /// Combining marks and other per-cell extras. `None` in the common case.
+    pub extra: Option<Box<CellExtra>>,
 }
 
-impl Line {
-    pub fn new() -> Self {
-        Self { runs: Vec::new(), dirty: true }
-    }
-
-    pub fn clear(&mut self) {
-        self.runs.clear();
-        self.dirty = true;
-    }
-
-    /// Get the full row text
-    pub fn text(&self) -> String {
-        let mut s = String::new();
-        for run in &self.runs {
-            s.push_str(&run.text);
+impl Cell {
+    pub const fn space() -> Self {
+        Self {
+            c: ' ',
+            fg: TermColor::Default,
+            bg: TermColor::Default,
+            flags: CellFlags::empty(),
+            extra: None,
         }
-        s
     }
 
-    /// Row length in characters (for VT cursor positioning)
-    pub fn char_count(&self) -> usize {
-        self.runs.iter().map(|r| r.text.chars().count()).sum()
+    pub fn reset(&mut self) {
+        *self = Cell::space();
+    }
+
+    /// Push a zero-width / combining codepoint onto this cell. Bounded by
+    /// `MAX_ZEROWIDTH_BYTES` to avoid pathological input.
+    pub fn push_zerowidth(&mut self, c: char) {
+        let extra = self.extra.get_or_insert_with(Box::default);
+        extra.push_zerowidth(c);
+    }
+
+    /// URL hyperlink target from OSC 8, if any.
+    pub fn hyperlink(&self) -> Option<&str> {
+        self.extra.as_ref().and_then(|e| e.hyperlink.as_deref())
     }
 }
 
-impl Default for Line {
-    fn default() -> Self { Self::new() }
+/// Rare per-cell metadata, heap-allocated so the common cell stays small.
+#[derive(Debug, Default, Clone)]
+pub struct CellExtra {
+    /// Combining / zero-width codepoints stacked onto the base char.
+    /// Soft cap at 128 bytes, hard cap at 256 (warn at the soft cap).
+    pub zerowidth: Vec<char>,
+    /// OSC 8 hyperlink target, if set.
+    pub hyperlink: Option<String>,
+    /// OSC 133 prompt marker payload, if set.
+    pub prompt: Option<PromptMarker>,
 }
 
-/// Main structure — holds all rows + scrollback
+const MAX_ZEROWIDTH_BYTES: usize = 256;
+
+impl CellExtra {
+    pub fn push_zerowidth(&mut self, c: char) {
+        let used: usize = self.zerowidth.iter().map(|c| c.len_utf8()).sum();
+        if used + c.len_utf8() <= MAX_ZEROWIDTH_BYTES {
+            self.zerowidth.push(c);
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptMarker {
+    Start, // OSC 133 ; A
+    End,   // OSC 133 ; B
+    Cont,  // OSC 133 ; P
+}
+
+/// A row of fixed-width cells.
+#[derive(Debug, Clone)]
+pub struct Row {
+    pub cells: Vec<Cell>,
+}
+
+impl Row {
+    pub fn new(cols: usize) -> Self {
+        Self { cells: vec![Cell::space(); cols] }
+    }
+
+    pub fn resize(&mut self, cols: usize) {
+        self.cells.resize(cols, Cell::space());
+    }
+
+    /// Clear cells in `range`. Used by EL/ECH variants.
+    pub fn clear_range(&mut self, range: std::ops::Range<usize>) {
+        for cell in &mut self.cells[range] {
+            cell.reset();
+        }
+    }
+}
+
+/// Main grid — visible rows plus scrollback, fixed column count.
 pub struct Grid {
-    /// Rows: [scrollback..., visible...]
-    lines: Vec<Line>,
-    /// Number of visible rows (the rest are scrollback)
+    /// Rows: `[scrollback..., visible...]`. Visible region is the last
+    /// `visible_rows` entries.
+    rows: Vec<Row>,
     visible_rows: usize,
-    /// Maximum scrollback
+    cols: usize,
     max_scrollback: usize,
-    /// Viewport pixel size
-    pub width_px: u32,
-    pub height_px: u32,
 
     // Cursor state
-    /// Cursor row (0-based, relative to the visible area)
     pub cursor_row: usize,
-    /// Cursor column (0-based, in characters — for VT compatibility)
     pub cursor_col: usize,
     pub cursor_visible: bool,
     pub cursor_style: CursorStyle,
 
-    /// Saved cursor (DECSC/DECRC)
+    /// Saved cursor (DECSC / DECRC)
     saved_cursor: Option<(usize, usize)>,
 
     /// Scroll region (top, bottom) — 0-based, inclusive
     scroll_top: usize,
     scroll_bottom: usize,
 
-    /// Current drawing attributes
+    /// Current drawing attributes used to fill freshly printed cells.
     pub current_fg: TermColor,
     pub current_bg: TermColor,
-    pub current_attrs: TextAttrs,
+    pub current_flags: CellFlags,
 
-    /// Alternate screen buffer
-    alt_lines: Option<Vec<Line>>,
+    /// Alt screen state
+    alt_rows: Option<Vec<Row>>,
     alt_cursor: Option<(usize, usize)>,
 
     /// Modes
-    pub origin_mode: bool,
-    pub auto_wrap: bool,
+    pub origin_mode: bool,    // DEC private 6
+    pub auto_wrap: bool,      // DEC private 7
     pub bracketed_paste: bool,
+    pub focus_reporting: bool, // DEC private 1004
+    pub sync_output: bool,     // DEC private 2026 (flush boundary)
     pub mouse_mode: MouseMode,
     pub cursor_keys_app: bool,
 
-    /// Scrollback offset in pixels (0.0 = live tail).
-    ///
-    /// Replaces the old `scrollback_offset: usize`, which was line-based and
-    /// produced tmux-style "stepping" during scroll. A pixel-based offset
-    /// enables sub-pixel smoothness and integrates with the momentum loop.
-    ///
-    /// Full spec: docs/design/gpu-terminal-scroll.md
+    /// Scrollback offset in **pixels** (rendered by term_gpu). Logical
+    /// grid is fixed-cell; scroll is pixel-precise for smooth motion.
+    /// See docs/design/gpu-terminal-scroll.md.
     pub scroll_offset_y: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum CursorStyle { #[default] Block, Beam, Underline }
+pub enum CursorStyle {
+    #[default]
+    BlockSteady,
+    BlockBlink,
+    UnderlineSteady,
+    UnderlineBlink,
+    BeamSteady,
+    BeamBlink,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MouseMode { #[default] None, X10, ButtonEvent, AnyEvent, Sgr }
 
 impl Grid {
-    pub fn new(visible_rows: usize, max_scrollback: usize) -> Self {
-        let mut lines = Vec::with_capacity(visible_rows);
-        for _ in 0..visible_rows {
-            lines.push(Line::new());
-        }
+    pub fn new(cols: usize, rows: usize, max_scrollback: usize) -> Self {
+        let visible = (0..rows).map(|_| Row::new(cols)).collect();
         Self {
-            lines,
-            visible_rows,
+            rows: visible,
+            visible_rows: rows,
+            cols,
             max_scrollback,
-            width_px: 0,
-            height_px: 0,
             cursor_row: 0,
             cursor_col: 0,
             cursor_visible: true,
-            cursor_style: CursorStyle::Block,
+            cursor_style: CursorStyle::BlockSteady,
             saved_cursor: None,
             scroll_top: 0,
-            scroll_bottom: visible_rows.saturating_sub(1),
+            scroll_bottom: rows.saturating_sub(1),
             current_fg: TermColor::Default,
             current_bg: TermColor::Default,
-            current_attrs: TextAttrs::empty(),
-            alt_lines: None,
+            current_flags: CellFlags::empty(),
+            alt_rows: None,
             alt_cursor: None,
             origin_mode: false,
             auto_wrap: true,
             bracketed_paste: false,
+            focus_reporting: false,
+            sync_output: false,
             mouse_mode: MouseMode::None,
             cursor_keys_app: false,
             scroll_offset_y: 0.0,
         }
     }
 
-    /// Number of rows currently in scrollback. Used internally to cap against
-    /// `max_scrollback`; not used for scroll positioning (that is pixel-based,
-    /// see `scrollback_height_px`).
+    pub fn cols(&self) -> usize { self.cols }
+    pub fn visible_rows(&self) -> usize { self.visible_rows }
     pub fn scrollback_len(&self) -> usize {
-        self.lines.len().saturating_sub(self.visible_rows)
+        self.rows.len().saturating_sub(self.visible_rows)
     }
 
-    /// Total scrollable height in pixels (scrollback + visible rows).
-    /// Computed from per-row layout; implemented in term_gpu via `RowLayout`.
-    /// Returned as `f32` so it can clamp `scroll_offset_y` directly.
-    pub fn scrollback_height_px(&self) -> f32 {
-        // TODO: needs the row-layout cache from term_gpu. Placeholder uses
-        // a fixed line height for line-based callers; see
-        // docs/design/gpu-terminal-scroll.md.
-        self.lines.len() as f32 * 16.0
-    }
-
-    /// Index of the first visible row.
+    /// Visible-area starting index into `self.rows`.
     fn visible_start(&self) -> usize {
-        self.lines.len().saturating_sub(self.visible_rows)
+        self.rows.len().saturating_sub(self.visible_rows)
     }
 
-    /// Mutable access to the row at the given visible row index.
-    fn line_mut(&mut self, row: usize) -> &mut Line {
+    fn row_mut(&mut self, row: usize) -> &mut Row {
         let idx = self.visible_start() + row;
-        &mut self.lines[idx]
+        &mut self.rows[idx]
     }
 
-    /// Get a reference to the row at the visible row index
-    fn line(&self, row: usize) -> &Line {
+    pub fn row(&self, row: usize) -> &Row {
         let idx = self.visible_start() + row;
-        &self.lines[idx]
+        &self.rows[idx]
     }
 
-    /// Print a character at the current cursor position
+    /// Print a single grapheme base character at the cursor. Handles
+    /// autowrap (DEC 7) and advances the cursor by 1 (wide chars by 2,
+    /// not shown here for brevity).
     pub fn print(&mut self, c: char) {
-        if self.cursor_row >= self.visible_rows {
-            return;
+        if self.auto_wrap && self.cursor_col >= self.cols {
+            self.cursor_col = 0;
+            self.linefeed();
         }
-        let line = self.line_mut(self.cursor_row);
-
-        // Try to append to the last run if attributes match
-        if let Some(last) = line.runs.last_mut() {
-            if last.fg == self.current_fg
-                && last.bg == self.current_bg
-                && last.attrs == self.current_attrs
-            {
-                // Verify the cursor is at the end of the row
-                let total_chars = line.char_count();
-                if self.cursor_col >= total_chars.saturating_sub(last.text.chars().count())  {
-                    last.text.push(c);
-                    line.dirty = true;
-                    self.cursor_col += 1;
-                    return;
-                }
-            }
+        if self.cursor_col >= self.cols {
+            self.cursor_col = self.cols - 1;
         }
-
-        // Create a new run
-        line.runs.push(TextRun {
-            text: c.to_string(),
-            fg: self.current_fg,
-            bg: self.current_bg,
-            attrs: self.current_attrs,
-        });
-        line.dirty = true;
+        let (fg, bg, flags) = (self.current_fg, self.current_bg, self.current_flags);
+        let cell = &mut self.row_mut(self.cursor_row).cells[self.cursor_col];
+        *cell = Cell {
+            c,
+            fg,
+            bg,
+            flags,
+            extra: None,
+        };
         self.cursor_col += 1;
     }
 
-    /// New line (LF)
+    /// Append a combining mark to the last printed cell (does not move
+    /// the cursor).
+    pub fn push_zerowidth(&mut self, c: char) {
+        let col = self.cursor_col.saturating_sub(1).min(self.cols - 1);
+        let cell = &mut self.row_mut(self.cursor_row).cells[col];
+        cell.push_zerowidth(c);
+    }
+
+    /// **ECH** — erase N cells at the cursor without moving it.
+    pub fn erase_chars(&mut self, n: usize) {
+        let start = self.cursor_col;
+        let end = (start + n).min(self.cols);
+        self.row_mut(self.cursor_row).clear_range(start..end);
+    }
+
+    /// **ICH** — insert N blank cells at the cursor, shifting cells right.
+    pub fn insert_chars(&mut self, n: usize) {
+        let cols = self.cols;
+        let row = self.row_mut(self.cursor_row);
+        let insert_at = self.cursor_col.min(cols);
+        let count = n.min(cols - insert_at);
+        row.cells[insert_at..].rotate_right(count);
+        for cell in &mut row.cells[insert_at..insert_at + count] {
+            cell.reset();
+        }
+    }
+
+    /// **DCH** — delete N cells at the cursor, shifting cells left.
+    pub fn delete_chars(&mut self, n: usize) {
+        let cols = self.cols;
+        let row = self.row_mut(self.cursor_row);
+        let delete_at = self.cursor_col.min(cols);
+        let count = n.min(cols - delete_at);
+        row.cells[delete_at..].rotate_left(count);
+        for cell in &mut row.cells[cols - count..] {
+            cell.reset();
+        }
+    }
+
+    /// **REP** — repeat the last printed character N times.
+    pub fn repeat_last(&mut self, n: usize, last: char) {
+        for _ in 0..n {
+            self.print(last);
+        }
+    }
+
+    /// Line feed (LF). Wraps into scroll-up at the bottom of the scroll region.
     pub fn linefeed(&mut self) {
         if self.cursor_row == self.scroll_bottom {
             self.scroll_up(1);
-        } else if self.cursor_row < self.visible_rows - 1 {
+        } else if self.cursor_row + 1 < self.visible_rows {
             self.cursor_row += 1;
         }
     }
 
-    /// Carriage return
+    /// Carriage return (CR).
     pub fn carriage_return(&mut self) {
         self.cursor_col = 0;
     }
 
-    /// Scroll region up by N lines
+    /// Scroll region up by N rows (rows leave the top into scrollback if the
+    /// top equals the scroll region top).
     pub fn scroll_up(&mut self, n: usize) {
+        let cols = self.cols;
         for _ in 0..n {
-            let remove_idx = self.visible_start() + self.scroll_top;
             if self.scroll_top == 0 {
-                // Row moves into scrollback
                 if self.scrollback_len() >= self.max_scrollback {
-                    self.lines.remove(0); // Remove oldest scrollback
+                    self.rows.remove(0);
                 }
-                // Insert an empty row at scroll_bottom
-                let insert_idx = self.visible_start() + self.scroll_bottom;
-                self.lines.insert(insert_idx + 1, Line::new());
+                let insert_idx = self.visible_start() + self.scroll_bottom + 1;
+                self.rows.insert(insert_idx, Row::new(cols));
             } else {
-                self.lines.remove(remove_idx);
+                let remove_idx = self.visible_start() + self.scroll_top;
+                self.rows.remove(remove_idx);
                 let insert_idx = self.visible_start() + self.scroll_bottom;
-                self.lines.insert(insert_idx, Line::new());
+                self.rows.insert(insert_idx, Row::new(cols));
             }
-        }
-        // Mark all visible as dirty
-        for row in self.scroll_top..=self.scroll_bottom {
-            self.line_mut(row).dirty = true;
         }
     }
 
-    /// Scroll region down by N lines
+    /// Scroll region down by N rows (rows leave the bottom and are discarded).
     pub fn scroll_down(&mut self, n: usize) {
+        let cols = self.cols;
         for _ in 0..n {
             let remove_idx = self.visible_start() + self.scroll_bottom;
-            if remove_idx < self.lines.len() {
-                self.lines.remove(remove_idx);
+            if remove_idx < self.rows.len() {
+                self.rows.remove(remove_idx);
             }
             let insert_idx = self.visible_start() + self.scroll_top;
-            self.lines.insert(insert_idx, Line::new());
-        }
-        for row in self.scroll_top..=self.scroll_bottom {
-            self.line_mut(row).dirty = true;
+            self.rows.insert(insert_idx, Row::new(cols));
         }
     }
 
-    /// Erase display
+    /// ED — erase display in one of four modes.
     pub fn erase_display(&mut self, mode: super::parser::EraseMode) {
         use super::parser::EraseMode;
         match mode {
             EraseMode::ToEnd => {
-                // Erase from cursor to end
                 self.erase_line(EraseMode::ToEnd);
-                for row in (self.cursor_row + 1)..self.visible_rows {
-                    self.line_mut(row).clear();
+                for r in (self.cursor_row + 1)..self.visible_rows {
+                    for cell in &mut self.row_mut(r).cells {
+                        cell.reset();
+                    }
                 }
             }
             EraseMode::ToStart => {
-                for row in 0..self.cursor_row {
-                    self.line_mut(row).clear();
+                for r in 0..self.cursor_row {
+                    for cell in &mut self.row_mut(r).cells {
+                        cell.reset();
+                    }
                 }
                 self.erase_line(EraseMode::ToStart);
             }
             EraseMode::All => {
-                for row in 0..self.visible_rows {
-                    self.line_mut(row).clear();
+                for r in 0..self.visible_rows {
+                    for cell in &mut self.row_mut(r).cells {
+                        cell.reset();
+                    }
                 }
             }
             EraseMode::Scrollback => {
                 let start = self.visible_start();
-                self.lines.drain(0..start);
+                self.rows.drain(0..start);
             }
         }
     }
 
-    /// Erase line
+    /// EL — erase line in one of three modes.
     pub fn erase_line(&mut self, mode: super::parser::EraseMode) {
         use super::parser::EraseMode;
-        let line = self.line_mut(self.cursor_row);
+        let cols = self.cols;
+        let col = self.cursor_col;
+        let row = self.row_mut(self.cursor_row);
         match mode {
-            EraseMode::All => line.clear(),
-            EraseMode::ToEnd => {
-                // Truncate runs at cursor position
-                let mut char_pos = 0;
-                let cursor = self.cursor_col;
-                let mut truncate_idx = line.runs.len();
-                for (i, run) in line.runs.iter_mut().enumerate() {
-                    let run_chars = run.text.chars().count();
-                    if char_pos + run_chars > cursor {
-                        // Trim this run
-                        let trim_at = cursor - char_pos;
-                        let new_text: String = run.text.chars().take(trim_at).collect();
-                        run.text = new_text;
-                        truncate_idx = if run.text.is_empty() { i } else { i + 1 };
-                        break;
-                    }
-                    char_pos += run_chars;
-                }
-                line.runs.truncate(truncate_idx);
-                line.dirty = true;
-            }
-            EraseMode::ToStart => {
-                // Similar logic for erasing from start to cursor
-                line.clear(); // Simplified
-            }
-            EraseMode::Scrollback => {} // N/A for line
+            EraseMode::All => row.clear_range(0..cols),
+            EraseMode::ToEnd => row.clear_range(col..cols),
+            EraseMode::ToStart => row.clear_range(0..(col + 1).min(cols)),
+            EraseMode::Scrollback => {}
         }
     }
 
-    /// Enter alternate screen buffer
     pub fn enter_alt_screen(&mut self) {
-        let mut alt = Vec::with_capacity(self.visible_rows);
-        for _ in 0..self.visible_rows {
-            alt.push(Line::new());
-        }
-        self.alt_lines = Some(std::mem::replace(
-            &mut self.lines,
-            alt,
-        ));
+        let cols = self.cols;
+        let rows = self.visible_rows;
+        let alt: Vec<Row> = (0..rows).map(|_| Row::new(cols)).collect();
+        self.alt_rows = Some(std::mem::replace(&mut self.rows, alt));
         self.alt_cursor = Some((self.cursor_row, self.cursor_col));
         self.cursor_row = 0;
         self.cursor_col = 0;
     }
 
-    /// Exit alternate screen buffer
     pub fn exit_alt_screen(&mut self) {
-        if let Some(lines) = self.alt_lines.take() {
-            self.lines = lines;
+        if let Some(rows) = self.alt_rows.take() {
+            self.rows = rows;
         }
-        if let Some((row, col)) = self.alt_cursor.take() {
-            self.cursor_row = row;
-            self.cursor_col = col;
-        }
-        // Mark all dirty
-        for row in 0..self.visible_rows {
-            self.line_mut(row).dirty = true;
+        if let Some((r, c)) = self.alt_cursor.take() {
+            self.cursor_row = r;
+            self.cursor_col = c;
         }
     }
 
-    /// Return rows visible in the viewport.
-    ///
-    /// `viewport_px` is the current window height. The method translates the
-    /// pixel-based `scroll_offset_y` into a row range by accumulating row
-    /// heights. The implementation uses a binary search on a row-height index
-    /// (O(log n)); see `RowLayout` in term_gpu.
-    pub fn visible_lines(&self, viewport_px: f32) -> &[Line] {
-        // TODO: implement via RowLayout (see docs/design/gpu-terminal-scroll.md
-        // "Render integration → CPU-side: viewport selection"). The current
-        // placeholder returns the last visible_rows for line-based callers.
-        let _ = viewport_px;
-        let start = self.visible_start();
-        let end = (start + self.visible_rows).min(self.lines.len());
-        &self.lines[start..end]
-    }
-
-    /// Set visible rows (on resize)
-    pub fn set_visible_rows(&mut self, rows: usize) {
-        while self.lines.len() < self.visible_start() + rows {
-            self.lines.push(Line::new());
+    /// Resize the visible grid. Cells in newly-added columns/rows are blank.
+    pub fn resize(&mut self, cols: usize, rows: usize) {
+        for row in &mut self.rows {
+            row.resize(cols);
         }
+        while self.rows.len() < self.visible_start() + rows {
+            self.rows.push(Row::new(cols));
+        }
+        self.cols = cols;
         self.visible_rows = rows;
         self.scroll_bottom = rows.saturating_sub(1);
         if self.cursor_row >= rows {
             self.cursor_row = rows.saturating_sub(1);
         }
+        if self.cursor_col >= cols {
+            self.cursor_col = cols.saturating_sub(1);
+        }
     }
 
-    /// Full reset
     pub fn reset(&mut self) {
         self.cursor_row = 0;
         self.cursor_col = 0;
         self.cursor_visible = true;
         self.current_fg = TermColor::Default;
         self.current_bg = TermColor::Default;
-        self.current_attrs = TextAttrs::empty();
+        self.current_flags = CellFlags::empty();
         self.scroll_top = 0;
         self.scroll_bottom = self.visible_rows.saturating_sub(1);
         self.origin_mode = false;
         self.auto_wrap = true;
         self.bracketed_paste = false;
+        self.focus_reporting = false;
+        self.sync_output = false;
         self.mouse_mode = MouseMode::None;
         self.cursor_keys_app = false;
-        for row in 0..self.visible_rows {
-            self.line_mut(row).clear();
+        for r in 0..self.visible_rows {
+            for cell in &mut self.row_mut(r).cells {
+                cell.reset();
+            }
         }
     }
 }
 ```
 
+**Notable methods missing from this sketch** (implement in commit 5):
+`save_cursor`/`restore_cursor`, `set_scroll_region`, `next_tab` /
+`previous_tab` for CHT/CBT, `move_cursor_origin_aware` for CUP under
+DECOM, `insert_lines` / `delete_lines` (IL/DL — same logic as scroll
+but relative to cursor row, not scroll_top).
+
 ### 4.8 VT Emulator (emulator.rs)
 
 ```rust
 // emulator.rs
-use crate::grid::{CursorStyle, Grid, Line, MouseMode, PixelPos, TextRun};
+use crate::grid::{Cell, CursorStyle, Grid, MouseMode, Row};
 use crate::parser::{Action, EraseMode, Parser, SgrAction};
-use crate::{TermColor, TextAttrs};
+use crate::{TermColor, CellFlags};
 
 /// Cursor state for the renderer
 #[derive(Debug, Clone, Copy)]
@@ -1358,7 +1473,7 @@ pub struct CursorState {
 
 /// Render snapshot — all data the GPU needs
 pub struct RenderSnapshot {
-    pub lines: Vec<Line>,
+    pub rows: Vec<Row>,
     pub cursor: CursorState,
     pub title: String,
 }
@@ -2056,7 +2171,7 @@ Full scroll integrator (velocity tracking, momentum timer, `EventLoopProxy<Custo
 ### 5.5 Render pass order
 
 1. **Clear** — `wgpu::LoadOp::Clear` with the terminal background colour.
-2. **Background rects** — one `PrimInstance` per `TextRun` whose `bg != Default`.
+2. **Background rects** — one `PrimInstance` per run of contiguous cells sharing a `bg != Default` (computed in `term_gpu` from the cell grid).
 3. **Glyphs** — one `GlyphInstance` per shaped glyph (subpixel-aware, see §5.6).
 4. **Cursor** — one `PrimInstance` for the cursor (style controlled by `CursorStyle`).
 5. **Selection overlay** — one `PrimInstance` with a semi-transparent colour.
