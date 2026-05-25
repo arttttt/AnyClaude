@@ -103,11 +103,19 @@ impl GlyphInstance {
     }
 }
 
+/// Per-frame uniforms shared by both pipelines. All instance positions and
+/// sizes are in **logical pixels**; the shader multiplies by `scale_factor`
+/// to get physical pixels before the NDC transform. This keeps `RectInstance`
+/// and `GlyphInstance` DPI-independent.
+///
+/// Padded to 32 bytes for std140-style 16-byte alignment.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Uniforms {
     pub screen_size: [f32; 2],
     pub scroll_offset: [f32; 2],
+    pub scale_factor: f32,
+    pub _pad: [f32; 3],
 }
 
 impl Uniforms {

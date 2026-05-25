@@ -25,11 +25,13 @@ pub struct GpuRenderer {
     atlas: GlyphAtlas,
     atlas_bind_group: wgpu::BindGroup,
     size: winit::dpi::PhysicalSize<u32>,
+    scale_factor: f32,
 }
 
 impl GpuRenderer {
     pub fn new(window: Arc<Window>) -> Self {
         let size = window.inner_size();
+        let scale_factor = window.scale_factor() as f32;
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
         let surface = instance
             .create_surface(window.clone())
@@ -130,6 +132,7 @@ impl GpuRenderer {
             atlas,
             atlas_bind_group,
             size,
+            scale_factor,
         }
     }
 
@@ -152,6 +155,14 @@ impl GpuRenderer {
 
     pub fn size(&self) -> winit::dpi::PhysicalSize<u32> {
         self.size
+    }
+
+    pub fn scale_factor(&self) -> f32 {
+        self.scale_factor
+    }
+
+    pub fn set_scale_factor(&mut self, scale_factor: f32) {
+        self.scale_factor = scale_factor;
     }
 
     pub fn render(
@@ -181,6 +192,8 @@ impl GpuRenderer {
         let uniforms = Uniforms {
             screen_size: [self.size.width as f32, self.size.height as f32],
             scroll_offset: [0.0, scroll_offset_y],
+            scale_factor: self.scale_factor,
+            _pad: [0.0; 3],
         };
         self.queue
             .write_buffer(&self.uniform_buffer, 0, uniforms.as_bytes());

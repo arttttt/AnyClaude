@@ -81,11 +81,15 @@ look great with cosmic-text shaping and our subpixel-aware glyph atlas. \
 
 struct TextDraw<'a> {
     text: &'a str,
+    /// Logical font size; multiplied by `scale_factor` for cosmic-text.
     font_size: f32,
     color: [f32; 4],
+    /// Origin in logical pixels.
     origin_x: f32,
     origin_y: f32,
+    /// Wrap width in logical pixels.
     wrap_width: Option<f32>,
+    scale_factor: f32,
 }
 
 fn build_glyph_instances(
@@ -93,6 +97,7 @@ fn build_glyph_instances(
     swash_cache: &mut SwashCache,
     atlas: &mut GlyphAtlas,
     out: &mut Vec<GlyphInstance>,
+    scale_factor: f32,
 ) {
     // 1. Banner at the very top of scroll space.
     shape_text_into(
@@ -107,6 +112,7 @@ fn build_glyph_instances(
             origin_x: STRIPE_X_MARGIN + 8.0,
             origin_y: 4.0,
             wrap_width: None,
+            scale_factor,
         },
     );
 
@@ -123,6 +129,7 @@ fn build_glyph_instances(
             origin_x: STRIPE_X_MARGIN + 8.0,
             origin_y: 36.0,
             wrap_width: Some(700.0),
+            scale_factor,
         },
     );
 
@@ -146,15 +153,20 @@ fn build_glyph_instances(
                 origin_x: STRIPE_X_MARGIN + 12.0,
                 origin_y: y,
                 wrap_width: None,
+                scale_factor,
             },
         );
     }
 }
 
-/// Shape `draw.text` at `draw.origin_{x,y}` (top-left in scroll coordinates),
-/// look each glyph up in the atlas, and push a `GlyphInstance` per glyph
-/// into `out`. `draw.wrap_width` enables word wrapping at the given pixel
-/// width.
+/// Shape `draw.text` at `draw.origin_{x,y}` (top-left in **logical**
+/// scroll coordinates), look each glyph up in the atlas, and push a
+/// `GlyphInstance` per glyph into `out`.
+///
+/// DPI: we shape with `font_size * scale_factor` so cosmic-text rasterizes
+/// at the display's physical pixel density, then divide the returned
+/// positions back to logical so they match `GlyphInstance.pos` (which the
+/// shader multiplies by `scale_factor` before NDC).
 fn shape_text_into(
     font_system: &mut FontSystem,
     swash_cache: &mut SwashCache,
@@ -162,31 +174,40 @@ fn shape_text_into(
     out: &mut Vec<GlyphInstance>,
     draw: TextDraw<'_>,
 ) {
-    let line_height = draw.font_size * 1.3;
-    let metrics = Metrics::new(draw.font_size, line_height);
+    let sf = draw.scale_factor;
+    let physical_font_size = draw.font_size * sf;
+    let line_height = physical_font_size * 1.3;
+    let metrics = Metrics::new(physical_font_size, line_height);
     let mut buffer = Buffer::new_empty(metrics);
-    buffer.set_size(font_system, draw.wrap_width, None);
+    let wrap_physical = draw.wrap_width.map(|w| w * sf);
+    buffer.set_size(font_system, wrap_physical, None);
     let attrs = Attrs::new().family(Family::SansSerif);
     buffer.set_text(font_system, draw.text, &attrs, Shaping::Advanced);
+
+    let origin_physical_x = draw.origin_x * sf;
+    let origin_physical_y = draw.origin_y * sf;
 
     for run in buffer.layout_runs() {
         for glyph in run.glyphs.iter() {
             // physical() bins the fractional position into subpixel cache
             // key variants for us. See spec §5.6.
-            let physical = glyph.physical((draw.origin_x, draw.origin_y + run.line_y), 1.0);
+            let physical = glyph.physical(
+                (origin_physical_x, origin_physical_y + run.line_y),
+                1.0,
+            );
             let placed = atlas.get_or_insert(physical.cache_key, || {
                 rasterize_glyph(font_system, swash_cache, physical.cache_key)
             });
             let Some(placed) = placed else {
                 continue;
             };
-            // cosmic-text yields baseline-relative positions; PlacedGlyph
-            // bearings convert to top-left quad coordinates.
-            let pos_x = physical.x as f32 + placed.offset_x;
-            let pos_y = physical.y as f32 - placed.offset_y;
+            // Convert physical positions and size back to logical for the
+            // GlyphInstance (the shader re-applies scale_factor).
+            let pos_x = (physical.x as f32 + placed.offset_x) / sf;
+            let pos_y = (physical.y as f32 - placed.offset_y) / sf;
             out.push(GlyphInstance {
                 pos: [pos_x, pos_y],
-                size: [placed.width, placed.height],
+                size: [placed.width / sf, placed.height / sf],
                 uv_min: placed.uv_min,
                 uv_max: placed.uv_max,
                 color: draw.color,
@@ -265,6 +286,8 @@ struct App {
     momentum_abort: Option<AbortHandle>,
     font_system: FontSystem,
     swash_cache: SwashCache,
+    /// Mirrors `window.scale_factor()`. Updated on ScaleFactorChanged.
+    scale_factor: f32,
 }
 
 impl App {
@@ -282,6 +305,7 @@ impl App {
             momentum_abort: None,
             font_system: FontSystem::new(),
             swash_cache: SwashCache::new(),
+            scale_factor: 1.0,
         }
     }
 
@@ -384,6 +408,7 @@ impl App {
             scroll,
             font_system,
             swash_cache,
+            scale_factor,
             ..
         } = self;
         let Some(renderer) = renderer.as_mut() else {
@@ -394,7 +419,13 @@ impl App {
         };
 
         let mut glyphs = Vec::new();
-        build_glyph_instances(font_system, swash_cache, renderer.atlas_mut(), &mut glyphs);
+        build_glyph_instances(
+            font_system,
+            swash_cache,
+            renderer.atlas_mut(),
+            &mut glyphs,
+            *scale_factor,
+        );
 
         window.pre_present_notify();
         renderer.render(rects, &glyphs, scroll.offset_y);
@@ -435,13 +466,15 @@ impl ApplicationHandler<CustomEvent> for App {
         );
 
         let renderer = GpuRenderer::new(window.clone());
-        let width = renderer.size().width as f32;
-        let height = renderer.size().height as f32;
-        self.rebuild_geometry(width);
+        self.scale_factor = renderer.scale_factor();
+        // Width passed to ruler/stripes is in logical pixels.
+        let logical_width = renderer.size().width as f32 / self.scale_factor;
+        let logical_height = renderer.size().height as f32 / self.scale_factor;
+        self.rebuild_geometry(logical_width);
         self.scroll = ScrollState {
             offset_y: 0.0,
             total_size_px: stripes_total_height(),
-            visible_px: height,
+            visible_px: logical_height,
         };
         self.window = Some(window);
         self.renderer = Some(renderer);
@@ -457,8 +490,24 @@ impl ApplicationHandler<CustomEvent> for App {
             WindowEvent::Resized(new_size) => {
                 if let Some(r) = self.renderer.as_mut() {
                     r.resize(new_size);
-                    self.rebuild_geometry(new_size.width as f32);
-                    self.scroll.visible_px = new_size.height as f32;
+                    let logical_w = new_size.width as f32 / self.scale_factor;
+                    let logical_h = new_size.height as f32 / self.scale_factor;
+                    self.rebuild_geometry(logical_w);
+                    self.scroll.visible_px = logical_h;
+                    self.scroll.scroll_by(0.0);
+                }
+                if let Some(w) = self.window.as_ref() {
+                    w.request_redraw();
+                }
+            }
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                self.scale_factor = scale_factor as f32;
+                if let Some(r) = self.renderer.as_mut() {
+                    r.set_scale_factor(self.scale_factor);
+                    let logical_w = r.size().width as f32 / self.scale_factor;
+                    let logical_h = r.size().height as f32 / self.scale_factor;
+                    self.rebuild_geometry(logical_w);
+                    self.scroll.visible_px = logical_h;
                     self.scroll.scroll_by(0.0);
                 }
                 if let Some(w) = self.window.as_ref() {
