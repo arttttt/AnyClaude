@@ -110,7 +110,10 @@ term_core = { path = "../term_core" }
 wgpu = "24"
 winit = "0.30"
 cosmic-text = "0.14"
-pollster = "0.4"       # block_on для async wgpu init
+pollster = "0.4"        # block_on for async wgpu init
+futures = "0.3"         # abortable handle for the momentum timer
+futures-timer = "3"     # Delay for momentum ticks (see §5.7)
+glam = "0.30"           # Vec2 for scroll velocity
 ```
 
 #### crates/term_layout/Cargo.toml
@@ -1022,8 +1025,14 @@ pub struct Grid {
     pub mouse_mode: MouseMode,
     pub cursor_keys_app: bool,
 
-    /// Scrollback offset для просмотра (0 = live)
-    pub scrollback_offset: usize,
+    /// Scrollback offset in pixels (0.0 = live tail).
+    ///
+    /// Replaces the old `scrollback_offset: usize`, which was line-based and
+    /// produced tmux-style "stepping" during scroll. A pixel-based offset
+    /// enables sub-pixel smoothness and integrates with the momentum loop.
+    ///
+    /// Full spec: docs/design/gpu-terminal-scroll.md
+    pub scroll_offset_y: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1061,21 +1070,33 @@ impl Grid {
             bracketed_paste: false,
             mouse_mode: MouseMode::None,
             cursor_keys_app: false,
-            scrollback_offset: 0,
+            scroll_offset_y: 0.0,
         }
     }
 
-    /// Количество строк в scrollback
+    /// Number of rows currently in scrollback. Used internally to cap against
+    /// `max_scrollback`; not used for scroll positioning (that is pixel-based,
+    /// see `scrollback_height_px`).
     pub fn scrollback_len(&self) -> usize {
         self.lines.len().saturating_sub(self.visible_rows)
     }
 
-    /// Индекс первой видимой строки
+    /// Total scrollable height in pixels (scrollback + visible rows).
+    /// Computed from per-row layout; implemented in term_gpu via `RowLayout`.
+    /// Returned as `f32` so it can clamp `scroll_offset_y` directly.
+    pub fn scrollback_height_px(&self) -> f32 {
+        // TODO: needs the row-layout cache from term_gpu. Placeholder uses
+        // a fixed line height for line-based callers; see
+        // docs/design/gpu-terminal-scroll.md.
+        self.lines.len() as f32 * 16.0
+    }
+
+    /// Index of the first visible row.
     fn visible_start(&self) -> usize {
         self.lines.len().saturating_sub(self.visible_rows)
     }
 
-    /// Получить мутабельную ссылку на строку по visible row index
+    /// Mutable access to the row at the given visible row index.
     fn line_mut(&mut self, row: usize) -> &mut Line {
         let idx = self.visible_start() + row;
         &mut self.lines[idx]
@@ -1268,9 +1289,18 @@ impl Grid {
         }
     }
 
-    /// Получить видимые строки для рендера
-    pub fn visible_lines(&self) -> &[Line] {
-        let start = self.visible_start().saturating_sub(self.scrollback_offset);
+    /// Return rows visible in the viewport.
+    ///
+    /// `viewport_px` is the current window height. The method translates the
+    /// pixel-based `scroll_offset_y` into a row range by accumulating row
+    /// heights. The implementation uses a binary search on a row-height index
+    /// (O(log n)); see `RowLayout` in term_gpu.
+    pub fn visible_lines(&self, viewport_px: f32) -> &[Line] {
+        // TODO: implement via RowLayout (see docs/design/gpu-terminal-scroll.md
+        // "Render integration → CPU-side: viewport selection"). The current
+        // placeholder returns the last visible_rows for line-based callers.
+        let _ = viewport_px;
+        let start = self.visible_start();
         let end = (start + self.visible_rows).min(self.lines.len());
         &self.lines[start..end]
     }
@@ -1343,9 +1373,11 @@ pub trait TerminalEmulator: Send {
     fn set_pixel_size(&mut self, width: u32, height: u32);
     /// Snapshot для GPU рендера
     fn snapshot(&self) -> RenderSnapshot;
-    /// Scrollback offset
-    fn scrollback(&self) -> usize;
-    fn set_scrollback(&mut self, offset: usize);
+    /// Scrollback offset in pixels (0.0 = live tail). See docs/design/gpu-terminal-scroll.md.
+    fn scrollback_px(&self) -> f32;
+    fn set_scrollback_px(&mut self, offset_px: f32);
+    /// Total scrollable height in pixels (visible viewport + scrollback).
+    fn total_scroll_height_px(&self) -> f32;
     /// Mouse mode
     fn mouse_mode(&self) -> MouseMode;
     /// Bracketed paste
@@ -1556,9 +1588,10 @@ impl TerminalEmulator for VtEmulator {
         }
     }
 
-    fn scrollback(&self) -> usize { self.grid.scrollback_offset }
-    fn set_scrollback(&mut self, offset: usize) {
-        self.grid.scrollback_offset = offset.min(self.grid.scrollback_len());
+    fn scrollback_px(&self) -> f32 { self.grid.scroll_offset_y }
+    fn set_scrollback_px(&mut self, offset: f32) {
+        let max = self.grid.scrollback_height_px();
+        self.grid.scroll_offset_y = offset.clamp(0.0, max);
     }
 
     fn mouse_mode(&self) -> MouseMode { self.grid.mouse_mode }
@@ -1597,7 +1630,8 @@ crates/term_gpu/src/
 ```wgsl
 struct Uniforms {
     screen_size: vec2<f32>,
-    _pad: vec2<f32>,
+    scroll_offset: vec2<f32>,   // {0.0, scroll_offset_y}; see §5.7
+    _pad: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -1605,7 +1639,7 @@ struct Uniforms {
 @group(1) @binding(1) var atlas_samp: sampler;
 
 struct GlyphInput {
-    @location(0) pos: vec2<f32>,       // pixel position
+    @location(0) pos: vec2<f32>,       // pixel position (pre-scroll)
     @location(1) size: vec2<f32>,      // glyph size in pixels
     @location(2) uv_min: vec2<f32>,    // atlas UV min
     @location(3) uv_max: vec2<f32>,    // atlas UV max
@@ -1627,7 +1661,10 @@ const QUAD: array<vec2<f32>, 6> = array(
 @vertex
 fn vs_main(@builtin(vertex_index) vi: u32, g: GlyphInput) -> VsOut {
     let q = QUAD[vi];
-    let px = g.pos + q * g.size;
+    // Snap Y to integer pixels for subpixel rasterization (X subpixel handled
+    // by 3 cached variants — see §5.6). Subtract scroll offset before NDC.
+    var px = g.pos + q * g.size - uniforms.scroll_offset;
+    px.y = floor(px.y);
     let ndc = (px / uniforms.screen_size) * 2.0 - 1.0;
 
     var out: VsOut;
@@ -1637,9 +1674,24 @@ fn vs_main(@builtin(vertex_index) vi: u32, g: GlyphInput) -> VsOut {
     return out;
 }
 
+/// Brightness-scaled contrast enhancement, adapted from Windows Terminal's
+/// DirectWrite shader (and used by Warp). Lifts the perceived weight of thin
+/// glyphs on dark backgrounds without changing the rasterizer.
+fn enhance_contrast(alpha: f32, k: f32) -> f32 {
+    // k ≈ 0.5 .. 1.0 (lower = stronger). 0.7 is a good default.
+    return alpha + alpha * (1.0 - alpha) * k;
+}
+
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    let alpha = textureSample(atlas_tex, atlas_samp, in.uv).r;
+    // Atlas is RGBA8Unorm (see §5.4). For mono glyphs we use the .a channel;
+    // for colour glyphs (emoji) we use rgb directly.
+    let sample = textureSample(atlas_tex, atlas_samp, in.uv);
+    let is_color = sample.r + sample.g + sample.b > 0.0;
+    if is_color {
+        return sample;  // emoji: pre-multiplied colour
+    }
+    let alpha = enhance_contrast(sample.a, 0.7);
     return vec4(in.color.rgb, in.color.a * alpha);
 }
 ```
@@ -1648,7 +1700,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 ```wgsl
 struct Uniforms {
     screen_size: vec2<f32>,
-    _pad: vec2<f32>,
+    scroll_offset: vec2<f32>,   // {0.0, scroll_offset_y}; see §5.7
+    _pad: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -1672,7 +1725,7 @@ const QUAD: array<vec2<f32>, 6> = array(
 @vertex
 fn vs_main(@builtin(vertex_index) vi: u32, r: RectInput) -> VsOut {
     let q = QUAD[vi];
-    let px = r.pos + q * r.size;
+    let px = r.pos + q * r.size - uniforms.scroll_offset;
     let ndc = (px / uniforms.screen_size) * 2.0 - 1.0;
 
     var out: VsOut;
@@ -1738,53 +1791,63 @@ impl PrimInstance {
 
 ### 5.4 Glyph Atlas (atlas.rs)
 
+> Adapted from `warpdotdev/warp` ([crates/warpui/src/rendering/atlas/allocator.rs](https://github.com/warpdotdev/warp/blob/main/crates/warpui/src/rendering/atlas/allocator.rs), MIT). Two notable departures from the original draft of this spec:
+>
+> 1. **Atlas format is `RGBA8Unorm`, not `R8Unorm`.** A single atlas serves both monochrome glyphs (data lives in the alpha channel) and colour glyphs (emoji). Without this, emoji silently break.
+> 2. **Eviction is a per-glyph frame counter, not a doubly-linked LRU.** Warp uses `MAX_UNUSED_FRAMES = 10`; a glyph not sampled for 10 consecutive frames is dropped on `end_frame()`. This is far simpler than an intrusive linked list and is sufficient for terminal workloads.
+
 ```rust
-// atlas.rs — собственный bin-packer + LRU cache
+// atlas.rs — shelf bin-packer + frame-counter eviction.
 
 use cosmic_text::CacheKey;
 use std::collections::HashMap;
 
-const ATLAS_SIZE: u32 = 2048;
-const GLYPH_PAD: u32 = 1;
+const ATLAS_SIZE: u32 = 1024;       // matches Warp's allocator
+const GLYPH_PAD: u32 = 1;           // 1 px H + V padding per glyph
+const MAX_UNUSED_FRAMES: u32 = 10;  // Warp's empirical cutoff
 
-/// Shelf-based bin packer
+/// Shelf-based bin packer (Shelf-Next-Fit).
 pub struct ShelfPacker {
     width: u32,
     height: u32,
-    shelf_y: u32,
-    shelf_height: u32,
-    cursor_x: u32,
+    /// Y of the current shelf's top edge.
+    row_baseline: u32,
+    /// Tallest item on the current shelf.
+    row_tallest: u32,
+    /// Right edge of items already placed on the current shelf.
+    row_extent: u32,
 }
 
 impl ShelfPacker {
     pub fn new(width: u32, height: u32) -> Self {
-        Self { width, height, shelf_y: 0, shelf_height: 0, cursor_x: 0 }
+        Self { width, height, row_baseline: 0, row_tallest: 0, row_extent: 0 }
     }
 
     pub fn pack(&mut self, w: u32, h: u32) -> Option<(u32, u32)> {
         let w = w + GLYPH_PAD * 2;
         let h = h + GLYPH_PAD * 2;
         if w > self.width { return None; }
-        if self.cursor_x + w > self.width {
-            self.shelf_y += self.shelf_height;
-            self.cursor_x = 0;
-            self.shelf_height = 0;
+        if self.row_extent + w > self.width {
+            // Advance to the next shelf.
+            self.row_baseline += self.row_tallest + GLYPH_PAD;
+            self.row_extent = 0;
+            self.row_tallest = 0;
         }
-        if self.shelf_y + h > self.height { return None; }
-        let pos = (self.cursor_x + GLYPH_PAD, self.shelf_y + GLYPH_PAD);
-        self.cursor_x += w;
-        self.shelf_height = self.shelf_height.max(h);
+        if self.row_baseline + h > self.height { return None; }
+        let pos = (self.row_extent + GLYPH_PAD, self.row_baseline + GLYPH_PAD);
+        self.row_extent += w;
+        self.row_tallest = self.row_tallest.max(h);
         Some(pos)
     }
 
     pub fn reset(&mut self) {
-        self.shelf_y = 0;
-        self.shelf_height = 0;
-        self.cursor_x = 0;
+        self.row_baseline = 0;
+        self.row_tallest = 0;
+        self.row_extent = 0;
     }
 }
 
-/// Cached glyph info
+/// Cached glyph info.
 #[derive(Debug, Clone, Copy)]
 pub struct CachedGlyph {
     pub uv_min: [f32; 2],
@@ -1793,98 +1856,27 @@ pub struct CachedGlyph {
     pub offset_y: f32,
     pub width: f32,
     pub height: f32,
+    /// Frame index when this glyph was last sampled. Updated by `get`.
+    pub last_used_frame: u32,
 }
 
-/// LRU node
-struct LruNode {
-    key: CacheKey,
-    glyph: CachedGlyph,
-    prev: usize,
-    next: usize,
+/// Glyph cache key. Includes subpixel alignment (3 X-variants, see §5.6) so
+/// each subpixel offset gets its own atlas entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct GlyphCacheKey {
+    pub base: CacheKey,
+    pub subpixel_x: u8,   // 0..3, see §5.6
 }
 
-const NIL: usize = usize::MAX;
-
-/// LRU cache — intrusive doubly-linked list + HashMap
-pub struct GlyphLru {
-    nodes: Vec<LruNode>,
-    map: HashMap<CacheKey, usize>,
-    head: usize,   // MRU
-    tail: usize,   // LRU
-    len: usize,
-    cap: usize,
-}
-
-impl GlyphLru {
-    pub fn new(capacity: usize) -> Self {
-        Self {
-            nodes: Vec::with_capacity(capacity),
-            map: HashMap::with_capacity(capacity),
-            head: NIL,
-            tail: NIL,
-            len: 0,
-            cap: capacity,
-        }
-    }
-
-    pub fn get(&mut self, key: &CacheKey) -> Option<CachedGlyph> {
-        let &idx = self.map.get(key)?;
-        self.touch(idx);
-        Some(self.nodes[idx].glyph)
-    }
-
-    pub fn insert(&mut self, key: CacheKey, glyph: CachedGlyph) {
-        if let Some(&idx) = self.map.get(&key) {
-            self.nodes[idx].glyph = glyph;
-            self.touch(idx);
-            return;
-        }
-        if self.len >= self.cap {
-            self.evict_lru();
-        }
-        let idx = self.nodes.len();
-        self.nodes.push(LruNode { key, glyph, prev: NIL, next: self.head });
-        if self.head != NIL { self.nodes[self.head].prev = idx; }
-        self.head = idx;
-        if self.tail == NIL { self.tail = idx; }
-        self.map.insert(key, idx);
-        self.len += 1;
-    }
-
-    fn touch(&mut self, idx: usize) {
-        if self.head == idx { return; }
-        self.detach(idx);
-        self.nodes[idx].prev = NIL;
-        self.nodes[idx].next = self.head;
-        if self.head != NIL { self.nodes[self.head].prev = idx; }
-        self.head = idx;
-    }
-
-    fn detach(&mut self, idx: usize) {
-        let prev = self.nodes[idx].prev;
-        let next = self.nodes[idx].next;
-        if prev != NIL { self.nodes[prev].next = next; } else { self.head = next; }
-        if next != NIL { self.nodes[next].prev = prev; } else { self.tail = prev; }
-    }
-
-    fn evict_lru(&mut self) {
-        if self.tail == NIL { return; }
-        let idx = self.tail;
-        self.detach(idx);
-        self.map.remove(&self.nodes[idx].key);
-        self.len -= 1;
-        // Note: node stays in Vec (tombstone), could compact periodically
-    }
-}
-
-/// Main atlas struct
+/// Main atlas struct.
 pub struct GlyphAtlas {
     packer: ShelfPacker,
-    lru: GlyphLru,
-    cpu_data: Vec<u8>,       // R8 pixel data
+    entries: HashMap<GlyphCacheKey, CachedGlyph>,
+    cpu_data: Vec<u8>,       // RGBA8 (4 bytes per pixel)
     texture: wgpu::Texture,
     texture_view: wgpu::TextureView,
     dirty: bool,
+    frame: u32,
 }
 
 impl GlyphAtlas {
@@ -1895,7 +1887,8 @@ impl GlyphAtlas {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::R8Unorm,
+            // RGBA8Unorm: alpha channel for mono glyphs, RGB for emoji. See note above.
+            format: wgpu::TextureFormat::Rgba8Unorm,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
@@ -1903,31 +1896,45 @@ impl GlyphAtlas {
 
         Self {
             packer: ShelfPacker::new(ATLAS_SIZE, ATLAS_SIZE),
-            lru: GlyphLru::new(4096),
-            cpu_data: vec![0u8; (ATLAS_SIZE * ATLAS_SIZE) as usize],
+            entries: HashMap::with_capacity(4096),
+            cpu_data: vec![0u8; (ATLAS_SIZE * ATLAS_SIZE * 4) as usize],
             texture,
             texture_view,
             dirty: false,
+            frame: 0,
         }
     }
 
     pub fn get_or_insert(
         &mut self,
-        key: CacheKey,
+        key: GlyphCacheKey,
         rasterize: impl FnOnce() -> Option<RasterizedGlyph>,
     ) -> Option<CachedGlyph> {
-        if let Some(cached) = self.lru.get(&key) {
-            return Some(cached);
+        if let Some(g) = self.entries.get_mut(&key) {
+            g.last_used_frame = self.frame;
+            return Some(*g);
         }
         let raster = rasterize()?;
         let (x, y) = self.packer.pack(raster.width, raster.height)?;
 
-        // Copy glyph bitmap into CPU buffer
+        // Copy glyph bitmap into the RGBA8 CPU buffer.
         for row in 0..raster.height {
-            let src_off = (row * raster.width) as usize;
-            let dst_off = ((y + row) * ATLAS_SIZE + x) as usize;
-            self.cpu_data[dst_off..dst_off + raster.width as usize]
-                .copy_from_slice(&raster.data[src_off..src_off + raster.width as usize]);
+            for col in 0..raster.width {
+                let src = (row * raster.width + col) as usize * raster.bytes_per_pixel();
+                let dst = (((y + row) * ATLAS_SIZE + (x + col)) * 4) as usize;
+                match raster.format {
+                    GlyphFormat::Alpha => {
+                        // Mono: write alpha; RGB defaults to 0 — the shader knows to use .a.
+                        self.cpu_data[dst]     = 0;
+                        self.cpu_data[dst + 1] = 0;
+                        self.cpu_data[dst + 2] = 0;
+                        self.cpu_data[dst + 3] = raster.data[src];
+                    }
+                    GlyphFormat::Rgba => {
+                        self.cpu_data[dst..dst + 4].copy_from_slice(&raster.data[src..src + 4]);
+                    }
+                }
+            }
         }
         self.dirty = true;
 
@@ -1938,9 +1945,20 @@ impl GlyphAtlas {
             offset_y: raster.top as f32,
             width: raster.width as f32,
             height: raster.height as f32,
+            last_used_frame: self.frame,
         };
-        self.lru.insert(key, cached);
+        self.entries.insert(key, cached);
         Some(cached)
+    }
+
+    /// Call at the end of each rendered frame. Increments the frame counter
+    /// and evicts entries that have not been sampled for `MAX_UNUSED_FRAMES`.
+    /// Evictions free entries but do not compact the atlas — `reset()` does
+    /// that when fragmentation crosses a threshold.
+    pub fn end_frame(&mut self) {
+        self.frame = self.frame.wrapping_add(1);
+        let cutoff = self.frame.wrapping_sub(MAX_UNUSED_FRAMES);
+        self.entries.retain(|_, g| g.last_used_frame.wrapping_sub(cutoff) <= MAX_UNUSED_FRAMES);
     }
 
     pub fn upload(&mut self, queue: &wgpu::Queue) {
@@ -1950,7 +1968,7 @@ impl GlyphAtlas {
             &self.cpu_data,
             wgpu::ImageDataLayout {
                 offset: 0,
-                bytes_per_row: Some(ATLAS_SIZE),
+                bytes_per_row: Some(ATLAS_SIZE * 4),
                 rows_per_image: Some(ATLAS_SIZE),
             },
             wgpu::Extent3d { width: ATLAS_SIZE, height: ATLAS_SIZE, depth_or_array_layers: 1 },
@@ -1961,24 +1979,90 @@ impl GlyphAtlas {
     pub fn view(&self) -> &wgpu::TextureView { &self.texture_view }
 }
 
-/// Rasterized glyph data (from cosmic-text/swash)
+/// Rasterized glyph data (from cosmic-text / swash / fontdb).
 pub struct RasterizedGlyph {
-    pub data: Vec<u8>,   // Alpha values
+    pub data: Vec<u8>,   // Alpha or RGBA depending on `format`
     pub width: u32,
     pub height: u32,
     pub left: i32,       // Bearing X
     pub top: i32,        // Bearing Y
+    pub format: GlyphFormat,
+}
+
+impl RasterizedGlyph {
+    fn bytes_per_pixel(&self) -> usize {
+        match self.format {
+            GlyphFormat::Alpha => 1,
+            GlyphFormat::Rgba => 4,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GlyphFormat {
+    /// Single-channel coverage (most fonts).
+    Alpha,
+    /// Pre-multiplied colour (emoji, CBDT/COLR fonts).
+    Rgba,
 }
 ```
 
-### 5.5 Render pass порядок
+### 5.6 Subpixel positioning
 
-1. **Clear** — wgpu::LoadOp::Clear (фоновый цвет терминала)
-2. **Background rects** — PrimInstance для каждого TextRun с bg != Default
-3. **Glyphs** — GlyphInstance для каждого глифа из shaped text
-4. **Cursor** — PrimInstance для курсора
-5. **Selection overlay** — PrimInstance с полупрозрачным цветом
-6. **Present** — output.present()
+> Adapted from Warp's `SubpixelAlignment` ([crates/warpui_core/src/fonts.rs#L135-L159](https://github.com/warpdotdev/warp/blob/main/crates/warpui_core/src/fonts.rs#L135-L159), MIT).
+
+Each glyph is rasterized at **3 horizontal sub-pixel offsets** and snapped to the integer pixel grid vertically. Memory cost is ×3 per glyph, but artifacts from continuous sub-pixel sampling disappear. Y snapping is done in the vertex shader (`px.y = floor(px.y)`, see §5.2 `text.wgsl`).
+
+```rust
+// text.rs (excerpt) — choose subpixel variant at shape time.
+
+pub const SUBPIXEL_STEPS: u8 = 3;
+
+pub fn subpixel_alignment(pos_x: f32) -> u8 {
+    let scaled = pos_x.fract() * SUBPIXEL_STEPS as f32;
+    (scaled.round() as i32 % SUBPIXEL_STEPS as i32).rem_euclid(SUBPIXEL_STEPS as i32) as u8
+}
+
+// At shape time:
+let key = GlyphCacheKey {
+    base: cache_key,
+    subpixel_x: subpixel_alignment(glyph_position.x),
+};
+let glyph = atlas.get_or_insert(key, || rasterize_at(glyph_id, font, size, key.subpixel_x))?;
+```
+
+### 5.7 Scroll uniform & viewport culling
+
+Both `text.wgsl` and `prim.wgsl` read `uniforms.scroll_offset` (a `vec2<f32>` with `{0.0, scroll_offset_y}`) and subtract it before the NDC transform. This is **the entire scroll mechanism on the GPU** — no buffer rebuild, no atlas change, just one uniform write per frame.
+
+CPU-side, the renderer culls rows that fall outside the viewport:
+
+```rust
+// renderer.rs (excerpt)
+
+fn build_glyph_instances(&self, lines: &[Line], scroll: &ScrollState) -> Vec<GlyphInstance> {
+    let top = scroll.offset_y;
+    let bottom = scroll.offset_y + scroll.visible_px;
+    let first = self.row_layout.partition_point(|r| r.y_bottom < top);
+    let last = self.row_layout.partition_point(|r| r.y_top < bottom);
+    (first..last)
+        .flat_map(|i| self.glyphs_for_row(&lines[i], &self.row_layout[i]))
+        .collect()
+}
+```
+
+Full scroll integrator (velocity tracking, momentum timer, `EventLoopProxy<CustomEvent::MomentumTick>`) is specified in [docs/design/gpu-terminal-scroll.md](design/gpu-terminal-scroll.md). The 7 momentum constants are copied verbatim from Warp.
+
+### 5.5 Render pass order
+
+1. **Clear** — `wgpu::LoadOp::Clear` with the terminal background colour.
+2. **Background rects** — one `PrimInstance` per `TextRun` whose `bg != Default`.
+3. **Glyphs** — one `GlyphInstance` per shaped glyph (subpixel-aware, see §5.6).
+4. **Cursor** — one `PrimInstance` for the cursor (style controlled by `CursorStyle`).
+5. **Selection overlay** — one `PrimInstance` with a semi-transparent colour.
+6. **Present** — `output.present()`.
+
+End of frame: call `atlas.end_frame()` so unused glyphs age toward eviction (§5.4).
 
 ---
 
@@ -2058,28 +2142,33 @@ impl PanelTree {
 
 ## 8. Roadmap
 
-### Фаза 1: term_core (2 недели)
-**Файлы:** `crates/term_core/src/{lib,parser,color,attrs,grid,emulator}.rs`
-**Deliverable:** VT парсер проходит тесты с выводом Claude Code
-**Тесты:** Захватить реальный вывод Claude Code, воспроизвести через парсер
+### Phase 1 — term_core (2 weeks)
+**Files:** `crates/term_core/src/{lib,parser,color,attrs,grid,emulator}.rs`
+**Deliverable:** VT parser handles real Claude Code output.
+**Tests:** Capture live Claude Code output and replay it through the parser.
 
-### Фаза 2: term_gpu — base (2 недели)
-**Файлы:** `crates/term_gpu/src/{lib,renderer,surface,pipeline,instances,shaders/}.rs`
-**Deliverable:** Окно с цветным текстом через wgpu
+### Phase 2 — term_gpu base (2 weeks)
+**Files:** `crates/term_gpu/src/{lib,renderer,surface,pipeline,instances,shaders/}.rs`
+**Deliverable:** A wgpu window rendering coloured text.
 
-### Фаза 3: term_gpu — text (2 недели)
-**Файлы:** `crates/term_gpu/src/{atlas,text,color}.rs`
-**Deliverable:** Variable-width текст с cosmic-text, glyph atlas, LRU cache
+### Phase 3 — term_gpu text (2 weeks)
+**Files:** `crates/term_gpu/src/{atlas,text,color}.rs`
+**Deliverable:** Variable-width text via cosmic-text, RGBA8 glyph atlas with subpixel positioning (§5.6) and frame-counter eviction (§5.4).
 
-### Фаза 4: term_layout (1 неделя)
-**Файлы:** `crates/term_layout/src/lib.rs`
-**Deliverable:** BSP панели, split/close/resize
+### Phase 3.5 — Smooth scroll integration (1 week)
+**Files:** `crates/term_gpu/src/scroll.rs`, plus uniform additions to `text.wgsl` and `prim.wgsl`.
+**Deliverable:** Pixel-based scroll with momentum that feels like Warp. See [docs/design/gpu-terminal-scroll.md](design/gpu-terminal-scroll.md) for the full spec (constants, gesture-end detection, `EventLoopProxy<CustomEvent::MomentumTick>`).
+**Acceptance:** Trackpad swipe-then-release decays smoothly over ~1.5 s on macOS, Linux, and Windows.
 
-### Фаза 5: Integration (2 недели)
-**Файлы:** `src/ui/runtime.rs`, `src/pty/emulator/mod.rs`, `src/pty/session.rs`, `src/pty/handle.rs`
-**Deliverable:** AnyClaude работает с GPU терминалом, Claude Code отображается корректно
+### Phase 4 — term_layout (1 week)
+**Files:** `crates/term_layout/src/lib.rs`
+**Deliverable:** BSP panels with split/close/resize.
 
-### Фаза 6: Polish (1 неделя)
-**Deliverable:** Selection, clipboard, scrollback, font fallback, performance tuning
+### Phase 5 — Integration (2 weeks)
+**Files:** `src/ui/runtime.rs`, `src/pty/emulator/mod.rs`, `src/pty/session.rs`, `src/pty/handle.rs`
+**Deliverable:** AnyClaude runs on the GPU terminal; Claude Code renders correctly.
 
-**Итого: ~10 недель**
+### Phase 6 — Polish (1 week)
+**Deliverable:** Selection, clipboard, scrollback navigation, font fallback, performance tuning, drop-shadow shader for overlays (§3.4).
+
+**Total: ~11 weeks** (was 10; +1 for Phase 3.5).
