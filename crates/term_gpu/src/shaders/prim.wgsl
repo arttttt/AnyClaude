@@ -1,8 +1,13 @@
+// Three scalar pads instead of vec3<f32> — vec3 in WGSL has align 16, which
+// would push the struct size to 48 bytes and mismatch our 32-byte Rust
+// Uniforms struct. Scalar f32 has align 4, so total stays 32.
 struct Uniforms {
     screen_size: vec2<f32>,    // physical
     scroll_offset: vec2<f32>,  // logical
     scale_factor: f32,
-    _pad: vec3<f32>,
+    _pad_a: f32,
+    _pad_b: f32,
+    _pad_c: f32,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;

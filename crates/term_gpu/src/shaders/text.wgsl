@@ -1,8 +1,12 @@
+// Three scalar pads instead of vec3<f32> — see prim.wgsl for the alignment
+// rationale.
 struct Uniforms {
     screen_size: vec2<f32>,    // physical
     scroll_offset: vec2<f32>,  // logical
     scale_factor: f32,
-    _pad: vec3<f32>,
+    _pad_a: f32,
+    _pad_b: f32,
+    _pad_c: f32,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
