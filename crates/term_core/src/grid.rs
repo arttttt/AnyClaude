@@ -665,7 +665,15 @@ impl Grid {
         for row in &mut self.rows {
             row.resize(cols);
         }
-        while self.rows.len() < self.visible_start() + rows {
+        // Snapshot the current scrollback length BEFORE pushing — the
+        // target row count is `scrollback + rows`, but `scrollback_len()`
+        // and `visible_start()` both derive from `rows.len() -
+        // self.visible_rows` and the old `visible_rows` is still in
+        // place. Without the snapshot, each push grows `visible_start()`
+        // in lock-step with `rows.len()` and the loop never terminates.
+        let scrollback = self.scrollback_len();
+        let target = scrollback + rows;
+        while self.rows.len() < target {
             self.rows.push(Row::new(cols));
         }
         self.cols = cols;

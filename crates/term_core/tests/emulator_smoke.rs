@@ -195,3 +195,28 @@ fn palette_resolves_indexed_colours() {
     // Red base from default_dark is non-zero.
     assert!(rgba[0] > 0.0, "red channel of palette[1] should be non-zero");
 }
+
+#[test]
+fn resize_grows_grid_to_taller_visible_region() {
+    // Regression: a previous Grid::resize built the target row count
+    // from `visible_start() + rows`, which itself depended on the
+    // still-old `visible_rows`. Each push grew `visible_start()` by 1
+    // in lock-step, so the loop never terminated when `rows >
+    // visible_rows`.
+    let mut em = VtEmulator::new(80, 24, 0);
+    em.process(b"hello");
+    em.resize(120, 40);
+    let snap = em.snapshot();
+    assert_eq!(snap.rows.len(), 40, "visible row count should be 40");
+    assert_eq!(snap.rows[0].cells.len(), 120, "row width should be 120");
+    assert_eq!(snap.rows[0].cells[0].c, 'h', "original content preserved");
+}
+
+#[test]
+fn resize_shrinks_visible_region_into_scrollback() {
+    let mut em = VtEmulator::new(80, 24, 100);
+    em.process(b"top\n");
+    em.resize(80, 10);
+    let snap = em.snapshot();
+    assert_eq!(snap.rows.len(), 10);
+}
