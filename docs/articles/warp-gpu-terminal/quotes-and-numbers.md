@@ -765,6 +765,67 @@ clipboard, font fallback, performance pass.
 | `term_gpu` | 0 (visual demos only) | 4 examples, full SGR, scrollback, selection |
 | `term_layout` | 28 | BSP shape + drag |
 
+## Clipboard (Phase 6 partial, May 2026)
+
+Seven commits, ~700 LoC + tests, new sibling crate. Full
+parity with Warp's `warpui_core::clipboard` (data model +
+heuristics) and `warpui::platform::mac::clipboard` (NSPasteboard
+FFI). Image paste lands as temp-file paths so Claude Code's
+image input works.
+
+| Commit | What |
+|---|---|
+| `abf16f9` | `term_clipboard` crate skeleton + 11 in-memory tests |
+| `f11561d` | MacClipboard plain text + 1 ignored mac smoke |
+| `6e36d85` | MacClipboard HTML + images + file paths |
+| `a68e174` | term_grid Cmd+C → selection_to_text → clipboard |
+| `e4563fe` | term_grid Cmd+V plain text + ALL shortcuts via physical_key |
+| `048c55d` | term_clipboard image utilities + MIME priority list at full warp parity |
+| `cacf9f3` | term_grid Cmd+V full paste flow: text + paths + image-data-to-temp |
+
+**Image MIME priority** (matches Warp's `CLIPBOARD_IMAGE_MIME_TYPES`):
+
+| Order | MIME |
+|---|---|
+| 1 | image/png |
+| 2 | image/jpeg |
+| 3 | image/jpg |
+| 4 | image/gif |
+| 5 | image/webp |
+
+**Image extension filter** (matches Warp's `IMAGE_EXTENSIONS`):
+
+```
+.png .jpg .jpeg .gif .webp
+```
+
+**Temp-file path**: `$TMPDIR/term_grid_clipboard_<nanos>.<ext>`
+where `<ext>` is derived from the picked MIME and `<nanos>` is
+`SystemTime::UNIX_EPOCH`-relative nanoseconds.
+
+**Selection color** (Warp's `text_selection_color`):
+`rgba(118, 167, 250, 0.4)`.
+
+**Shell escaping**: single-quote with internal `'` → `'\''`,
+POSIX-compatible across bash/zsh/sh/dash.
+
+## Branch state at end of clipboard
+
+78 commits on `feat/gpu-terminal`, 4 crates.
+
+| Crate | Tests | Notable |
+|---|---|---|
+| `term_core` | 56 | reflow, snapshot exposes full buffer |
+| `term_gpu` | 0 (visual demos only) | 4 examples, full SGR, scrollback, selection, clipboard |
+| `term_layout` | 28 | BSP shape + drag |
+| `term_clipboard` | 15 + 1 ignored mac | trait + InMemoryClipboard + MacClipboard, full warp parity |
+
+`term_grid` is now feature-complete enough to use as a real
+terminal: type / scroll / momentum / drag-select / double-click
+word / triple-click line / Cmd+C / Cmd+V (plain text + image
+filepaths + image-data-to-temp). Phase 6 remaining: font
+fallback, performance pass (codepoint → glyph_id direct lookup).
+
 ## License attribution snippet
 
 For files containing code ported from Warp:

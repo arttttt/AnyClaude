@@ -488,6 +488,43 @@ Word / line selection (commit 72) is a straight port of Warp's
 plus whitespace. Double-click walks left and right from the
 clicked cell while the boundary-class matches.
 
+## Act 18 — Clipboard (its own crate, image paste, layout-agnostic shortcuts)
+
+After selection landed, the obvious gap was Cmd+C / Cmd+V. Took
+a detour into Warp's clipboard module structure first — Warp
+exposes a `Clipboard` trait and a rich `ClipboardContent` that
+carries plain text, file paths, HTML, and images. We mirrored
+the whole shape rather than the MVP "plain text only" version.
+"Functional identity with Warp" is the bar the user set.
+
+Three architectural calls:
+
+1. **New crate, not a module under term_gpu.** Clipboard is
+   platform integration, not rendering — and the precedent in
+   Warp is `warpui_core::clipboard`, not buried inside
+   `warpui`. Adding `term_clipboard` as a fourth sibling crate
+   keeps responsibilities clean.
+
+2. **Custom NSPasteboard FFI, no `arboard`.** Project pattern
+   is "write our own", and `objc2-app-kit` is already in the
+   tree via winit. Adding it explicitly costs a Cargo.toml line.
+   The whole macOS backend is ~170 LoC including HTML, images,
+   and file-path reading via NSURL.
+
+3. **Image paste = save-to-temp + paste-path.** A terminal
+   can't accept raw image bytes. The terminal side that makes
+   Claude Code image input work: copy a screenshot, Cmd+V in
+   CC's chat input, CC reads the temp file. The order of
+   payload assembly (text → image filepaths → image data
+   path) mirrors Warp's `process_paste_event` step-for-step.
+
+A late-stage UX bug: Cmd+C on a Russian keyboard layout broke
+because the `Key::Character` match expected "c", not "с". Fix
+is universally applicable: match on `event.physical_key`
+(KeyCode::KeyC) instead of `event.logical_key`. macOS apps have
+always done this; we didn't realize until the user pointed it
+out. Extended to every Cmd shortcut, not just C/V.
+
 ## Outro — Takeaways
 
 1. **Read the source.** Warp's MIT crates contain answers to questions
@@ -649,6 +686,31 @@ clicked cell while the boundary-class matches.
     `if dragging_selection != Some(id)` skip the clear. Same
     pattern applies to any "auto-something" rule that runs while
     a user gesture is live.
+34. **Custom FFI > cross-platform crate when project pattern says so.**
+    `arboard` would have been a 3-line clipboard. We went with
+    `objc2-app-kit` (already in our tree via winit) and ~170 LoC
+    of NSPasteboard FFI. The pattern across the project — own VT
+    parser, own grid, own BSP layout, no ratatui / alacritty —
+    isn't dogma, it's consistency. New platform code should
+    match.
+35. **Image paste = save-to-temp + paste-path.** Terminal stdin
+    is a byte stream. The bridge between clipboard image data
+    and any image-aware CLI (Claude Code chat, vim+image
+    plugins, etc.) is "write to /tmp, paste the path,
+    shell-quoted". iTerm, Warp, and us all converge on this. No
+    inline image protocol needed.
+36. **Match Cmd shortcuts on physical_key, not logical_key.**
+    `Key::Character("с")` (Russian) ≠ `"c"`. Hardware key
+    position is what users physically remember and what macOS
+    apps universally bind to. The fix is one line per shortcut —
+    `PhysicalKey::Code(KeyCode::KeyC)`. Easy to miss until a
+    user reports it.
+37. **Single-threaded by construction beats serial_test.**
+    NSPasteboard from multiple non-main threads SIGSEGVs.
+    Instead of pulling a `serial_test`-style crate, fold all
+    scenarios into one `#[test]` function. Trades a single
+    "many asserts" function for zero extra deps; fine when the
+    surface is small.
 
 ## Possible follow-up articles
 

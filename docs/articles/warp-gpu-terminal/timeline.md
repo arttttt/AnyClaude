@@ -536,3 +536,64 @@ color. Double-click selects words via Warp's
 Without clipboard yet the selection can't be copied out — that's
 the next deliverable. Phase 6 remaining: clipboard, font fallback,
 performance pass.
+
+## 22. Clipboard — new crate + Cmd+C/V with full Warp parity (7 commits)
+
+Phase 6 continued. New sibling crate `term_clipboard` joins
+term_core / term_gpu / term_layout. Full functional parity with
+Warp's clipboard module: plain text, HTML, file paths, and
+images. Image paste lands as temp-file paths so Claude Code's
+image input works through Cmd+V.
+
+| # | Commit | Files | Why |
+|---|---|---|---|
+| 73 | `abf16f9` | `term_clipboard/{Cargo.toml,src/lib.rs,tests/in_memory.rs}` | Cross-platform crate skeleton: `Clipboard` trait + `ClipboardContent` + `ImageData` + `InMemoryClipboard` + `should_insert_text_on_paste` heuristic. 11 tests. |
+| 74 | `f11561d` | `term_clipboard/src/mac.rs`, `tests/mac_smoke.rs` | `MacClipboard` via `objc2-app-kit::NSPasteboard`, plain text only. One `#[ignore]`-gated round-trip smoke. |
+| 75 | `6e36d85` | `term_clipboard/src/mac.rs`, `tests/mac_smoke.rs` | Extend `MacClipboard` to HTML / images / file paths. Image MIME ↔ NSPasteboard UTI mapping. `readObjectsForClasses_options(NSURL)` for paths. |
+| 76 | `a68e174` | `term_gpu/Cargo.toml`, `examples/term_grid.rs` | `App.clipboard: Box<dyn Clipboard>` (MacClipboard on macOS, InMemoryClipboard fallback). `selection_to_text` warp-style (trim trailing blanks, WRAPLINE → no newline). Cmd+C wired. |
+| 77 | `e4563fe` | `term_gpu/examples/term_grid.rs` | Cmd+V handler reading plain text + bracketed-paste wrapping. ALL Cmd shortcuts switched to `event.physical_key` so they survive non-English keyboard layouts. |
+| 78 | `048c55d` | `term_clipboard/src/lib.rs`, `mac.rs`, `tests/in_memory.rs` | Bring `term_clipboard` to full Warp utility parity: `IMAGE_EXTENSIONS` (5 entries to match), `CLIPBOARD_IMAGE_MIME_TYPES` priority list, `has_image_extension` made `pub`, `get_image_filepaths_from_paths`. JPEG MIME accepts both `image/jpeg` and `image/jpg`. |
+| 79 | `cacf9f3` | `term_gpu/examples/term_grid.rs` | Cmd+V now follows Warp's `process_paste_event` fully: plain text + image filepaths from `content.paths` + best image data saved to `$TMPDIR/term_grid_clipboard_<nanos>.<ext>` and path appended. Shell-quoted paths so spaces survive. |
+
+Four lessons stuck:
+
+1. **Custom over crate, even when arboard would be 3 lines.**
+   The project pattern is "write our own" — hand-rolled VT
+   parser, custom cell grid, BSP layout from scratch, no
+   ratatui / alacritty_terminal / crossterm. Adding `arboard`
+   would have broken that consistency. `objc2-app-kit` was
+   already in the tree (winit pulls it in); making it explicit
+   cost a Cargo.toml line.
+
+2. **macOS NSPasteboard is single-threaded for testing.**
+   Parallel access from multiple non-main test threads
+   SIGSEGVs reliably. We don't have a `serial_test`-style
+   crate, so the workaround is "one `#[test]` function holds
+   all the round-trip scenarios". Tests stay `#[ignore]`-gated
+   so a stock `cargo test` doesn't trash the user's
+   clipboard.
+
+3. **Image paste = save-to-temp + paste-path.** A terminal
+   can't accept raw image bytes — shell stdin is a byte
+   stream. iTerm, Warp, and us all bridge clipboard images by
+   writing the data to a temp file and pasting the path. The
+   side-effect cleanup is left for later (temp files leak
+   today).
+
+4. **Layout-agnostic shortcuts via physical key.** Cmd+C on
+   a Russian / French / Greek keyboard layout gives
+   `Key::Character("с"|"ç"|"ψ")` — the `logical_key` match
+   misses. Switching to `event.physical_key` and matching
+   `KeyCode::KeyC` etc. anchors the shortcut to the hardware
+   key, which is how macOS apps universally do it. Applied to
+   every Cmd combo, not just C/V — the user pointed out
+   "fix all the hotkeys".
+
+## 23. Branch state at end of clipboard
+
+78 commits on `feat/gpu-terminal`, 4 crates. `term_grid` now
+covers the full keyboard / mouse / clipboard surface a real
+terminal needs: type, scroll with momentum, select with
+drag/double/triple-click, copy and paste plain text, paste
+images via the temp-file bridge. Phase 6 remaining: font
+fallback config, performance pass (direct codepoint→glyph_id).

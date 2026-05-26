@@ -2502,6 +2502,51 @@ selects a word, triple-click selects a row, `Esc` clears.
 
 Copy / paste are clipboard work (next deliverable).
 
+### Clipboard ✅ done (May 2026)
+**Files:** `crates/term_clipboard/src/lib.rs`,
+`crates/term_clipboard/src/mac.rs`,
+`crates/term_clipboard/tests/in_memory.rs`,
+`crates/term_clipboard/tests/mac_smoke.rs`,
+`crates/term_gpu/examples/term_grid.rs`.
+**Delivered:** New sibling crate `term_clipboard` with full
+Warp parity for plain text, HTML, file paths, and images
+(PNG / JPEG / GIF / WebP / SVG). Wire-up in `term_grid` covers
+Cmd+C / Cmd+V end-to-end including image-data paste.
+
+1. `Clipboard` trait + `ClipboardContent {
+   plain_text, paths, html, images }` + `ImageData {
+   data, mime_type, filename }`. Matches Warp's
+   `warpui_core::clipboard` data model.
+2. `InMemoryClipboard` for tests / non-mac fallback.
+3. `MacClipboard` via `objc2-app-kit::NSPasteboard`:
+   plain-text + HTML via `setString_forType` /
+   `stringForType`; images by MIME ↔ pasteboard UTI mapping
+   (mirrors Warp's `pasteboard_type_for_image_mime_type`);
+   file paths via `readObjectsForClasses_options(NSURL)`.
+4. `should_insert_text_on_paste`, `has_image_extension`,
+   `get_image_filepaths_from_paths`, `CLIPBOARD_IMAGE_MIME_TYPES`
+   helpers ported verbatim from Warp's `clipboard_utils`.
+5. `term_grid` Cmd+C reads `selection_to_text` (warp's
+   `bounds_to_string` rules: trim trailing blanks per row,
+   `WRAPLINE` soft-wrap = no newline, hard break = newline),
+   writes `ClipboardContent::plain_text`.
+6. `term_grid` Cmd+V follows Warp's `process_paste_event`
+   (`app/src/terminal/input.rs:10573`):
+   plain text gated by `should_insert_text_on_paste` →
+   image filepaths from `content.paths` → best image data
+   saved to `$TMPDIR/term_grid_clipboard_<nanos>.<ext>` and
+   path appended. All parts joined with spaces, shell-quoted
+   with single quotes for POSIX safety. Wrapped in
+   `\x1b[200~`…`\x1b[201~` when the emulator has bracketed
+   paste enabled.
+7. Cmd shortcuts match on `event.physical_key` (`KeyCode::KeyC` etc.)
+   instead of `event.logical_key`, so Cmd+C / Cmd+V / Cmd+D /
+   Cmd+W / Cmd+Q work on any keyboard layout.
+
+The image-data → temp-file → path flow is what makes Claude
+Code's image input work: copy a screenshot, Cmd+V in CC's chat,
+CC reads the temp file.
+
 ### Phase 6 — Polish (1 week, partial) ⏳ in progress
 **Delivered:**
 - Reflow on column shrink/grow — see "Reflow on column resize" entry.
@@ -2509,9 +2554,9 @@ Copy / paste are clipboard work (next deliverable).
 - Scrollback navigation in `term_grid` — see "Scrollback in
   term_grid" entry.
 - Text selection in `term_grid` — see "Selection in term_grid" entry.
+- Clipboard — see "Clipboard" entry.
 
 **Remaining (no fixed order):**
-- Clipboard (copy selected text on Cmd+C; paste on Cmd+V).
 - Direct codepoint→glyph_id lookup (avoid per-cell shape allocation).
 - Font fallback configuration.
 - Drop-shadow shader for overlays (§3.4).

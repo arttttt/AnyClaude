@@ -4115,6 +4115,7 @@ dependencies = [
  "glam",
  "pollster",
  "portable-pty",
+ "term_clipboard",
  "term_core",
  "term_layout",
  "wgpu",

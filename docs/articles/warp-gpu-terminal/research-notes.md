@@ -1065,3 +1065,173 @@ the selection, color `[118/255, 167/255, 250/255, 0.4]` (Warp's
 The rect pass runs before glyphs (renderer architecture: all
 rects, then all glyphs), so glyphs render on top of the
 highlight and stay readable through the 0.4 alpha.
+
+## 19. Clipboard — separate crate, NSPasteboard FFI, image paste
+
+Seven commits, new sibling crate `term_clipboard` joining
+term_core / term_gpu / term_layout. Full Warp parity for the
+data model (plain_text + paths + html + images), macOS backend
+(`NSPasteboard` via `objc2-app-kit`), and the paste decision
+flow.
+
+### Crate placement
+
+```text
+crates/
+  term_core/       VT parser + grid
+  term_gpu/        renderer + atlas + scroll
+  term_layout/     BSP panels
+  term_clipboard/  ← new
+```
+
+Warp puts clipboard in `warpui_core::clipboard`. We mirror that
+intent — clipboard is platform integration, not rendering.
+Surfacing it as its own crate keeps each crate's responsibility
+clean and makes it reusable from a future anyclaude integration
+without dragging in `term_gpu`.
+
+### Data model = Warp's
+
+```rust
+pub trait Clipboard: Send + 'static {
+    fn write(&mut self, contents: ClipboardContent);
+    fn read(&mut self) -> ClipboardContent;
+    fn write_to_primary_clipboard(&mut self, contents: ClipboardContent) { /* default → write */ }
+    fn read_from_primary_clipboard(&mut self) -> ClipboardContent { /* default → read */ }
+}
+
+pub struct ClipboardContent {
+    pub plain_text: String,
+    pub paths: Option<Vec<String>>,
+    pub html: Option<String>,
+    pub images: Option<Vec<ImageData>>,
+}
+
+pub struct ImageData {
+    pub data: Vec<u8>,
+    pub mime_type: String,
+    pub filename: Option<String>,
+}
+```
+
+Identical to `crates/warpui_core/src/clipboard.rs`. Helpers
+`is_empty`, `has_image_data`, `num_paths`,
+`has_non_image_filepaths`, plus the
+`should_insert_text_on_paste` heuristic, are all ports.
+
+### NSPasteboard via objc2-app-kit, not arboard
+
+Project pattern across the board: hand-rolled VT parser, custom
+grid, BSP layout from scratch. Adding `arboard` (the popular
+cross-platform clipboard crate) would have broken consistency
+just for ~3 LoC of integration. `objc2-app-kit` is already in
+our dependency tree (winit pulls it in for window management);
+making it explicit costs a Cargo.toml line.
+
+The macOS backend is ~170 LoC. Plain text write uses
+`writeObjects` with `NSString::copy()` wrapped in
+`ProtocolObject<dyn NSPasteboardWriting>`. HTML and images use
+the lower-level `addTypes_owner` + `setString_forType` /
+`setData_forType` so they layer onto the same pasteboard item
+as the plain text. Image MIME ↔ NSPasteboard UTI mapping
+matches Warp:
+
+```rust
+"image/png" => Some("public.png"),
+"image/jpeg" | "image/jpg" => Some("public.jpeg"),
+"image/gif" => Some("public.gif"),
+"image/webp" => Some("public.webp"),
+"image/svg+xml" => Some("public.svg-image"),
+```
+
+File-path reading goes through `readObjectsForClasses:options:`
+with the `NSURL` class — the pattern in
+`objc2-app-kit-0.2.2/examples/nspasteboard.rs::get_text_2`:
+cast the class pointer through `AnyObject` to satisfy
+`NSArray`'s element type, retain, then read each result's
+`path` via `NSURL::path`.
+
+### Tests + the SIGSEGV trap
+
+InMemoryClipboard and the helpers have 15 ordinary integration
+tests. The macOS round-trip is a single `#[ignore]`-gated test
+function holding every scenario (plain text, empty no-op,
+unicode, HTML coexistence, image data with caption).
+
+The reason it's one function: parallel access to NSPasteboard
+from multiple non-main test threads SIGSEGVs reliably. cargo's
+test runner spawns one thread per `#[test]`, so two functions
+would race. We don't have a `serial_test`-style crate, so
+folding all scenarios into one function trades a longer
+`#[test]` body for zero extra deps. `#[ignore]` keeps stock
+`cargo test` from trashing the user's pasteboard.
+
+### Paste decision flow follows Warp's process_paste_event
+
+`paste_into_focused` in `term_grid.rs` mirrors Warp's
+`process_paste_event` (`app/src/terminal/input.rs:10573`):
+
+```rust
+fn paste_into_focused(&mut self) {
+    let content = self.clipboard.read();
+    let mut parts: Vec<String> = Vec::new();
+
+    if should_insert_text_on_paste(&content) && !content.plain_text.is_empty() {
+        parts.push(content.plain_text.clone());
+    }
+    if let Some(paths) = content.paths.as_deref() {
+        for path in get_image_filepaths_from_paths(paths) {
+            parts.push(shell_quote_path(&path));
+        }
+    }
+    if let Some(images) = content.images.as_deref() {
+        if let Some(best) = pick_best_image(images) {
+            if let Some(path) = save_image_to_temp(best) {
+                parts.push(shell_quote_path(&path));
+            }
+        }
+    }
+    /* join with space, encode_paste, write to PTY */
+}
+```
+
+Order matters: text first, then image filepaths, then saved-image
+paths. This is Warp's order. Reversing it would change how
+mixed payloads land in the PTY.
+
+`pick_best_image` walks `CLIPBOARD_IMAGE_MIME_TYPES` (png →
+jpeg → jpg → gif → webp) and returns the first match. Same
+priority Warp uses.
+
+`save_image_to_temp` writes to
+`$TMPDIR/term_grid_clipboard_<nanos>.<ext>`. This is what makes
+Claude Code's image input work: a screenshot copied via
+Cmd+Shift+Ctrl+4 lands as PNG data on the pasteboard; Cmd+V
+writes the PNG to /tmp and pastes the path into the CC chat
+input. CC reads the file. Temp files leak — cleanup is a
+follow-up polish item.
+
+### Layout-agnostic shortcuts
+
+Late discovery: Cmd+C on a Russian keyboard layout produced
+`Key::Character("с")` (Cyrillic), and our match against `"c"`
+missed silently. Fix is universal: match on
+`event.physical_key`:
+
+```rust
+if let PhysicalKey::Code(code) = event.physical_key {
+    match code {
+        KeyCode::KeyC => self.copy_focused_selection(),
+        KeyCode::KeyV => self.paste_into_focused(),
+        KeyCode::KeyD => /* split */,
+        KeyCode::KeyW => /* close */,
+        KeyCode::KeyQ => /* exit */,
+        _ => {}
+    }
+}
+```
+
+macOS apps universally use hardware-position shortcuts. We
+didn't realize until the user reported "copy doesn't work on
+Russian layout"; extended to every Cmd combo at the user's
+explicit request.
