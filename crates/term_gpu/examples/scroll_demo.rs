@@ -15,7 +15,7 @@ use futures_timer::Delay;
 use glam::Vec2;
 use term_gpu::{
     decay_velocity, rasterize_glyph, FontFamily, GlyphAtlas, GlyphInstance, GpuRenderer,
-    RectInstance, ScrollState, ScrollVelocity, TextShapeCache, GESTURE_END_TIMEOUT,
+    RectInstance, ScrollState, ScrollVelocity, Style, TextShapeCache, Weight, GESTURE_END_TIMEOUT,
     MOMENTUM_FRAME_INTERVAL, MOMENTUM_MIN_VELOCITY, MOMENTUM_THRESHOLD, NUM_PIXELS_PER_LINE,
 };
 use winit::application::ApplicationHandler;
@@ -221,6 +221,8 @@ fn shape_text_into(
         draw.font_size,
         sf,
         draw.wrap_width,
+        Weight::NORMAL,
+        Style::Normal,
     );
 
     let origin_physical_x = draw.origin_x * sf;

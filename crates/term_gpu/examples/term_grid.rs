@@ -42,8 +42,8 @@ use term_core::{
     TerminalEmulator,
 };
 use term_gpu::{
-    rasterize_glyph, FontFamily, GlyphAtlas, GlyphInstance, GpuRenderer, RectInstance,
-    TextShapeCache,
+    rasterize_glyph, FontFamily, GlyphAtlas, GlyphInstance, GpuRenderer, RectInstance, Style,
+    TextShapeCache, Weight,
 };
 use term_layout::{BranchId, Divider, PanelId, PanelTree, Rect, Split};
 use winit::application::ApplicationHandler;
@@ -144,9 +144,15 @@ impl App {
             return m;
         }
         let sf = self.scale_factor;
-        let shaped = self
-            .shape_cache
-            .shape(&mut self.font_system, "M", FONT_SIZE, sf, None);
+        let shaped = self.shape_cache.shape(
+            &mut self.font_system,
+            "M",
+            FONT_SIZE,
+            sf,
+            None,
+            Weight::NORMAL,
+            Style::Normal,
+        );
         let width_physical = shaped
             .lines
             .first()
@@ -670,7 +676,15 @@ fn populate_panel(
             let cell_origin_x_phys = panel_origin_x_physical + col_x_phys;
             let cell_origin_y_phys = panel_origin_y_physical + row_y_phys;
 
-            let shaped = shape_cache.shape(font_system, &cell_text, FONT_SIZE, sf, None);
+            let shaped = shape_cache.shape(
+                font_system,
+                &cell_text,
+                FONT_SIZE,
+                sf,
+                None,
+                Weight::NORMAL,
+                Style::Normal,
+            );
             for line in &shaped.lines {
                 let baseline_y = (cell_origin_y_phys + line.line_y).round();
                 for glyph in &line.glyphs {

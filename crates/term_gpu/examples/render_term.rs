@@ -66,8 +66,8 @@ use term_core::{
     TerminalEmulator,
 };
 use term_gpu::{
-    rasterize_glyph, FontFamily, GlyphAtlas, GlyphInstance, GpuRenderer, RectInstance,
-    TextShapeCache,
+    rasterize_glyph, FontFamily, GlyphAtlas, GlyphInstance, GpuRenderer, RectInstance, Style,
+    TextShapeCache, Weight,
 };
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
@@ -187,9 +187,15 @@ impl App {
             return m;
         }
         let sf = self.scale_factor;
-        let shaped = self
-            .shape_cache
-            .shape(&mut self.font_system, "M", FONT_SIZE, sf, None);
+        let shaped = self.shape_cache.shape(
+            &mut self.font_system,
+            "M",
+            FONT_SIZE,
+            sf,
+            None,
+            Weight::NORMAL,
+            Style::Normal,
+        );
         let width_physical = shaped
             .lines
             .first()
@@ -338,7 +344,15 @@ fn populate_frame(
                 fg_eff.to_rgba(palette)
             };
 
-            let shaped = shape_cache.shape(font_system, &cell_text, FONT_SIZE, sf, None);
+            let shaped = shape_cache.shape(
+                font_system,
+                &cell_text,
+                FONT_SIZE,
+                sf,
+                None,
+                Weight::NORMAL,
+                Style::Normal,
+            );
             for line in &shaped.lines {
                 // Snap the baseline-Y to an integer physical pixel.
                 let baseline_y = (origin_y_physical + line.line_y).round();

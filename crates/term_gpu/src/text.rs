@@ -39,8 +39,8 @@
 use std::collections::HashMap;
 
 use cosmic_text::{
-    Attrs, Buffer, CacheKey, Family, FontSystem, LayoutGlyph, Metrics, Shaping, SwashCache,
-    SwashContent,
+    Attrs, Buffer, CacheKey, Family, FontSystem, LayoutGlyph, Metrics, Shaping, Style, SwashCache,
+    SwashContent, Weight,
 };
 
 /// Primary font family preference for a `TextShapeCache`. Maps onto
@@ -103,6 +103,8 @@ struct ShapeKey {
     font_size_bits: u32,
     scale_factor_bits: u32,
     wrap_width_bits: Option<u32>,
+    weight: Weight,
+    style: Style,
 }
 
 struct CachedShape {
@@ -150,6 +152,10 @@ impl TextShapeCache {
     /// Look up or shape. Sizes are in **logical** pixels; the cache shapes
     /// internally at `font_size * scale_factor` so swash rasterizes at the
     /// display's physical density.
+    ///
+    /// `weight` and `style` are forwarded to cosmic-text's `Attrs` and form
+    /// part of the cache key — bold vs regular, italic vs upright cache
+    /// separately and may resolve to different font faces.
     pub fn shape(
         &mut self,
         font_system: &mut FontSystem,
@@ -157,12 +163,16 @@ impl TextShapeCache {
         font_size: f32,
         scale_factor: f32,
         wrap_width: Option<f32>,
+        weight: Weight,
+        style: Style,
     ) -> &ShapedText {
         let key = ShapeKey {
             text: text.to_string(),
             font_size_bits: font_size.to_bits(),
             scale_factor_bits: scale_factor.to_bits(),
             wrap_width_bits: wrap_width.map(|w| w.to_bits()),
+            weight,
+            style,
         };
         let frame = self.frame;
         let family = &self.family;
@@ -173,6 +183,8 @@ impl TextShapeCache {
                 font_size * scale_factor,
                 wrap_width.map(|w| w * scale_factor),
                 family,
+                weight,
+                style,
             ),
             last_used_frame: frame,
         });
@@ -196,12 +208,17 @@ fn shape_text_inline(
     font_size_physical: f32,
     wrap_width_physical: Option<f32>,
     family: &FontFamily,
+    weight: Weight,
+    style: Style,
 ) -> ShapedText {
     let line_height = font_size_physical * 1.3;
     let metrics = Metrics::new(font_size_physical, line_height);
     let mut buffer = Buffer::new_empty(metrics);
     buffer.set_size(font_system, wrap_width_physical, None);
-    let attrs = Attrs::new().family(family.as_cosmic());
+    let attrs = Attrs::new()
+        .family(family.as_cosmic())
+        .weight(weight)
+        .style(style);
     buffer.set_text(font_system, text, &attrs, Shaping::Advanced);
 
     ShapedText {
