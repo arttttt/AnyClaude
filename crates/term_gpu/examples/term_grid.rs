@@ -982,6 +982,19 @@ impl ApplicationHandler<CustomEvent> for App {
                     // modifier, not a terminal one).
                     return;
                 }
+                // Esc clears any active selection on the focused panel
+                // (in addition to being forwarded to the shell — vim
+                // leaves insert mode, fzf cancels, etc.).
+                if matches!(event.logical_key, Key::Named(NamedKey::Escape)) {
+                    let focused = self.tree.focus();
+                    if let Some(panel) = self.panels.get_mut(&focused) {
+                        if panel.selection.take().is_some() {
+                            if let Some(w) = self.window.as_ref() {
+                                w.request_redraw();
+                            }
+                        }
+                    }
+                }
                 if let Some(bytes) = encode_key(&event.logical_key, self.modifiers) {
                     self.write_to_focused(&bytes);
                 }
