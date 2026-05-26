@@ -30,6 +30,7 @@ mvi = { path = "crates/mvi" }
 # pipeline. The legacy UI stays until the C10 cutover.)
 term_gpu = { path = "crates/term_gpu" }
 term_core = { path = "crates/term_core" }
+term_clipboard = { path = "crates/term_clipboard" }
 winit = "0.30"
 # Scroll plumbing: glam::Vec2 backs ScrollVelocity, futures + futures-timer
 # drive the momentum tick loop without polling.

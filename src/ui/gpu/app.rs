@@ -13,13 +13,18 @@ use std::time::{Duration, Instant};
 use futures::future::{abortable, AbortHandle};
 use futures_timer::Delay;
 use glam::Vec2;
+use term_clipboard::{
+    get_image_filepaths_from_paths, pick_best_image, save_image_to_temp,
+    should_insert_text_on_paste, Clipboard, ClipboardContent,
+};
 use term_core::{create_emulator, AnsiPalette, MouseMode, TerminalEmulator};
 use term_gpu::{
-    build_cursor_rect, decay_velocity, encode_key, expand_line, expand_word, measure_cell_metrics,
-    populate_panel, push_selection_rects, CellMetrics, CellPoint, FontFamily, FontSystem,
-    GlyphInstance, GpuRenderer, PanelRect, RectInstance, ScrollState, ScrollVelocity, Selection,
-    SwashCache, TextShapeCache, GESTURE_END_TIMEOUT, MOMENTUM_FRAME_INTERVAL,
-    MOMENTUM_MIN_VELOCITY, MOMENTUM_THRESHOLD, NUM_PIXELS_PER_LINE,
+    build_cursor_rect, decay_velocity, encode_key, encode_paste, expand_line, expand_word,
+    measure_cell_metrics, populate_panel, push_selection_rects, selection_to_text,
+    shell_quote_path, CellMetrics, CellPoint, FontFamily, FontSystem, GlyphInstance, GpuRenderer,
+    PanelRect, RectInstance, ScrollState, ScrollVelocity, Selection, SwashCache, TextShapeCache,
+    GESTURE_END_TIMEOUT, MOMENTUM_FRAME_INTERVAL, MOMENTUM_MIN_VELOCITY, MOMENTUM_THRESHOLD,
+    NUM_PIXELS_PER_LINE,
 };
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition};
@@ -27,7 +32,7 @@ use winit::event::{
     ElementState, Modifiers, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent,
 };
 use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
-use winit::keyboard::ModifiersState;
+use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
 use winit::window::{Window, WindowAttributes, WindowId};
 
 use crate::ui::gpu::pty::ShellPty;
@@ -115,6 +120,8 @@ struct GpuApp {
     dragging_selection: bool,
     selection: Option<Selection>,
     last_click: Option<LastClick>,
+
+    clipboard: Box<dyn Clipboard>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -148,6 +155,7 @@ impl GpuApp {
             dragging_selection: false,
             selection: None,
             last_click: None,
+            clipboard: make_clipboard(),
         }
     }
 
@@ -316,6 +324,84 @@ impl GpuApp {
             self.proxy.clone(),
             MOMENTUM_FRAME_INTERVAL,
         ));
+    }
+
+    /// Copy the current selection to the system clipboard. Mirrors
+    /// term_grid: `selection_to_text` against the current emulator
+    /// snapshot → `ClipboardContent::plain_text`. Empty selections are
+    /// skipped silently.
+    fn copy_selection(&mut self) {
+        let Some(sel) = self.selection else { return };
+        if sel.is_empty() {
+            return;
+        }
+        let Some(emu) = self.emulator.as_ref() else { return };
+        let snap = emu.snapshot();
+        let text = selection_to_text(&sel, &snap);
+        if text.is_empty() {
+            return;
+        }
+        self.clipboard.write(ClipboardContent::plain_text(text));
+    }
+
+    /// Read the system clipboard and paste into the PTY. Mirrors
+    /// Warp's `process_paste_event` step-for-step
+    /// (`app/src/terminal/input.rs:10573`):
+    ///
+    ///   1. If `should_insert_text_on_paste(&content)` is true,
+    ///      include `content.plain_text` in the payload.
+    ///   2. Image filepaths in `content.paths` (filtered via
+    ///      `get_image_filepaths_from_paths`) follow next — Claude
+    ///      Code and other image-aware CLIs accept file paths as
+    ///      input.
+    ///   3. If `content.images` carries any pasteboard image data,
+    ///      pick the highest-priority MIME from
+    ///      `CLIPBOARD_IMAGE_MIME_TYPES`, save it to
+    ///      `$TMPDIR/anyclaude_clipboard_<ts>.<ext>`, and append the
+    ///      path to the payload.
+    ///
+    /// Paths are shell-quoted (single-quote escape) so spaces in
+    /// names don't break tokenisation in the shell. The final
+    /// payload is normalised (CRLF → LF) and wrapped in
+    /// `\x1b[200~` … `\x1b[201~` when the emulator has bracketed
+    /// paste enabled.
+    fn paste_into_pty(&mut self) {
+        let content = self.clipboard.read();
+        let mut parts: Vec<String> = Vec::new();
+
+        if should_insert_text_on_paste(&content) && !content.plain_text.is_empty() {
+            parts.push(content.plain_text.clone());
+        }
+
+        if let Some(paths) = content.paths.as_deref() {
+            for path in get_image_filepaths_from_paths(paths) {
+                parts.push(shell_quote_path(&path));
+            }
+        }
+
+        if let Some(images) = content.images.as_deref() {
+            if let Some(best) = pick_best_image(images) {
+                if let Some(path) = save_image_to_temp(best, "anyclaude_clipboard") {
+                    parts.push(shell_quote_path(&path));
+                }
+            }
+        }
+
+        if parts.is_empty() {
+            return;
+        }
+        let payload = parts.join(" ");
+        let bracketed = self
+            .emulator
+            .as_ref()
+            .map(|e| e.bracketed_paste())
+            .unwrap_or(false);
+        let bytes = encode_paste(&payload, bracketed);
+        if let Some(pty) = self.pty.as_mut() {
+            if let Err(e) = pty.write(&bytes) {
+                eprintln!("anyclaude: paste write failed: {e}");
+            }
+        }
     }
 
     /// Translate a window-local logical-pixel position into the cell
@@ -640,14 +726,24 @@ impl ApplicationHandler<UserEvent> for GpuApp {
             WindowEvent::KeyboardInput { event, .. }
                 if event.state == ElementState::Pressed =>
             {
-                // Cmd/Super combos are reserved for app-level shortcuts
-                // (clipboard, quit) and lands in C3e; for now we only
-                // forward when no super modifier is held. Ctrl combos
-                // belong to the shell (Ctrl+C / Ctrl+D / ...) and pass
-                // straight through encode_key.
+                // Cmd/Super combos are app-level shortcuts (clipboard,
+                // quit). Match on physical_key, not logical_key, so
+                // they work on every keyboard layout: Cmd+C on a
+                // Russian / French / Greek layout would otherwise see
+                // `Key::Character("с"|"ç"|"ψ")` and miss the match.
                 if self.modifiers.super_key() {
+                    if let PhysicalKey::Code(code) = event.physical_key {
+                        match code {
+                            KeyCode::KeyC => self.copy_selection(),
+                            KeyCode::KeyV => self.paste_into_pty(),
+                            KeyCode::KeyQ => event_loop.exit(),
+                            _ => {}
+                        }
+                    }
                     return;
                 }
+                // Ctrl combos belong to the shell (Ctrl+C / Ctrl+D /
+                // ...) and pass straight through encode_key.
                 let Some(bytes) = encode_key(&event.logical_key, self.modifiers) else {
                     return;
                 };
@@ -704,4 +800,20 @@ fn schedule_momentum_loop(proxy: EventLoopProxy<UserEvent>, interval: Duration) 
         let _ = futures::executor::block_on(fut);
     });
     abort
+}
+
+/// Construct the platform clipboard. macOS gets `MacClipboard` with
+/// full pasteboard parity (text, HTML, file paths, images). Other
+/// platforms fall back to `InMemoryClipboard` — anyclaude is
+/// macOS-targeted today and the legacy ui::run takes the same
+/// approach.
+fn make_clipboard() -> Box<dyn Clipboard> {
+    #[cfg(target_os = "macos")]
+    {
+        Box::new(term_clipboard::MacClipboard::new())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Box::new(term_clipboard::InMemoryClipboard::default())
+    }
 }
