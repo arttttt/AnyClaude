@@ -13,16 +13,19 @@ use std::time::{Duration, Instant};
 use futures::future::{abortable, AbortHandle};
 use futures_timer::Delay;
 use glam::Vec2;
-use term_core::{create_emulator, AnsiPalette, TerminalEmulator};
+use term_core::{create_emulator, AnsiPalette, MouseMode, TerminalEmulator};
 use term_gpu::{
-    build_cursor_rect, decay_velocity, encode_key, measure_cell_metrics, populate_panel,
-    CellMetrics, FontFamily, FontSystem, GlyphInstance, GpuRenderer, PanelRect, RectInstance,
-    ScrollState, ScrollVelocity, SwashCache, TextShapeCache, GESTURE_END_TIMEOUT,
-    MOMENTUM_FRAME_INTERVAL, MOMENTUM_MIN_VELOCITY, MOMENTUM_THRESHOLD, NUM_PIXELS_PER_LINE,
+    build_cursor_rect, decay_velocity, encode_key, expand_line, expand_word, measure_cell_metrics,
+    populate_panel, push_selection_rects, CellMetrics, CellPoint, FontFamily, FontSystem,
+    GlyphInstance, GpuRenderer, PanelRect, RectInstance, ScrollState, ScrollVelocity, Selection,
+    SwashCache, TextShapeCache, GESTURE_END_TIMEOUT, MOMENTUM_FRAME_INTERVAL,
+    MOMENTUM_MIN_VELOCITY, MOMENTUM_THRESHOLD, NUM_PIXELS_PER_LINE,
 };
 use winit::application::ApplicationHandler;
-use winit::dpi::LogicalSize;
-use winit::event::{ElementState, Modifiers, MouseScrollDelta, TouchPhase, WindowEvent};
+use winit::dpi::{LogicalSize, PhysicalPosition};
+use winit::event::{
+    ElementState, Modifiers, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent,
+};
 use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
 use winit::keyboard::ModifiersState;
 use winit::window::{Window, WindowAttributes, WindowId};
@@ -41,6 +44,11 @@ const INITIAL_GRID_ROWS: usize = 24;
 /// pixels of the bottom count as "at bottom" — so a tiny stale offset
 /// from the last momentum tick doesn't keep follow mode off.
 const SCROLL_BOTTOM_EPSILON: f32 = 0.5;
+
+/// Maximum elapsed time between consecutive mouse presses at the same
+/// cell for them to count as a double / triple click. macOS's system
+/// default is ~500 ms; 400 ms is a comfortable middle ground.
+const MULTI_CLICK_THRESHOLD_MS: u128 = 400;
 
 /// User event delivered to the winit loop. Drives redraws in response
 /// to PTY output and scroll momentum without polling.
@@ -98,6 +106,22 @@ struct GpuApp {
     scroll_velocity: Option<ScrollVelocity>,
     momentum_abort: Option<AbortHandle>,
     gesture_end_abort: Option<AbortHandle>,
+
+    /// Current mouse cursor position in logical pixels (top-left
+    /// origin). `None` before the first CursorMoved event.
+    cursor_pos: Option<(f32, f32)>,
+    /// True while the left mouse button is held with a selection in
+    /// flight (a non-mouse-mode click → CursorMoved sequence).
+    dragging_selection: bool,
+    selection: Option<Selection>,
+    last_click: Option<LastClick>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LastClick {
+    time: Instant,
+    point: CellPoint,
+    count: u32,
 }
 
 impl GpuApp {
@@ -120,6 +144,10 @@ impl GpuApp {
             scroll_velocity: None,
             momentum_abort: None,
             gesture_end_abort: None,
+            cursor_pos: None,
+            dragging_selection: false,
+            selection: None,
+            last_click: None,
         }
     }
 
@@ -290,6 +318,138 @@ impl GpuApp {
         ));
     }
 
+    /// Translate a window-local logical-pixel position into the cell
+    /// underneath. Inverse of `populate_panel`'s row positioning:
+    ///   row_y_logical = row_idx * cell_h - baseline_offset + scroll_offset
+    ///   row_idx       = (row_y_logical + baseline_offset - scroll_offset) / cell_h
+    fn cell_at(&mut self, x: f32, y: f32) -> Option<CellPoint> {
+        let metrics = self.cell_metrics();
+        let emu = self.emulator.as_ref()?;
+        let sf = self.scale_factor.max(0.0001);
+        let cell_w_logical = metrics.width_physical / sf;
+        let cell_h_logical = metrics.height_physical / sf;
+        if cell_w_logical <= 0.0 || cell_h_logical <= 0.0 {
+            return None;
+        }
+        let local_x = x.max(0.0);
+        let local_y = y.max(0.0);
+        let snap = emu.snapshot();
+        let total_rows = snap.rows.len();
+        let visible_rows = snap.visible_rows;
+        let baseline_offset = total_rows.saturating_sub(visible_rows) as f32 * cell_h_logical;
+        let row_unclamped =
+            ((local_y + baseline_offset - self.scroll.offset_y) / cell_h_logical).floor();
+        let row = row_unclamped.clamp(0.0, total_rows.saturating_sub(1) as f32) as usize;
+        let cols = snap.rows.first().map(|r| r.cells.len()).unwrap_or(0);
+        let col_unclamped = (local_x / cell_w_logical).floor();
+        let col = col_unclamped.clamp(0.0, cols.saturating_sub(1) as f32) as usize;
+        Some(CellPoint { row, col })
+    }
+
+    fn on_cursor_moved(&mut self, x: f32, y: f32) {
+        self.cursor_pos = Some((x, y));
+        if self.dragging_selection {
+            if let Some(point) = self.cell_at(x, y) {
+                if let Some(sel) = self.selection.as_mut() {
+                    sel.cursor = point;
+                    if let Some(w) = self.window.as_ref() {
+                        w.request_redraw();
+                    }
+                }
+            }
+        }
+    }
+
+    fn on_mouse_press(&mut self) {
+        let Some((x, y)) = self.cursor_pos else { return };
+        // Apps in mouse-reporting mode (vim / htop / fzf) own the drag —
+        // selection mustn't shadow them.
+        let owns_mouse = self
+            .emulator
+            .as_ref()
+            .map(|e| e.mouse_mode() != MouseMode::None)
+            .unwrap_or(false);
+        if owns_mouse {
+            return;
+        }
+        let Some(point) = self.cell_at(x, y) else { return };
+        let count = self.bump_click_count(point);
+        let snap = self.emulator.as_ref().map(|e| e.snapshot());
+        match count {
+            1 => {
+                self.selection = Some(Selection::new(point));
+                self.dragging_selection = true;
+            }
+            2 => {
+                let (start, end) = snap
+                    .as_ref()
+                    .map(|s| expand_word(point, s))
+                    .unwrap_or((point, point));
+                self.selection = Some(Selection {
+                    anchor: start,
+                    cursor: end,
+                });
+                // No drag after double-click; the user re-clicks to
+                // start a linear selection.
+                self.dragging_selection = false;
+            }
+            _ => {
+                let (start, end) = snap
+                    .as_ref()
+                    .map(|s| expand_line(point, s))
+                    .unwrap_or((point, point));
+                self.selection = Some(Selection {
+                    anchor: start,
+                    cursor: end,
+                });
+                self.dragging_selection = false;
+            }
+        }
+        if let Some(w) = self.window.as_ref() {
+            w.request_redraw();
+        }
+    }
+
+    fn on_mouse_release(&mut self) {
+        if self.dragging_selection {
+            self.dragging_selection = false;
+            // A click that didn't drag (anchor == cursor) clears the
+            // selection — keeps "click somewhere to deselect" working.
+            if self.selection.map(|s| s.is_empty()).unwrap_or(false) {
+                self.selection = None;
+                if let Some(w) = self.window.as_ref() {
+                    w.request_redraw();
+                }
+            }
+        }
+    }
+
+    /// Update `self.last_click` based on the new press and return the
+    /// 1..=3 click count. Resets to 1 when the click misses the
+    /// previous cell or arrives after the threshold.
+    fn bump_click_count(&mut self, point: CellPoint) -> u32 {
+        let now = Instant::now();
+        let new_count = match self.last_click {
+            Some(lc)
+                if lc.point == point
+                    && now.duration_since(lc.time).as_millis() <= MULTI_CLICK_THRESHOLD_MS =>
+            {
+                if lc.count >= 3 {
+                    1
+                } else {
+                    lc.count + 1
+                }
+            }
+            _ => 1,
+        };
+        self.last_click = Some(LastClick {
+            time: now,
+            point,
+            count: new_count,
+        });
+        new_count
+    }
+
     fn on_momentum_tick(&mut self) {
         let Some(v) = self.scroll_velocity.as_mut() else { return };
         let now = Instant::now();
@@ -344,6 +504,17 @@ impl GpuApp {
             &mut rects,
             &mut glyphs,
         );
+        if let Some(sel) = self.selection {
+            push_selection_rects(
+                &sel,
+                &snapshot,
+                panel,
+                sf,
+                metrics,
+                scroll_offset_y,
+                &mut rects,
+            );
+        }
         if let Some(cursor_rect) = build_cursor_rect(
             snapshot.cursor,
             snapshot.visible_start(),
@@ -453,6 +624,19 @@ impl ApplicationHandler<UserEvent> for GpuApp {
                 };
                 self.on_wheel(dy, phase, precise);
             }
+            WindowEvent::CursorMoved { position, .. } => {
+                let PhysicalPosition { x, y } = position;
+                let sf = self.scale_factor.max(0.0001);
+                self.on_cursor_moved(x as f32 / sf, y as f32 / sf);
+            }
+            WindowEvent::MouseInput {
+                state,
+                button: MouseButton::Left,
+                ..
+            } => match state {
+                ElementState::Pressed => self.on_mouse_press(),
+                ElementState::Released => self.on_mouse_release(),
+            },
             WindowEvent::KeyboardInput { event, .. }
                 if event.state == ElementState::Pressed =>
             {
