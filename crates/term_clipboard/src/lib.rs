@@ -177,6 +177,47 @@ pub fn get_image_filepaths_from_paths(paths: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// Pick the highest-priority [`ImageData`] from `images` by walking
+/// [`CLIPBOARD_IMAGE_MIME_TYPES`] in order. Returns `None` when no
+/// image carries a supported MIME type.
+pub fn pick_best_image(images: &[ImageData]) -> Option<&ImageData> {
+    CLIPBOARD_IMAGE_MIME_TYPES
+        .iter()
+        .find_map(|mime| images.iter().find(|img| img.mime_type == *mime))
+}
+
+/// Save a clipboard image to a uniquely-named file inside the system
+/// temp directory and return the absolute path. `None` on unknown MIME
+/// types or I/O errors.
+///
+/// `prefix` is the leading filename token before the timestamp — pick
+/// something identifiable to your app so users can attribute leaked
+/// files (`anyclaude_clipboard`, `term_grid_clipboard`, …). The
+/// resulting filename is `<prefix>_<unix_nanos>.<ext>`.
+///
+/// The terminal can't paste image bytes into a shell directly — shell
+/// stdin is a byte stream, not a multimodal channel. Writing to a
+/// temp file and pasting the path is how iTerm / Warp / and us bridge
+/// clipboard images into command-line tools (Claude Code reads image
+/// files this way).
+pub fn save_image_to_temp(image: &ImageData, prefix: &str) -> Option<String> {
+    let ext = match image.mime_type.as_str() {
+        "image/png" => "png",
+        "image/jpeg" | "image/jpg" => "jpg",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        _ => return None,
+    };
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+    let mut path = std::env::temp_dir();
+    path.push(format!("{prefix}_{nanos}.{ext}"));
+    std::fs::write(&path, &image.data).ok()?;
+    Some(path.to_string_lossy().into_owned())
+}
+
 /// In-process clipboard. The content lives in a mutex and is scoped to
 /// the running process — useful for tests and as a fallback on
 /// platforms where the native clipboard backend is unavailable.

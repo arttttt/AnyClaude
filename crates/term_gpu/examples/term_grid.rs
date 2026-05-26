@@ -42,17 +42,16 @@ use futures_timer::Delay;
 use glam::Vec2;
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use term_clipboard::{
-    get_image_filepaths_from_paths, should_insert_text_on_paste, Clipboard, ClipboardContent,
-    ImageData, CLIPBOARD_IMAGE_MIME_TYPES,
+    get_image_filepaths_from_paths, pick_best_image, save_image_to_temp,
+    should_insert_text_on_paste, Clipboard, ClipboardContent,
 };
-use term_core::{
-    create_emulator, AnsiPalette, CellFlags, MouseMode, RenderSnapshot, TerminalEmulator,
-};
+use term_core::{create_emulator, AnsiPalette, MouseMode, TerminalEmulator};
 use term_gpu::{
-    build_cursor_rect, decay_velocity, measure_cell_metrics, populate_panel, CellMetrics,
-    FontFamily, GlyphInstance, GpuRenderer, PanelRect, RectInstance, ScrollState, ScrollVelocity,
-    TextShapeCache, GESTURE_END_TIMEOUT, MOMENTUM_FRAME_INTERVAL, MOMENTUM_MIN_VELOCITY,
-    MOMENTUM_THRESHOLD, NUM_PIXELS_PER_LINE,
+    build_cursor_rect, decay_velocity, encode_key, encode_paste, expand_line, expand_word,
+    measure_cell_metrics, populate_panel, push_selection_rects, selection_to_text,
+    shell_quote_path, CellMetrics, CellPoint, FontFamily, GlyphInstance, GpuRenderer, PanelRect,
+    RectInstance, ScrollState, ScrollVelocity, Selection, TextShapeCache, GESTURE_END_TIMEOUT,
+    MOMENTUM_FRAME_INTERVAL, MOMENTUM_MIN_VELOCITY, MOMENTUM_THRESHOLD, NUM_PIXELS_PER_LINE,
 };
 use term_layout::{BranchId, Divider, PanelId, PanelTree, Rect, Split};
 use winit::application::ApplicationHandler;
@@ -79,29 +78,13 @@ const DIVIDER_HIT_TOLERANCE: f32 = 6.0;
 /// Focus border thickness and colour (alpha-blended, slim).
 const FOCUS_BORDER: f32 = 2.0;
 const FOCUS_COLOR: [f32; 4] = [1.0, 1.0, 1.0, 0.35];
-/// Highlight colour for selected cells. Matches Warp's
-/// `text_selection_color` at
-/// `crates/warp_core/src/ui/theme/color.rs:300` —
-/// `rgba(118, 167, 250, 0.4)`.
-const SELECTION_COLOR: [f32; 4] = [118.0 / 255.0, 167.0 / 255.0, 250.0 / 255.0, 0.4];
 
 /// Maximum elapsed time between consecutive mouse presses at the same
 /// cell for them to count as a double/triple click. macOS's system
 /// default is ~500 ms; 400 ms is a comfortable middle ground.
 const MULTI_CLICK_THRESHOLD_MS: u128 = 400;
 
-/// Word-boundary characters used by double-click "word" selection.
-/// Lifted from Warp's
-/// `crates/warpui_core/src/text/words.rs::DEFAULT_WORD_BOUNDARY_CHARS`
-/// so the experience matches Warp's terminal exactly.
-const WORD_BOUNDARY_CHARS: [char; 33] = [
-    '`', '~', '!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '-', '=', '+', '[', '{', ']', '}',
-    '\\', '|', ';', ':', '\'', '"', ',', '.', '<', '>', '/', '?', '«', '»',
-];
 
-fn is_word_boundary(c: char) -> bool {
-    c.is_whitespace() || WORD_BOUNDARY_CHARS.contains(&c)
-}
 
 #[derive(Debug, Clone, Copy)]
 enum CustomEvent {
@@ -121,64 +104,6 @@ struct DragState {
     branch: BranchId,
     split: Split,
     bounds: Rect,
-}
-
-/// Cell coordinates in absolute-row form: `row` indexes into
-/// `RenderSnapshot::rows` (scrollback first, then visible), so the
-/// selection stays anchored to its content as the viewport scrolls.
-/// `col` is in cells [0, cols).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct CellPoint {
-    row: usize,
-    col: usize,
-}
-
-impl PartialOrd for CellPoint {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for CellPoint {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        (self.row, self.col).cmp(&(other.row, other.col))
-    }
-}
-
-/// Linear text selection inside a single panel. Modelled on Warp's
-/// `app/src/terminal/model/selection.rs` doc-comment:
-/// "A selection should start when the mouse is clicked, finalized
-///  when the button is released, cleared when text is added/removed
-///  /scrolled on the screen, and cleared if the user clicks off".
-#[derive(Debug, Clone, Copy)]
-struct Selection {
-    /// Where the mouse first pressed down.
-    anchor: CellPoint,
-    /// Where the mouse currently is (or was released).
-    cursor: CellPoint,
-}
-
-impl Selection {
-    fn new(point: CellPoint) -> Self {
-        Self {
-            anchor: point,
-            cursor: point,
-        }
-    }
-
-    fn is_empty(&self) -> bool {
-        self.anchor == self.cursor
-    }
-
-    /// Returns the normalized `(start, end)` range with `start <= end`
-    /// in document order.
-    fn range(&self) -> (CellPoint, CellPoint) {
-        if self.anchor <= self.cursor {
-            (self.anchor, self.cursor)
-        } else {
-            (self.cursor, self.anchor)
-        }
-    }
 }
 
 struct PanelState {
@@ -580,7 +505,7 @@ impl App {
 
         if let Some(images) = content.images.as_deref() {
             if let Some(best) = pick_best_image(images) {
-                if let Some(path) = save_image_to_temp(best) {
+                if let Some(path) = save_image_to_temp(best, "term_grid_clipboard") {
                     parts.push(shell_quote_path(&path));
                 }
             }
@@ -987,7 +912,7 @@ impl App {
                 push_selection_rects(
                     &sel,
                     &snapshot,
-                    panel_rect,
+                    PanelRect::new(panel_rect.x, panel_rect.y, panel_rect.w, panel_rect.h),
                     sf,
                     metrics,
                     scroll_offset_y,
@@ -1290,250 +1215,6 @@ fn make_clipboard() -> Box<dyn Clipboard> {
     }
 }
 
-/// Pick the highest-priority image off the clipboard. Walks
-/// `CLIPBOARD_IMAGE_MIME_TYPES` and returns the first image
-/// whose MIME type matches. Returns `None` when the list contains
-/// no recognised MIME. Mirrors Warp's `handle_pasted_image_data`
-/// (`app/src/terminal/input.rs:10693`).
-fn pick_best_image(images: &[ImageData]) -> Option<&ImageData> {
-    CLIPBOARD_IMAGE_MIME_TYPES
-        .iter()
-        .find_map(|mime| images.iter().find(|img| img.mime_type == *mime))
-}
-
-/// Save a pasteboard image to a uniquely-named file inside the
-/// system temp directory and return the absolute path. `None` on
-/// unknown MIME types or I/O errors.
-///
-/// The terminal can't paste image bytes into a shell directly —
-/// shell stdin is a byte stream, not a multimodal channel. Writing
-/// to a temp file and pasting the path is how iTerm / Warp /
-/// other terminals bridge clipboard images into command-line
-/// tools (Claude Code reads image files this way).
-fn save_image_to_temp(image: &ImageData) -> Option<String> {
-    let ext = match image.mime_type.as_str() {
-        "image/png" => "png",
-        "image/jpeg" | "image/jpg" => "jpg",
-        "image/gif" => "gif",
-        "image/webp" => "webp",
-        _ => return None,
-    };
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()?
-        .as_nanos();
-    let mut path = std::env::temp_dir();
-    path.push(format!("term_grid_clipboard_{nanos}.{ext}"));
-    std::fs::write(&path, &image.data).ok()?;
-    Some(path.to_string_lossy().into_owned())
-}
-
-/// Single-quote-escape a file path for safe shell tokenization.
-/// `'` inside the path is escaped as `'\''` (POSIX-compatible —
-/// bash, zsh, sh, dash all accept it). Empty paths become empty
-/// strings (caller should filter those out).
-fn shell_quote_path(path: &str) -> String {
-    if path.is_empty() {
-        return String::new();
-    }
-    let escaped = path.replace('\'', "'\\''");
-    format!("'{}'", escaped)
-}
-
-/// Prepare clipboard text for write to a PTY: normalise line
-/// endings to plain `\n` (macOS clipboard often carries CRLF from
-/// Windows-origin content) and wrap in the bracketed-paste markers
-/// `\e[200~` / `\e[201~` when the emulator has that mode on.
-fn encode_paste(text: &str, bracketed: bool) -> Vec<u8> {
-    let normalized: String = text.replace("\r\n", "\n").replace('\r', "\n");
-    if bracketed {
-        let mut out = Vec::with_capacity(normalized.len() + 8);
-        out.extend_from_slice(b"\x1b[200~");
-        out.extend_from_slice(normalized.as_bytes());
-        out.extend_from_slice(b"\x1b[201~");
-        out
-    } else {
-        normalized.into_bytes()
-    }
-}
-
-/// Render the selection as plain text. Mirrors Warp's
-/// `bounds_to_string` / `line_to_string`
-/// (`app/src/terminal/model/grid/grid_handler.rs`): per-row trim of
-/// trailing blank cells, no newline between soft-wrapped rows
-/// (continuation rows belong to the same logical line), newline
-/// between hard-broken rows.
-fn selection_to_text(sel: &Selection, snapshot: &RenderSnapshot) -> String {
-    let (start, end) = sel.range();
-    let mut out = String::new();
-    for row_idx in start.row..=end.row {
-        let Some(row) = snapshot.rows.get(row_idx) else { break };
-        let col_start = if row_idx == start.row {
-            start.col
-        } else {
-            0
-        };
-        let col_end = if row_idx == end.row {
-            end.col.min(row.cells.len())
-        } else {
-            row.cells.len()
-        };
-        if col_start >= col_end {
-            // Empty slice — still emit a newline between rows so a
-            // multi-row selection over a blank line doesn't collapse.
-        } else {
-            // Trim trailing blank cells (` ` with default attributes)
-            // so partial-row copies don't pad with spaces.
-            let mut effective_end = col_end;
-            while effective_end > col_start
-                && row.cells[effective_end - 1].c == ' '
-                && row.cells[effective_end - 1].flags.bits() == 0
-            {
-                effective_end -= 1;
-            }
-            for cell in &row.cells[col_start..effective_end] {
-                out.push(cell.c);
-            }
-        }
-        if row_idx < end.row {
-            // Soft-wrap continuation → no newline. Hard-break → '\n'.
-            let last = row.cells.last();
-            let is_wrap = last
-                .map(|c| c.flags.contains(CellFlags::WRAPLINE))
-                .unwrap_or(false);
-            if !is_wrap {
-                out.push('\n');
-            }
-        }
-    }
-    out
-}
-
-/// Expand a click point to the surrounding "word" by walking left
-/// and right until hitting a word-boundary character of the opposite
-/// class (or the row's edge). Modelled on Warp's `semantic_search_*`
-/// helpers (`app/src/terminal/model/selection.rs:507-509`). Returns
-/// `(start, end)` with `end.col` one past the last selected cell so
-/// it matches the half-open range convention used in
-/// `push_selection_rects`.
-fn expand_word(point: CellPoint, snapshot: &RenderSnapshot) -> (CellPoint, CellPoint) {
-    let Some(row) = snapshot.rows.get(point.row) else {
-        return (point, point);
-    };
-    let cells = &row.cells;
-    if cells.is_empty() || point.col >= cells.len() {
-        return (point, point);
-    }
-    let center_is_boundary = is_word_boundary(cells[point.col].c);
-    let mut start_col = point.col;
-    while start_col > 0 && is_word_boundary(cells[start_col - 1].c) == center_is_boundary {
-        start_col -= 1;
-    }
-    let mut end_col = point.col;
-    while end_col + 1 < cells.len()
-        && is_word_boundary(cells[end_col + 1].c) == center_is_boundary
-    {
-        end_col += 1;
-    }
-    (
-        CellPoint {
-            row: point.row,
-            col: start_col,
-        },
-        CellPoint {
-            row: point.row,
-            col: end_col + 1,
-        },
-    )
-}
-
-/// Expand a click point to its entire physical row.
-fn expand_line(point: CellPoint, snapshot: &RenderSnapshot) -> (CellPoint, CellPoint) {
-    let cols = snapshot
-        .rows
-        .get(point.row)
-        .map(|r| r.cells.len())
-        .unwrap_or(0);
-    (
-        CellPoint {
-            row: point.row,
-            col: 0,
-        },
-        CellPoint {
-            row: point.row,
-            col: cols,
-        },
-    )
-}
-
-/// Push a `RectInstance` for every cell inside the selection range,
-/// using the same row positioning math as `populate_panel`. Selection
-/// rects render after background rects (so they tint the bg) but
-/// before glyphs (so text stays legible through the highlight).
-///
-/// Wide-span selections produce one rect per cell — a future
-/// optimisation could coalesce adjacent cells into runs, but at our
-/// cell counts (panel ≤ ~250×80 ≈ 20k cells max, typical selection
-/// well under 1k) this is below the noise floor.
-fn push_selection_rects(
-    sel: &Selection,
-    snapshot: &RenderSnapshot,
-    panel_rect: Rect,
-    scale_factor: f32,
-    metrics: CellMetrics,
-    scroll_offset_y_logical: f32,
-    rects: &mut Vec<RectInstance>,
-) {
-    let (start, end) = sel.range();
-    if start == end {
-        return;
-    }
-    let sf = scale_factor;
-    let cell_h_logical = metrics.height_physical / sf;
-    let panel_origin_x_physical = panel_rect.x * sf;
-    let panel_origin_y_physical = panel_rect.y * sf;
-    let scroll_offset_y_physical = scroll_offset_y_logical * sf;
-    let total_rows = snapshot.rows.len();
-    let visible_rows = snapshot.visible_rows;
-    let baseline_offset_phys =
-        total_rows.saturating_sub(visible_rows) as f32 * metrics.height_physical;
-    let panel_max_x_phys = panel_rect.w * sf;
-    let panel_max_y_phys = panel_rect.h * sf;
-    let end_row = end.row.min(total_rows.saturating_sub(1));
-    for row_idx in start.row..=end_row {
-        let Some(row) = snapshot.rows.get(row_idx) else {
-            continue;
-        };
-        let row_y_phys = row_idx as f32 * metrics.height_physical
-            - baseline_offset_phys
-            + scroll_offset_y_physical;
-        if row_y_phys + metrics.height_physical <= 0.0 || row_y_phys >= panel_max_y_phys {
-            continue;
-        }
-        let cols = row.cells.len();
-        // Linear (row-wrapping) selection: full row on intermediate
-        // lines; clipped on first / last lines by start.col / end.col.
-        let col_start = if row_idx == start.row { start.col } else { 0 };
-        let col_end = if row_idx == end.row { end.col } else { cols };
-        if col_start >= col_end {
-            continue;
-        }
-        let span_cells = col_end - col_start;
-        let span_w_phys = (span_cells as f32 * metrics.width_physical)
-            .min(panel_max_x_phys - col_start as f32 * metrics.width_physical);
-        if span_w_phys <= 0.0 {
-            continue;
-        }
-        let pos_x_logical =
-            (panel_origin_x_physical + col_start as f32 * metrics.width_physical) / sf;
-        let pos_y_logical = (panel_origin_y_physical + row_y_phys) / sf;
-        rects.push(RectInstance {
-            pos: [pos_x_logical, pos_y_logical],
-            size: [span_w_phys / sf, cell_h_logical],
-            color: SELECTION_COLOR,
-        });
-    }
-}
 
 fn focus_border(rect: Rect) -> [RectInstance; 4] {
     let b = FOCUS_BORDER;
@@ -1562,65 +1243,6 @@ fn focus_border(rect: Rect) -> [RectInstance; 4] {
 }
 
 
-/// Encode a winit key event into the byte sequence a typical
-/// terminal sends to the PTY. Covers printable text, named keys
-/// (Enter / Tab / arrows / etc.), `Ctrl+letter` control codes, and
-/// `Alt+key` as ESC-prefixed Meta. Returns `None` when the key has
-/// no terminal-byte equivalent (modifier keys alone, function keys
-/// we don't translate, IME composition events, …).
-fn encode_key(key: &Key, modifiers: ModifiersState) -> Option<Vec<u8>> {
-    let ctrl = modifiers.control_key();
-    let alt = modifiers.alt_key();
-    match key {
-        Key::Character(s) => {
-            let chars: Vec<char> = s.chars().collect();
-            if ctrl && chars.len() == 1 {
-                let ch = chars[0];
-                if ch.is_ascii_alphabetic() {
-                    // Ctrl+A..Z → 0x01..0x1A.
-                    return Some(vec![(ch.to_ascii_lowercase() as u8) - b'a' + 1]);
-                }
-                // A few non-letter Ctrl combos shells expect to receive.
-                let mapped = match ch {
-                    '[' => Some(0x1b),
-                    '\\' => Some(0x1c),
-                    ']' => Some(0x1d),
-                    '~' | '^' => Some(0x1e),
-                    '?' | '/' => Some(0x1f),
-                    ' ' => Some(0x00),
-                    _ => None,
-                };
-                if let Some(b) = mapped {
-                    return Some(vec![b]);
-                }
-            }
-            let mut bytes = s.as_str().as_bytes().to_vec();
-            if alt {
-                // ESC-prefix is the conventional encoding for Meta+key.
-                bytes.insert(0, 0x1b);
-            }
-            Some(bytes)
-        }
-        Key::Named(named) => match named {
-            NamedKey::Enter => Some(b"\r".to_vec()),
-            NamedKey::Tab => Some(b"\t".to_vec()),
-            NamedKey::Backspace => Some(b"\x7f".to_vec()),
-            NamedKey::Escape => Some(b"\x1b".to_vec()),
-            NamedKey::Space => Some(b" ".to_vec()),
-            NamedKey::ArrowUp => Some(b"\x1b[A".to_vec()),
-            NamedKey::ArrowDown => Some(b"\x1b[B".to_vec()),
-            NamedKey::ArrowRight => Some(b"\x1b[C".to_vec()),
-            NamedKey::ArrowLeft => Some(b"\x1b[D".to_vec()),
-            NamedKey::Home => Some(b"\x1b[H".to_vec()),
-            NamedKey::End => Some(b"\x1b[F".to_vec()),
-            NamedKey::Delete => Some(b"\x1b[3~".to_vec()),
-            NamedKey::PageUp => Some(b"\x1b[5~".to_vec()),
-            NamedKey::PageDown => Some(b"\x1b[6~".to_vec()),
-            _ => None,
-        },
-        _ => None,
-    }
-}
 
 fn main() {
     let event_loop = EventLoop::<CustomEvent>::with_user_event()
