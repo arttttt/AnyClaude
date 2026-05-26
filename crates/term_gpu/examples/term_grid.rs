@@ -1,9 +1,8 @@
 //! Multi-panel virtual terminal demo.
 //!
-//! Bootstrap commit: a single panel hosts a real shell PTY. The
-//! emulator consumes the shell's output and the GPU renderer paints
-//! the resulting cell grid. Keyboard input to the PTY, multi-panel
-//! split/close, and per-panel resize propagation land in subsequent
+//! Single panel hosts a real shell PTY; keyboard input is encoded to
+//! ANSI/VT100 byte sequences and written to that PTY. Multi-panel
+//! split/close and per-panel resize propagation land in subsequent
 //! commits.
 //!
 //! ## Run
@@ -14,13 +13,14 @@
 //!
 //! ## Status
 //!
-//! Esc / any key are dropped (no input routing yet); use `Cmd+Q` (or
-//! `Ctrl+Q` on non-macOS) to quit. Shell output appears as it
-//! arrives — most shells print the prompt at start, so the window is
-//! not visually empty.
+//! `Cmd+Q` (or `Ctrl+Q`) quits the demo before the byte ever reaches
+//! the PTY. Everything else — printable text, Enter, Backspace, Tab,
+//! Esc, arrow keys, control combos (`Ctrl+C`, `Ctrl+D`, ...) — is
+//! forwarded to the shell. Emulator responses (DA, DSR) flow back to
+//! the PTY too.
 
 use std::collections::HashMap;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::sync::mpsc;
 use std::sync::Arc;
 
@@ -39,7 +39,7 @@ use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
-use winit::keyboard::{Key, ModifiersState};
+use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowAttributes, WindowId};
 
 const INITIAL_W: f32 = 960.0;
@@ -68,9 +68,9 @@ struct CellMetrics {
 struct PanelState {
     emulator: Box<dyn TerminalEmulator>,
     bytes_rx: mpsc::Receiver<Vec<u8>>,
-    /// PTY master kept alive — dropping it closes the shell. We don't
-    /// touch it directly in this commit; subsequent commits read/write
-    /// through it.
+    writer: Box<dyn Write + Send>,
+    /// PTY master kept alive — dropping it closes the shell. Consumed
+    /// by `pty_master.resize` in the per-panel-resize commit.
     _master: Box<dyn MasterPty + Send>,
 }
 
@@ -157,6 +157,7 @@ impl App {
         drop(pair.slave);
 
         let mut reader = pair.master.try_clone_reader()?;
+        let writer = pair.master.take_writer()?;
         let (tx, rx) = mpsc::channel::<Vec<u8>>();
         let proxy = self.proxy.clone();
         std::thread::spawn(move || {
@@ -181,6 +182,7 @@ impl App {
         Ok(PanelState {
             emulator,
             bytes_rx: rx,
+            writer,
             _master: pair.master,
         })
     }
@@ -192,9 +194,22 @@ impl App {
         while let Ok(chunk) = panel.bytes_rx.try_recv() {
             panel.emulator.process(&chunk);
         }
-        // Discard PTY responses — no writer wired up yet. Commit 2
-        // forwards keyboard input and could ship DA/DSR replies back.
-        let _ = panel.emulator.take_responses();
+        // Ship the emulator's DA/DSR replies back to the PTY so apps
+        // that block on them (less, vim probing terminfo, …) get
+        // unstuck.
+        let responses = panel.emulator.take_responses();
+        if !responses.is_empty() {
+            let _ = panel.writer.write_all(&responses);
+            let _ = panel.writer.flush();
+        }
+    }
+
+    fn write_to_focused(&mut self, bytes: &[u8]) {
+        let focused = self.tree.focus();
+        if let Some(panel) = self.panels.get_mut(&focused) {
+            let _ = panel.writer.write_all(bytes);
+            let _ = panel.writer.flush();
+        }
     }
 
     fn on_redraw(&mut self) {
@@ -313,18 +328,23 @@ impl ApplicationHandler<CustomEvent> for App {
                 self.modifiers = mods.state();
             }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
-                // Cmd/Ctrl + Q quits. Other keys are dropped — the next
-                // commit wires keyboard input through to the PTY.
-                let cmd = self.modifiers.super_key() || self.modifiers.control_key();
-                if cmd {
+                // Cmd/Super + Q quits before we forward anything to the
+                // PTY. Ctrl combos belong to the shell (Ctrl+C / Ctrl+D
+                // / ...), so we don't trap them here.
+                if self.modifiers.super_key() {
                     if let Key::Character(c) = &event.logical_key {
                         if c.eq_ignore_ascii_case("q") {
                             event_loop.exit();
                             return;
                         }
                     }
+                    // Other Cmd combos: don't forward (Cmd is an app
+                    // modifier, not a terminal one).
+                    return;
                 }
-                let _ = event;
+                if let Some(bytes) = encode_key(&event.logical_key, self.modifiers) {
+                    self.write_to_focused(&bytes);
+                }
             }
             WindowEvent::RedrawRequested => self.on_redraw(),
             _ => {}
@@ -465,6 +485,66 @@ fn build_cursor_rect(
         size: [size_phys[0] / sf, size_phys[1] / sf],
         color: CURSOR_COLOR,
     })
+}
+
+/// Encode a winit key event into the byte sequence a typical
+/// terminal sends to the PTY. Covers printable text, named keys
+/// (Enter / Tab / arrows / etc.), `Ctrl+letter` control codes, and
+/// `Alt+key` as ESC-prefixed Meta. Returns `None` when the key has
+/// no terminal-byte equivalent (modifier keys alone, function keys
+/// we don't translate, IME composition events, …).
+fn encode_key(key: &Key, modifiers: ModifiersState) -> Option<Vec<u8>> {
+    let ctrl = modifiers.control_key();
+    let alt = modifiers.alt_key();
+    match key {
+        Key::Character(s) => {
+            let chars: Vec<char> = s.chars().collect();
+            if ctrl && chars.len() == 1 {
+                let ch = chars[0];
+                if ch.is_ascii_alphabetic() {
+                    // Ctrl+A..Z → 0x01..0x1A.
+                    return Some(vec![(ch.to_ascii_lowercase() as u8) - b'a' + 1]);
+                }
+                // A few non-letter Ctrl combos shells expect to receive.
+                let mapped = match ch {
+                    '[' => Some(0x1b),
+                    '\\' => Some(0x1c),
+                    ']' => Some(0x1d),
+                    '~' | '^' => Some(0x1e),
+                    '?' | '/' => Some(0x1f),
+                    ' ' => Some(0x00),
+                    _ => None,
+                };
+                if let Some(b) = mapped {
+                    return Some(vec![b]);
+                }
+            }
+            let mut bytes = s.as_str().as_bytes().to_vec();
+            if alt {
+                // ESC-prefix is the conventional encoding for Meta+key.
+                bytes.insert(0, 0x1b);
+            }
+            Some(bytes)
+        }
+        Key::Named(named) => match named {
+            NamedKey::Enter => Some(b"\r".to_vec()),
+            NamedKey::Tab => Some(b"\t".to_vec()),
+            NamedKey::Backspace => Some(b"\x7f".to_vec()),
+            NamedKey::Escape => Some(b"\x1b".to_vec()),
+            NamedKey::Space => Some(b" ".to_vec()),
+            NamedKey::ArrowUp => Some(b"\x1b[A".to_vec()),
+            NamedKey::ArrowDown => Some(b"\x1b[B".to_vec()),
+            NamedKey::ArrowRight => Some(b"\x1b[C".to_vec()),
+            NamedKey::ArrowLeft => Some(b"\x1b[D".to_vec()),
+            NamedKey::Home => Some(b"\x1b[H".to_vec()),
+            NamedKey::End => Some(b"\x1b[F".to_vec()),
+            NamedKey::Delete => Some(b"\x1b[3~".to_vec()),
+            NamedKey::PageUp => Some(b"\x1b[5~".to_vec()),
+            NamedKey::PageDown => Some(b"\x1b[6~".to_vec()),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 fn main() {
