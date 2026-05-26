@@ -42,8 +42,8 @@ use futures_timer::Delay;
 use glam::Vec2;
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use term_core::{
-    create_emulator, AnsiPalette, CellFlags, CursorState, CursorStyle, RenderSnapshot, TermColor,
-    TerminalEmulator,
+    create_emulator, AnsiPalette, CellFlags, CursorState, CursorStyle, MouseMode, RenderSnapshot,
+    TermColor, TerminalEmulator,
 };
 use term_gpu::{
     decay_velocity, rasterize_glyph, FontFamily, GlyphAtlas, GlyphInstance, GpuRenderer,
@@ -78,6 +78,11 @@ const DIVIDER_HIT_TOLERANCE: f32 = 6.0;
 /// Focus border thickness and colour (alpha-blended, slim).
 const FOCUS_BORDER: f32 = 2.0;
 const FOCUS_COLOR: [f32; 4] = [1.0, 1.0, 1.0, 0.35];
+/// Highlight colour for selected cells. Matches Warp's
+/// `text_selection_color` at
+/// `crates/warp_core/src/ui/theme/color.rs:300` —
+/// `rgba(118, 167, 250, 0.4)`.
+const SELECTION_COLOR: [f32; 4] = [118.0 / 255.0, 167.0 / 255.0, 250.0 / 255.0, 0.4];
 
 #[derive(Debug, Clone, Copy)]
 enum CustomEvent {
@@ -97,6 +102,64 @@ struct DragState {
     branch: BranchId,
     split: Split,
     bounds: Rect,
+}
+
+/// Cell coordinates in absolute-row form: `row` indexes into
+/// `RenderSnapshot::rows` (scrollback first, then visible), so the
+/// selection stays anchored to its content as the viewport scrolls.
+/// `col` is in cells [0, cols).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CellPoint {
+    row: usize,
+    col: usize,
+}
+
+impl PartialOrd for CellPoint {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for CellPoint {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        (self.row, self.col).cmp(&(other.row, other.col))
+    }
+}
+
+/// Linear text selection inside a single panel. Modelled on Warp's
+/// `app/src/terminal/model/selection.rs` doc-comment:
+/// "A selection should start when the mouse is clicked, finalized
+///  when the button is released, cleared when text is added/removed
+///  /scrolled on the screen, and cleared if the user clicks off".
+#[derive(Debug, Clone, Copy)]
+struct Selection {
+    /// Where the mouse first pressed down.
+    anchor: CellPoint,
+    /// Where the mouse currently is (or was released).
+    cursor: CellPoint,
+}
+
+impl Selection {
+    fn new(point: CellPoint) -> Self {
+        Self {
+            anchor: point,
+            cursor: point,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.anchor == self.cursor
+    }
+
+    /// Returns the normalized `(start, end)` range with `start <= end`
+    /// in document order.
+    fn range(&self) -> (CellPoint, CellPoint) {
+        if self.anchor <= self.cursor {
+            (self.anchor, self.cursor)
+        } else {
+            (self.cursor, self.anchor)
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -119,6 +182,10 @@ struct PanelState {
     /// bottom (cursor visible); larger values mean we're looking
     /// further up into history.
     scroll: ScrollState,
+    /// Active text selection (set by mouse drag, cleared on Esc, new
+    /// click, PTY bytes, or column resize). `None` when the panel has
+    /// nothing selected.
+    selection: Option<Selection>,
 }
 
 struct App {
@@ -142,6 +209,10 @@ struct App {
     scroll_velocity: Option<ScrollVelocity>,
     momentum_abort: Option<AbortHandle>,
     gesture_end_abort: Option<AbortHandle>,
+    /// While the left mouse button is held over a panel cell (not on
+    /// a divider) and the emulator is not in mouse-reporting mode,
+    /// CursorMoved events update this panel's selection.cursor.
+    dragging_selection: Option<PanelId>,
     proxy: EventLoopProxy<CustomEvent>,
 }
 
@@ -165,6 +236,7 @@ impl App {
             scroll_velocity: None,
             momentum_abort: None,
             gesture_end_abort: None,
+            dragging_selection: None,
             proxy,
         }
     }
@@ -257,6 +329,7 @@ impl App {
             master: pair.master,
             grid_size: (cols, rows),
             scroll: ScrollState::default(),
+            selection: None,
         })
     }
 
@@ -279,6 +352,10 @@ impl App {
             if panel.grid_size == (cols, rows) {
                 continue;
             }
+            // Reflow will rearrange row positions — any active
+            // selection is clobbered. Clear it so the user sees a
+            // clean slate after the resize settles.
+            panel.selection = None;
             panel.emulator.resize(cols, rows);
             let _ = panel.master.resize(PtySize {
                 rows: rows as u16,
@@ -303,6 +380,43 @@ impl App {
                     && y < rect.y + rect.h
             })
             .map(|(id, _)| id)
+    }
+
+    /// Map a logical-coordinate point to the absolute cell (row in
+    /// `RenderSnapshot::rows`, column) at that screen position inside
+    /// the named panel. Returns `None` if the panel is gone.
+    fn cell_at_panel(&mut self, panel_id: PanelId, x: f32, y: f32) -> Option<CellPoint> {
+        let metrics = self.cell_metrics();
+        let panel_rect = self
+            .tree
+            .panels()
+            .into_iter()
+            .find_map(|(id, r)| if id == panel_id { Some(r) } else { None })?;
+        let panel = self.panels.get(&panel_id)?;
+        let sf = self.scale_factor;
+        let cell_w_logical = metrics.width_physical / sf;
+        let cell_h_logical = metrics.height_physical / sf;
+        if cell_w_logical <= 0.0 || cell_h_logical <= 0.0 {
+            return None;
+        }
+        let local_x = (x - panel_rect.x).max(0.0);
+        let local_y = (y - panel_rect.y).max(0.0);
+
+        let snap = panel.emulator.snapshot();
+        let total_rows = snap.rows.len();
+        let visible_rows = snap.visible_rows;
+        // Inverse of populate_panel's row positioning:
+        //   row_y_logical = row_idx * cell_h - baseline_offset + scroll_offset
+        //   row_idx = (row_y_logical + baseline_offset - scroll_offset) / cell_h
+        let baseline_offset = total_rows.saturating_sub(visible_rows) as f32 * cell_h_logical;
+        let row_unclamped =
+            ((local_y + baseline_offset - panel.scroll.offset_y) / cell_h_logical).floor();
+        let row = row_unclamped
+            .clamp(0.0, total_rows.saturating_sub(1) as f32) as usize;
+        let cols = snap.rows.first().map(|r| r.cells.len()).unwrap_or(0);
+        let col_unclamped = (local_x / cell_w_logical).floor();
+        let col = col_unclamped.clamp(0.0, cols.saturating_sub(1) as f32) as usize;
+        Some(CellPoint { row, col })
     }
 
     fn cancel_momentum(&mut self) {
@@ -505,6 +619,18 @@ impl App {
                 self.scroll_velocity = None;
             }
         }
+
+        // Text was added — drop any pending selection on this panel.
+        // Matches Warp's documented intent
+        // (`app/src/terminal/model/selection.rs:1-6`): "cleared when
+        // text is added/removed/scrolled on the screen". Don't clear
+        // while the user is mid-drag in this panel — they would lose
+        // their in-progress gesture.
+        if self.dragging_selection != Some(id) {
+            if let Some(panel) = self.panels.get_mut(&id) {
+                panel.selection = None;
+            }
+        }
     }
 
     fn write_to_focused(&mut self, bytes: &[u8]) {
@@ -578,7 +704,24 @@ impl App {
             return;
         }
         if let Some(id) = self.tree.hit_test(x, y) {
-            if self.tree.set_focus(id) {
+            let focus_changed = self.tree.set_focus(id);
+            // Only start a selection when the emulator is NOT in
+            // mouse-reporting mode — vim / htop / fzf etc. handle the
+            // drag themselves and we mustn't shadow them.
+            let owns_mouse = self
+                .panels
+                .get(&id)
+                .map(|p| p.emulator.mouse_mode() != MouseMode::None)
+                .unwrap_or(false);
+            if !owns_mouse {
+                if let Some(point) = self.cell_at_panel(id, x, y) {
+                    if let Some(panel) = self.panels.get_mut(&id) {
+                        panel.selection = Some(Selection::new(point));
+                    }
+                    self.dragging_selection = Some(id);
+                }
+            }
+            if focus_changed {
                 if let Some(w) = self.window.as_ref() {
                     w.request_redraw();
                 }
@@ -590,13 +733,19 @@ impl App {
         if self.drag.take().is_some() {
             // Apply the accumulated divider drag to the PTYs in one
             // shot. Doing this on every cursor move would spam the
-            // shell with SIGWINCHes, and our `Grid::resize` is
-            // destructive on column shrink (cells past the new width
-            // are dropped); the combination produced "ghost prompt"
-            // history fragments during a drag.
+            // shell with SIGWINCHes.
             self.sync_panels_to_tree();
             if let Some(w) = self.window.as_ref() {
                 w.request_redraw();
+            }
+        }
+        if let Some(id) = self.dragging_selection.take() {
+            // A click that didn't drag (anchor == cursor) clears the
+            // selection — keeps "click somewhere to deselect" working.
+            if let Some(panel) = self.panels.get_mut(&id) {
+                if panel.selection.map(|s| s.is_empty()).unwrap_or(false) {
+                    panel.selection = None;
+                }
             }
         }
     }
@@ -611,6 +760,18 @@ impl App {
             if self.tree.drag_divider(drag.branch, new_ratio) {
                 // Visual tree updates immediately; the PTY resize is
                 // deferred to `on_mouse_release` (see comment there).
+                if let Some(w) = self.window.as_ref() {
+                    w.request_redraw();
+                }
+            }
+        }
+        if let Some(panel_id) = self.dragging_selection {
+            if let Some(point) = self.cell_at_panel(panel_id, x, y) {
+                if let Some(panel) = self.panels.get_mut(&panel_id) {
+                    if let Some(sel) = panel.selection.as_mut() {
+                        sel.cursor = point;
+                    }
+                }
                 if let Some(w) = self.window.as_ref() {
                     w.request_redraw();
                 }
@@ -663,6 +824,17 @@ impl App {
                 &mut rects,
                 &mut glyphs,
             );
+            if let Some(sel) = panel.selection {
+                push_selection_rects(
+                    &sel,
+                    &snapshot,
+                    panel_rect,
+                    sf,
+                    metrics,
+                    scroll_offset_y,
+                    &mut rects,
+                );
+            }
             if id == focused {
                 if let Some(cr) = build_cursor_rect(
                     snapshot.cursor,
@@ -1095,6 +1267,75 @@ fn populate_panel(
                 });
             }
         }
+    }
+}
+
+/// Push a `RectInstance` for every cell inside the selection range,
+/// using the same row positioning math as `populate_panel`. Selection
+/// rects render after background rects (so they tint the bg) but
+/// before glyphs (so text stays legible through the highlight).
+///
+/// Wide-span selections produce one rect per cell — a future
+/// optimisation could coalesce adjacent cells into runs, but at our
+/// cell counts (panel ≤ ~250×80 ≈ 20k cells max, typical selection
+/// well under 1k) this is below the noise floor.
+fn push_selection_rects(
+    sel: &Selection,
+    snapshot: &RenderSnapshot,
+    panel_rect: Rect,
+    scale_factor: f32,
+    metrics: CellMetrics,
+    scroll_offset_y_logical: f32,
+    rects: &mut Vec<RectInstance>,
+) {
+    let (start, end) = sel.range();
+    if start == end {
+        return;
+    }
+    let sf = scale_factor;
+    let cell_h_logical = metrics.height_physical / sf;
+    let panel_origin_x_physical = panel_rect.x * sf;
+    let panel_origin_y_physical = panel_rect.y * sf;
+    let scroll_offset_y_physical = scroll_offset_y_logical * sf;
+    let total_rows = snapshot.rows.len();
+    let visible_rows = snapshot.visible_rows;
+    let baseline_offset_phys =
+        total_rows.saturating_sub(visible_rows) as f32 * metrics.height_physical;
+    let panel_max_x_phys = panel_rect.w * sf;
+    let panel_max_y_phys = panel_rect.h * sf;
+    let end_row = end.row.min(total_rows.saturating_sub(1));
+    for row_idx in start.row..=end_row {
+        let Some(row) = snapshot.rows.get(row_idx) else {
+            continue;
+        };
+        let row_y_phys = row_idx as f32 * metrics.height_physical
+            - baseline_offset_phys
+            + scroll_offset_y_physical;
+        if row_y_phys + metrics.height_physical <= 0.0 || row_y_phys >= panel_max_y_phys {
+            continue;
+        }
+        let cols = row.cells.len();
+        // Linear (row-wrapping) selection: full row on intermediate
+        // lines; clipped on first / last lines by start.col / end.col.
+        let col_start = if row_idx == start.row { start.col } else { 0 };
+        let col_end = if row_idx == end.row { end.col } else { cols };
+        if col_start >= col_end {
+            continue;
+        }
+        let span_cells = col_end - col_start;
+        let span_w_phys = (span_cells as f32 * metrics.width_physical)
+            .min(panel_max_x_phys - col_start as f32 * metrics.width_physical);
+        if span_w_phys <= 0.0 {
+            continue;
+        }
+        let pos_x_logical =
+            (panel_origin_x_physical + col_start as f32 * metrics.width_physical) / sf;
+        let pos_y_logical = (panel_origin_y_physical + row_y_phys) / sf;
+        rects.push(RectInstance {
+            pos: [pos_x_logical, pos_y_logical],
+            size: [span_w_phys / sf, cell_h_logical],
+            color: SELECTION_COLOR,
+        });
     }
 }
 
