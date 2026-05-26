@@ -31,6 +31,11 @@ mvi = { path = "crates/mvi" }
 term_gpu = { path = "crates/term_gpu" }
 term_core = { path = "crates/term_core" }
 winit = "0.30"
+# Scroll plumbing: glam::Vec2 backs ScrollVelocity, futures + futures-timer
+# drive the momentum tick loop without polling.
+glam = "0.30"
+futures = "0.3"
+futures-timer = "3"
 
 # TUI (legacy — removed in Phase 5 C10)
 ratatui = "0.30"

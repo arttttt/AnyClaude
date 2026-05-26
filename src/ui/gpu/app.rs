@@ -8,15 +8,21 @@
 //! verification; it is removed in the C10 cutover commit.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
+use futures::future::{abortable, AbortHandle};
+use futures_timer::Delay;
+use glam::Vec2;
 use term_core::{create_emulator, AnsiPalette, TerminalEmulator};
 use term_gpu::{
-    build_cursor_rect, encode_key, measure_cell_metrics, populate_panel, CellMetrics, FontFamily,
-    FontSystem, GlyphInstance, GpuRenderer, PanelRect, RectInstance, SwashCache, TextShapeCache,
+    build_cursor_rect, decay_velocity, encode_key, measure_cell_metrics, populate_panel,
+    CellMetrics, FontFamily, FontSystem, GlyphInstance, GpuRenderer, PanelRect, RectInstance,
+    ScrollState, ScrollVelocity, SwashCache, TextShapeCache, GESTURE_END_TIMEOUT,
+    MOMENTUM_FRAME_INTERVAL, MOMENTUM_MIN_VELOCITY, MOMENTUM_THRESHOLD, NUM_PIXELS_PER_LINE,
 };
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
-use winit::event::{ElementState, Modifiers, WindowEvent};
+use winit::event::{ElementState, Modifiers, MouseScrollDelta, TouchPhase, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
 use winit::keyboard::ModifiersState;
 use winit::window::{Window, WindowAttributes, WindowId};
@@ -31,11 +37,18 @@ const SCROLLBACK_LINES: usize = 1000;
 const INITIAL_GRID_COLS: usize = 80;
 const INITIAL_GRID_ROWS: usize = 24;
 
+/// Follow-mode tolerance: scroll offsets within this many logical
+/// pixels of the bottom count as "at bottom" — so a tiny stale offset
+/// from the last momentum tick doesn't keep follow mode off.
+const SCROLL_BOTTOM_EPSILON: f32 = 0.5;
+
 /// User event delivered to the winit loop. Drives redraws in response
-/// to PTY output without polling.
+/// to PTY output and scroll momentum without polling.
 #[derive(Debug, Clone, Copy)]
 enum UserEvent {
     PtyBytesArrived,
+    GestureEnded,
+    MomentumTick,
 }
 
 /// Entry point for the GPU UI. Signature mirrors `ui::run` so the C10
@@ -80,6 +93,11 @@ struct GpuApp {
     grid_size: (usize, usize),
 
     modifiers: ModifiersState,
+
+    scroll: ScrollState,
+    scroll_velocity: Option<ScrollVelocity>,
+    momentum_abort: Option<AbortHandle>,
+    gesture_end_abort: Option<AbortHandle>,
 }
 
 impl GpuApp {
@@ -98,6 +116,10 @@ impl GpuApp {
             emulator: None,
             grid_size: (INITIAL_GRID_COLS, INITIAL_GRID_ROWS),
             modifiers: ModifiersState::empty(),
+            scroll: ScrollState::default(),
+            scroll_velocity: None,
+            momentum_abort: None,
+            gesture_end_abort: None,
         }
     }
 
@@ -151,6 +173,10 @@ impl GpuApp {
 
     /// Drain the PTY's pending bytes into the emulator. Returns true
     /// when at least one chunk arrived (caller should request redraw).
+    /// Follow mode: if the scroll was at the bottom BEFORE applying
+    /// the new bytes, re-pin to the bottom afterward so the cursor
+    /// stays visible while the shell prints. Users who explicitly
+    /// scrolled up keep position.
     fn drain_pty(&mut self) -> bool {
         let Some(pty) = self.pty.as_mut() else {
             return false;
@@ -159,12 +185,128 @@ impl GpuApp {
         if chunks.is_empty() {
             return false;
         }
+        self.refresh_scroll_geometry();
+        let was_at_bottom = self.scroll.offset_y <= SCROLL_BOTTOM_EPSILON;
         if let Some(emu) = self.emulator.as_mut() {
             for chunk in chunks {
                 emu.process(&chunk);
             }
         }
+        self.refresh_scroll_geometry();
+        if was_at_bottom {
+            self.scroll.offset_y = 0.0;
+        }
         true
+    }
+
+    /// Recompute the scroll bounds from the current emulator snapshot
+    /// and window size. Called before any scroll mutation so clamping
+    /// uses up-to-date geometry.
+    fn refresh_scroll_geometry(&mut self) {
+        let metrics = self.cell_metrics();
+        let Some(window) = self.window.as_ref() else {
+            return;
+        };
+        let Some(emu) = self.emulator.as_ref() else {
+            return;
+        };
+        let sf = self.scale_factor.max(0.0001);
+        let cell_h_logical = metrics.height_physical / sf;
+        let snap = emu.snapshot();
+        let visible_h_logical = window.inner_size().height as f32 / sf;
+        self.scroll.total_size_px = snap.rows.len() as f32 * cell_h_logical;
+        self.scroll.visible_px = visible_h_logical;
+        let max = self.scroll.max_offset();
+        if self.scroll.offset_y > max {
+            self.scroll.offset_y = max;
+        }
+    }
+
+    fn cancel_momentum(&mut self) {
+        if let Some(a) = self.momentum_abort.take() {
+            a.abort();
+        }
+    }
+
+    fn cancel_gesture_end(&mut self) {
+        if let Some(a) = self.gesture_end_abort.take() {
+            a.abort();
+        }
+    }
+
+    /// Apply a wheel delta. Trackpad `TouchPhase::Ended` kicks momentum
+    /// immediately; for non-precise wheels (mice) a silence timeout
+    /// falls back to the same path.
+    fn on_wheel(&mut self, dy: f32, phase: TouchPhase, precise: bool) {
+        // A new wheel event interrupts any in-flight momentum + pending kickoff.
+        self.cancel_momentum();
+        self.cancel_gesture_end();
+
+        self.refresh_scroll_geometry();
+        self.scroll.scroll_by(dy);
+        self.scroll_velocity = Some(ScrollVelocity::record(
+            self.scroll_velocity,
+            Vec2::new(0.0, dy),
+            Instant::now(),
+        ));
+
+        match phase {
+            TouchPhase::Ended => {
+                self.on_gesture_end();
+            }
+            TouchPhase::Cancelled => {
+                self.scroll_velocity = None;
+            }
+            TouchPhase::Started | TouchPhase::Moved => {
+                if !precise {
+                    self.gesture_end_abort = Some(schedule_once(
+                        self.proxy.clone(),
+                        GESTURE_END_TIMEOUT,
+                        UserEvent::GestureEnded,
+                    ));
+                }
+            }
+        }
+
+        if let Some(w) = self.window.as_ref() {
+            w.request_redraw();
+        }
+    }
+
+    fn on_gesture_end(&mut self) {
+        let Some(v) = self.scroll_velocity else { return };
+        let speed = v.velocity.length();
+        if speed < MOMENTUM_THRESHOLD {
+            self.scroll_velocity = None;
+            return;
+        }
+        self.scroll_velocity = Some(ScrollVelocity {
+            velocity: v.clamped_for_momentum(),
+            last_update: Instant::now(),
+        });
+        self.momentum_abort = Some(schedule_momentum_loop(
+            self.proxy.clone(),
+            MOMENTUM_FRAME_INTERVAL,
+        ));
+    }
+
+    fn on_momentum_tick(&mut self) {
+        let Some(v) = self.scroll_velocity.as_mut() else { return };
+        let now = Instant::now();
+        let elapsed = now.duration_since(v.last_update).as_secs_f32();
+        v.last_update = now;
+        v.velocity = decay_velocity(v.velocity, elapsed);
+        if v.velocity.length() < MOMENTUM_MIN_VELOCITY {
+            self.cancel_momentum();
+            self.scroll_velocity = None;
+            return;
+        }
+        let delta = v.velocity * elapsed;
+        self.refresh_scroll_geometry();
+        self.scroll.scroll_by(delta.y);
+        if let Some(w) = self.window.as_ref() {
+            w.request_redraw();
+        }
     }
 
     /// Render one frame: clear, populate cells, push cursor, present.
@@ -184,6 +326,7 @@ impl GpuApp {
         let panel = PanelRect::new(0.0, 0.0, size.width as f32 / sf, size.height as f32 / sf);
 
         let snapshot = emulator.snapshot();
+        let scroll_offset_y = self.scroll.offset_y;
         let mut rects: Vec<RectInstance> = Vec::new();
         let mut glyphs: Vec<GlyphInstance> = Vec::new();
         populate_panel(
@@ -197,7 +340,7 @@ impl GpuApp {
             FONT_SIZE,
             sf,
             metrics,
-            0.0,
+            scroll_offset_y,
             &mut rects,
             &mut glyphs,
         );
@@ -207,7 +350,7 @@ impl GpuApp {
             panel,
             sf,
             metrics,
-            0.0,
+            scroll_offset_y,
         ) {
             rects.push(cursor_rect);
         }
@@ -266,6 +409,12 @@ impl ApplicationHandler<UserEvent> for GpuApp {
                     }
                 }
             }
+            UserEvent::GestureEnded => {
+                self.on_gesture_end();
+            }
+            UserEvent::MomentumTick => {
+                self.on_momentum_tick();
+            }
         }
     }
 
@@ -296,6 +445,13 @@ impl ApplicationHandler<UserEvent> for GpuApp {
             }
             WindowEvent::ModifiersChanged(mods) => {
                 self.update_modifiers(mods);
+            }
+            WindowEvent::MouseWheel { delta, phase, .. } => {
+                let (precise, dy) = match delta {
+                    MouseScrollDelta::PixelDelta(p) => (true, p.y as f32),
+                    MouseScrollDelta::LineDelta(_, v) => (false, v * NUM_PIXELS_PER_LINE),
+                };
+                self.on_wheel(dy, phase, precise);
             }
             WindowEvent::KeyboardInput { event, .. }
                 if event.state == ElementState::Pressed =>
@@ -329,4 +485,39 @@ impl GpuApp {
     fn update_modifiers(&mut self, mods: Modifiers) {
         self.modifiers = mods.state();
     }
+}
+
+/// Spawn a one-shot abortable timer that sends `event` after `delay`.
+/// Used to fall back to `GestureEnded` after a silence timeout when
+/// the input device doesn't emit `TouchPhase::Ended` (mice).
+fn schedule_once(
+    proxy: EventLoopProxy<UserEvent>,
+    delay: Duration,
+    event: UserEvent,
+) -> AbortHandle {
+    let (fut, abort) = abortable(async move {
+        Delay::new(delay).await;
+        let _ = proxy.send_event(event);
+    });
+    std::thread::spawn(move || {
+        let _ = futures::executor::block_on(fut);
+    });
+    abort
+}
+
+/// Spawn an abortable loop that fires `MomentumTick` every `interval`
+/// until aborted or the receiver is gone.
+fn schedule_momentum_loop(proxy: EventLoopProxy<UserEvent>, interval: Duration) -> AbortHandle {
+    let (fut, abort) = abortable(async move {
+        loop {
+            Delay::new(interval).await;
+            if proxy.send_event(UserEvent::MomentumTick).is_err() {
+                break;
+            }
+        }
+    });
+    std::thread::spawn(move || {
+        let _ = futures::executor::block_on(fut);
+    });
+    abort
 }
