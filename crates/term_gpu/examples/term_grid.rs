@@ -68,6 +68,11 @@ const CURSOR_STROKE_PHYSICAL: f32 = 2.0;
 const INITIAL_GRID_COLS: usize = 80;
 const INITIAL_GRID_ROWS: usize = 24;
 const SCROLLBACK_LINES: usize = 1000;
+/// Float fuzz when checking "are we at the very bottom of scrollback".
+/// Floats accumulated from wheel deltas rarely land on an exact integer
+/// pixel; this tolerates ~half a logical px of slop so follow mode
+/// engages reliably.
+const SCROLL_BOTTOM_EPSILON: f32 = 0.5;
 /// Logical-pixel tolerance for "did the mouse click on a divider?".
 const DIVIDER_HIT_TOLERANCE: f32 = 6.0;
 /// Focus border thickness and colour (alpha-blended, slim).
@@ -431,6 +436,18 @@ impl App {
     }
 
     fn drain_panel(&mut self, id: PanelId) {
+        // Follow mode: capture whether the panel was at the bottom of
+        // its scrollback BEFORE applying new bytes. If so, re-pin to
+        // the new bottom afterward so the cursor stays visible while
+        // the shell prints. Users who explicitly scrolled up keep
+        // their position.
+        self.refresh_scroll_geometry(id);
+        let was_at_bottom = self
+            .panels
+            .get(&id)
+            .map(|p| p.scroll.offset_y >= p.scroll.max_offset() - SCROLL_BOTTOM_EPSILON)
+            .unwrap_or(true);
+
         let Some(panel) = self.panels.get_mut(&id) else {
             return;
         };
@@ -444,6 +461,20 @@ impl App {
         if !responses.is_empty() {
             let _ = panel.writer.write_all(&responses);
             let _ = panel.writer.flush();
+        }
+
+        if was_at_bottom {
+            self.refresh_scroll_geometry(id);
+            if let Some(panel) = self.panels.get_mut(&id) {
+                panel.scroll.offset_y = panel.scroll.max_offset();
+            }
+            // Cancel any in-flight momentum on this panel — the shell's
+            // own output just shifted the viewport, so previous inertia
+            // is stale.
+            if self.scrolling_panel == Some(id) {
+                self.cancel_momentum();
+                self.scroll_velocity = None;
+            }
         }
     }
 
