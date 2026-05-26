@@ -413,6 +413,29 @@ impl App {
         ));
     }
 
+    /// Snap the focused panel's scroll to either the top (Cmd+Home) or
+    /// the bottom (Cmd+End) of its scrollback. Cancels any in-flight
+    /// momentum on that panel so the user's jump is not undone.
+    fn jump_focused_scroll_to(&mut self, bottom: bool) {
+        let target = self.tree.focus();
+        if !self.panels.contains_key(&target) {
+            return;
+        }
+        if self.scrolling_panel == Some(target) {
+            self.cancel_momentum();
+            self.cancel_gesture_end();
+            self.scroll_velocity = None;
+        }
+        self.refresh_scroll_geometry(target);
+        if let Some(panel) = self.panels.get_mut(&target) {
+            panel.scroll.offset_y = if bottom {
+                panel.scroll.max_offset()
+            } else {
+                0.0
+            };
+        }
+    }
+
     fn on_momentum_tick(&mut self) {
         let Some(target) = self.scrolling_panel else { return };
         let Some(v) = self.scroll_velocity.as_mut() else { return };
@@ -751,6 +774,25 @@ impl ApplicationHandler<CustomEvent> for App {
                                 if self.close_focused() {
                                     event_loop.exit();
                                 } else if let Some(w) = self.window.as_ref() {
+                                    w.request_redraw();
+                                }
+                                return;
+                            }
+                            _ => {}
+                        }
+                    }
+                    if let Key::Named(named) = &event.logical_key {
+                        match named {
+                            NamedKey::Home => {
+                                self.jump_focused_scroll_to(false);
+                                if let Some(w) = self.window.as_ref() {
+                                    w.request_redraw();
+                                }
+                                return;
+                            }
+                            NamedKey::End => {
+                                self.jump_focused_scroll_to(true);
+                                if let Some(w) = self.window.as_ref() {
                                     w.request_redraw();
                                 }
                                 return;
