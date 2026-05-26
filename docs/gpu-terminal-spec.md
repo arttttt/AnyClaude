@@ -2363,10 +2363,19 @@ renders correctly. **Blocker:** UX decisions — panels↔sessions
 mapping, tab semantics, header/footer chrome.
 
 ### Phase 6 — Polish (1 week) ⬜ pending
-**Deliverable:** Selection (drag-to-select cells, clipboard), font
-fallback configuration, BOLD/ITALIC/UNDERLINE/STRIKE visual
-rendering, direct codepoint→glyph_id lookup (avoid per-cell shape
-allocation), scrollback navigation in render_term, drop-shadow
-shader for overlays (§3.4).
+**Deliverable:**
+- **Reflow on column shrink/grow** in `term_core::Grid::resize`.
+  Currently the resize is destructive: `row.resize(new_cols)`
+  truncates cells past `new_cols`, and re-growing pads with blanks
+  instead of restoring the lost content. Tmux/alacritty wrap long
+  lines on shrink (overflow text moves to the next row, marked as a
+  continuation) and unwrap on grow. Reference: alacritty's
+  `grid_storage/resize.rs::shrink_cols` / `grow_cols` (~130 LoC).
+- Selection (drag-to-select cells, clipboard).
+- Font fallback configuration.
+- BOLD / ITALIC / UNDERLINE / STRIKE visual rendering.
+- Direct codepoint→glyph_id lookup (avoid per-cell shape allocation).
+- Scrollback navigation in `render_term`.
+- Drop-shadow shader for overlays (§3.4).
 
 **Progress: ~7 weeks done of ~11 planned.**
