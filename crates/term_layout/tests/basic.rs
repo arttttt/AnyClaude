@@ -1,7 +1,25 @@
 //! Bootstrap smoke tests for `term_layout`. Split / close / resize /
 //! hit_test / drag tests land alongside their respective commits.
 
-use term_layout::{PanelId, PanelTree};
+use term_layout::{PanelId, PanelTree, Split};
+
+#[test]
+fn set_focus_moves_focus_to_existing_panel() {
+    let mut tree = PanelTree::new(100.0, 100.0);
+    let root = tree.panels()[0].0;
+    let other = tree.split(root, Split::Horizontal, 0.5).unwrap();
+    assert_eq!(tree.focus(), other);
+    assert!(tree.set_focus(root));
+    assert_eq!(tree.focus(), root);
+}
+
+#[test]
+fn set_focus_rejects_unknown_id() {
+    let mut tree = PanelTree::new(100.0, 100.0);
+    let original = tree.focus();
+    assert!(!tree.set_focus(PanelId(999)));
+    assert_eq!(tree.focus(), original);
+}
 
 #[test]
 fn new_tree_has_one_full_size_panel() {

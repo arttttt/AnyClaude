@@ -96,6 +96,17 @@ impl PanelTree {
         self.focus
     }
 
+    /// Move focus to `id`. Returns `true` when the panel exists,
+    /// `false` (and leaves focus unchanged) otherwise. Use this from
+    /// click handlers or focus-navigation shortcuts.
+    pub fn set_focus(&mut self, id: PanelId) -> bool {
+        let exists = self.panels().iter().any(|(p, _)| *p == id);
+        if exists {
+            self.focus = id;
+        }
+        exists
+    }
+
     /// True if the tree contains no panels (every panel was closed).
     pub fn is_empty(&self) -> bool {
         self.root.is_none()
@@ -288,12 +299,16 @@ fn split_node(
 
 /// Returned by [`PanelTree::dividers`]. `rect` is the 1-px-thin
 /// rectangle the divider line occupies — use it directly for drawing,
-/// or grow it by a tolerance margin for mouse hit-testing.
+/// or grow it by a tolerance margin for mouse hit-testing. `bounds`
+/// is the parent branch's bounds (the rectangle containing both
+/// children plus this divider) — needed when translating a cursor
+/// position into a new ratio during a drag.
 #[derive(Debug, Clone, Copy)]
 pub struct Divider {
     pub id: BranchId,
     pub split: Split,
     pub rect: Rect,
+    pub bounds: Rect,
 }
 
 fn collect_dividers(node: &Node, out: &mut Vec<Divider>) {
@@ -325,6 +340,7 @@ fn collect_dividers(node: &Node, out: &mut Vec<Divider>) {
                 id: *id,
                 split: *split,
                 rect,
+                bounds: *bounds,
             });
             collect_dividers(left, out);
             collect_dividers(right, out);

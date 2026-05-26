@@ -4106,6 +4106,7 @@ dependencies = [
  "glam",
  "pollster",
  "term_core",
+ "term_layout",
  "wgpu",
  "winit",
 ]
