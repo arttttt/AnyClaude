@@ -4,8 +4,8 @@
 //! what to do with them. No rendering, no PTY, no UX hooks. See
 //! `docs/gpu-terminal-spec.md` §6 for the surrounding design.
 //!
-//! `split` / `resize` / `close` land in this and the previous commit;
-//! `hit_test` / `drag_divider` follow.
+//! `split` / `resize` / `close` / `hit_test` are in place; the only
+//! remaining mutator is `drag_divider`, which lands in the next commit.
 
 /// Minimum and maximum split ratios. Splits clamp the requested ratio
 /// into this range to avoid degenerate zero-area panels.
@@ -146,6 +146,15 @@ impl PanelTree {
         }
     }
 
+    /// Find the panel containing the point `(x, y)`. Returns `None`
+    /// when the point falls outside every panel's bounds (most often
+    /// because the tree is empty, but also when the point sits exactly
+    /// on the right or bottom edge — bounds are half-open on those
+    /// edges to avoid two panels claiming the same divider pixel).
+    pub fn hit_test(&self, x: f32, y: f32) -> Option<PanelId> {
+        self.root.as_ref().and_then(|root| hit_test_node(root, x, y))
+    }
+
     /// Remove a panel. The sibling (or sibling subtree) absorbs the
     /// parent branch's bounds; the tree never keeps a one-child Branch
     /// around. Closing the only remaining panel empties the tree —
@@ -237,6 +246,25 @@ fn split_node(
                 || split_node(right, target, split, ratio, new_id)
         }
     }
+}
+
+fn hit_test_node(node: &Node, x: f32, y: f32) -> Option<PanelId> {
+    match node {
+        Node::Leaf { id, bounds } => {
+            if rect_contains(*bounds, x, y) {
+                Some(*id)
+            } else {
+                None
+            }
+        }
+        Node::Branch { left, right, .. } => {
+            hit_test_node(left, x, y).or_else(|| hit_test_node(right, x, y))
+        }
+    }
+}
+
+fn rect_contains(r: Rect, x: f32, y: f32) -> bool {
+    x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h
 }
 
 fn recompute_bounds(node: &mut Node, new_bounds: Rect) {
