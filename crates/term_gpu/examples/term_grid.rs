@@ -588,6 +588,7 @@ impl App {
                 continue;
             };
             let snapshot = panel.emulator.snapshot();
+            let scroll_offset_y = panel.scroll.offset_y;
             populate_panel(
                 &snapshot,
                 panel_rect,
@@ -598,11 +599,19 @@ impl App {
                 shape_cache,
                 sf,
                 metrics,
+                scroll_offset_y,
                 &mut rects,
                 &mut glyphs,
             );
             if id == focused {
-                if let Some(cr) = build_cursor_rect(snapshot.cursor, panel_rect, sf, metrics) {
+                if let Some(cr) = build_cursor_rect(
+                    snapshot.cursor,
+                    snapshot.visible_start(),
+                    panel_rect,
+                    sf,
+                    metrics,
+                    scroll_offset_y,
+                ) {
                     rects.push(cr);
                 }
                 rects.extend(focus_border(panel_rect));
@@ -841,6 +850,7 @@ fn populate_panel(
     shape_cache: &mut TextShapeCache,
     scale_factor: f32,
     metrics: CellMetrics,
+    scroll_offset_y_logical: f32,
     rects: &mut Vec<RectInstance>,
     glyphs: &mut Vec<GlyphInstance>,
 ) {
@@ -849,6 +859,16 @@ fn populate_panel(
     let cell_h_logical = metrics.height_physical / sf;
     let panel_origin_x_physical = panel_rect.x * sf;
     let panel_origin_y_physical = panel_rect.y * sf;
+    let scroll_offset_y_physical = scroll_offset_y_logical * sf;
+    let total_rows = snapshot.rows.len();
+    let visible_rows = snapshot.visible_rows;
+    // The visible region of the buffer is anchored at the BOTTOM of the
+    // panel — i.e. with `scroll_offset_y = 0` (no scrollback shown) row
+    // `total - visible` should land at the panel's first cell. We
+    // accomplish this by shifting every row up by
+    // `(total - visible) * cell_h`, then applying the scroll offset.
+    let baseline_offset_phys = (total_rows.saturating_sub(visible_rows)) as f32
+        * metrics.height_physical;
     let mut cell_text = String::with_capacity(8);
 
     // Clip the cell grid to the panel's logical bounds. While a
@@ -858,10 +878,14 @@ fn populate_panel(
     // the larger grid spill into the neighbouring panel.
     let panel_max_x_phys = panel_rect.w * sf;
     let panel_max_y_phys = panel_rect.h * sf;
-    for (row_idx, row) in snapshot.visible_iter().enumerate() {
-        let row_y_phys = row_idx as f32 * metrics.height_physical;
-        if row_y_phys >= panel_max_y_phys {
-            break;
+    for (row_idx, row) in snapshot.rows.iter().enumerate() {
+        // Y of this row's top edge relative to panel top, in physical px.
+        // `+ scroll_offset` because scrolling UP visually moves rows DOWN.
+        let row_y_phys = row_idx as f32 * metrics.height_physical
+            - baseline_offset_phys
+            + scroll_offset_y_physical;
+        if row_y_phys + metrics.height_physical <= 0.0 || row_y_phys >= panel_max_y_phys {
+            continue;
         }
         for (col_idx, cell) in row.cells.iter().enumerate() {
             let col_x_phys = col_idx as f32 * metrics.width_physical;
@@ -1023,22 +1047,38 @@ fn focus_border(rect: Rect) -> [RectInstance; 4] {
 
 fn build_cursor_rect(
     cursor: CursorState,
+    visible_start: usize,
     panel_rect: Rect,
     scale_factor: f32,
     metrics: CellMetrics,
+    scroll_offset_y_logical: f32,
 ) -> Option<RectInstance> {
     if !cursor.visible {
         return None;
     }
     let sf = scale_factor;
     let cell_offset_x_phys = cursor.col as f32 * metrics.width_physical;
-    let cell_offset_y_phys = cursor.row as f32 * metrics.height_physical;
-    // Cull when the cursor's cell origin would land outside the
-    // panel's logical bounds. During a divider drag the PanelTree
-    // shrinks the panel before the emulator gets the SIGWINCH (we
-    // defer that to mouse release), so the cursor's old column index
-    // can momentarily fall past the new panel width.
-    if cell_offset_x_phys >= panel_rect.w * sf || cell_offset_y_phys >= panel_rect.h * sf {
+    // Cursor's row is visible-relative; combine with `visible_start` to
+    // get the absolute row, then subtract the visible-anchor offset so
+    // that `scroll_offset_y == 0` puts the cursor at its expected place
+    // inside the panel.
+    let abs_row = visible_start + cursor.row as usize;
+    let scroll_offset_y_phys = scroll_offset_y_logical * sf;
+    let baseline_offset_phys =
+        visible_start as f32 * metrics.height_physical;
+    let cell_offset_y_phys = abs_row as f32 * metrics.height_physical
+        - baseline_offset_phys
+        + scroll_offset_y_phys;
+    // Cull when the cursor's cell origin lies outside the panel's
+    // logical bounds — during a divider drag the PanelTree shrinks
+    // before the emulator gets SIGWINCH, AND when the user has
+    // scrolled up into history the cursor falls past the bottom of
+    // the visible region.
+    let panel_h_phys = panel_rect.h * sf;
+    if cell_offset_x_phys >= panel_rect.w * sf
+        || cell_offset_y_phys + metrics.height_physical <= 0.0
+        || cell_offset_y_phys >= panel_h_phys
+    {
         return None;
     }
     let cell_x_phys = panel_rect.x * sf + cell_offset_x_phys;
