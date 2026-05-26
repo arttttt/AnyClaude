@@ -2430,15 +2430,53 @@ this phase plumbed them through the renderer:
 threshold not reached at two consumers (YAGNI). Eventual extraction
 when a third consumer arrives.
 
+### Scrollback in term_grid ✅ done (May 2026)
+**Files:** `crates/term_core/src/emulator.rs`,
+`crates/term_core/src/grid.rs`,
+`crates/term_gpu/examples/term_grid.rs`,
+`crates/term_core/examples/dump.rs`,
+`crates/term_gpu/examples/render_term.rs`.
+**Delivered:** Per-panel pixel-precise scroll with momentum
+(ported from `scroll_demo`), follow mode, and `Cmd+Home`/`Cmd+End`
+jumps.
+
+1. `RenderSnapshot.rows` now exposes the entire buffer
+   (scrollback + visible) and gains a `visible_rows: usize` field
+   plus `visible_start()` / `visible_iter()` helpers. Existing
+   consumers that only want the visible region switch to
+   `visible_iter()`.
+2. `PanelState` carries a `ScrollState`. Mouse wheel events
+   hit-test against the panel tree to find the panel under the
+   cursor and route the delta there. `App.scrolling_panel`,
+   `momentum_abort`, `gesture_end_abort` are single fields keyed
+   by panel id — only one panel has in-flight inertia at a time.
+3. `populate_panel` and `build_cursor_rect` walk all snapshot rows
+   and apply a baseline + offset transform so the visible region
+   is anchored to the bottom at `offset_y == 0`.
+4. Follow mode: `drain_panel` captures `was_at_bottom =
+   offset_y <= SCROLL_BOTTOM_EPSILON` BEFORE applying PTY bytes;
+   if so, re-pins `offset_y = 0.0` after the buffer grows so the
+   cursor stays in view.
+5. `Cmd+End` snaps to bottom (`offset = 0`); `Cmd+Home` snaps to
+   top of scrollback (`offset = max_offset`).
+
+**Convention note:** `term_grid` inverts the `ScrollState` docs
+convention. `offset_y == 0` is the BOTTOM (cursor visible);
+`offset_y == max_offset` is the TOP of scrollback. The terminal
+default state is "at the cursor", and natural-scrolling positive
+wheel deltas increase `offset_y` to reveal scrollback — no manual
+sign inversion needed. See the comment block in `populate_panel`.
+
 ### Phase 6 — Polish (1 week, partial) ⏳ in progress
 **Delivered:**
 - Reflow on column shrink/grow — see "Reflow on column resize" entry.
 - SGR visual flags — see "SGR visual flags" entry.
+- Scrollback navigation in `term_grid` — see "Scrollback in
+  term_grid" entry.
 
 **Remaining (no fixed order):**
 - Selection (drag-to-select cells).
 - Clipboard (paste in particular — copy follows once selection lands).
-- Scrollback navigation in `term_grid` (port momentum from `scroll_demo`).
 - Direct codepoint→glyph_id lookup (avoid per-cell shape allocation).
 - Font fallback configuration.
 - Drop-shadow shader for overlays (§3.4).

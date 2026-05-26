@@ -657,6 +657,58 @@ project policy; verification is visual).
 | `term_gpu` | 0 (visual demos only) | 4 examples, full SGR |
 | `term_layout` | 28 | BSP shape + drag |
 
+## Scrollback in `term_grid` (Phase 6 partial, May 2026)
+
+Six functional commits + one revert (`5700301`) + one final fix
+(`c5ebc1b`). Net ~250 LoC plus docs. Momentum integrator from
+Phase 3.5's `scroll_demo` was the foundation; this work was
+multi-panel integration, follow mode, and resolving a convention
+bug.
+
+| Commit | Files | Lines |
+|---|---|---|
+| `0d8b23b` (snapshot) | `term_core/src/{emulator,grid}.rs` + 3 consumer updates | ~35 |
+| `ef15d9f` (ScrollState wiring) | `term_grid.rs` | ~235 |
+| `2b88388` (render offset) | `term_grid.rs` | ~52 |
+| `88426e9` (follow mode) | `term_grid.rs` | ~30 |
+| `c23c26e` (jumps) | `term_grid.rs` | ~42 |
+| `e56a33e` → `5700301` | revert pair | net 0 |
+| `c5ebc1b` (convention fix) | `term_grid.rs` | ~10 |
+
+**Scroll convention** (inverted from `ScrollState` docs):
+
+| `offset_y` | Meaning |
+|---|---|
+| 0.0 | BOTTOM (cursor visible, follow mode target) |
+| `max_offset` | TOP of scrollback (oldest content) |
+
+**Follow-mode predicate**:
+
+```rust
+was_at_bottom = panel.scroll.offset_y <= SCROLL_BOTTOM_EPSILON
+SCROLL_BOTTOM_EPSILON = 0.5  // logical pixels
+```
+
+**App-level in-flight gesture**: single `scrolling_panel:
+Option<PanelId>` + single `momentum_abort: Option<AbortHandle>`.
+`CustomEvent::MomentumTick(PanelId)` carries the panel id so
+stale ticks after focus change are dropped.
+
+## Branch state at end of scrollback
+
+69 commits on `feat/gpu-terminal`. `term_grid` is now usable as a
+real terminal: long shell output scrolls cleanly with trackpad
+momentum, follow mode keeps the cursor visible while the shell
+prints, `Cmd+Home`/`Cmd+End` jump between scrollback top and
+bottom. Phase 6 remaining: selection, clipboard, font fallback,
+performance pass.
+
+| Crate | Tests | Notable |
+|---|---|---|
+| `term_core` | 56 | reflow done, snapshot exposes full buffer |
+| `term_gpu` | 0 (visual demos only) | 4 examples, full SGR, scrollback |
+| `term_layout` | 28 | BSP shape + drag |
+
 ## License attribution snippet
 
 For files containing code ported from Warp:

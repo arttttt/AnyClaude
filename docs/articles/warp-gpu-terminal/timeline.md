@@ -428,3 +428,63 @@ SGR test strings) so the SGR visual tuning may need a follow-up
 once an interactive smoke pass is possible. Phase 6 remaining
 (no fixed order): selection, clipboard, scrollback in `term_grid`,
 font fallback, performance pass.
+
+## 18. Scrollback in term_grid (6 commits + 1 revert + 1 fix)
+
+The next user-visible Phase 6 item. The momentum integrator already
+existed in `scroll_demo` (Phase 3.5 prototype); this work was port
++ multi-panel integration + follow-mode + the convention bug.
+
+| # | Commit | Files | Why |
+|---|---|---|---|
+| 62 | `0d8b23b` | `term_core/src/emulator.rs`, `grid.rs`, +consumers | `RenderSnapshot.rows` now holds the full buffer; `visible_rows` and `visible_iter()` ride alongside it. |
+| 63 | `ef15d9f` | `term_gpu/examples/term_grid.rs` | `PanelState` gains `scroll: ScrollState`. Wheel handler hit-tests against the panel tree and routes deltas. Single global momentum / gesture-end abort handles, keyed by panel id via `CustomEvent::{MomentumTick, GestureEnded}(PanelId)`. |
+| 64 | `2b88388` | `term_gpu/examples/term_grid.rs` | `populate_panel` + `build_cursor_rect` take `scroll_offset_y` and apply a baseline + offset transform so all rows position correctly under any scroll. |
+| 65 | `88426e9` | `term_gpu/examples/term_grid.rs` | Follow mode: snapshot `was_at_bottom` before applying bytes; re-pin if so. |
+| 66 | `c23c26e` | `term_gpu/examples/term_grid.rs` | `Cmd+Home` / `Cmd+End` jumps. |
+| 67 | `e56a33e` | `term_gpu/examples/term_grid.rs` | **Attempted fix** — switched populate_panel to `ScrollState`'s documented convention (0 = top). |
+| 68 | `5700301` | `term_gpu/examples/term_grid.rs` | Revert of `e56a33e` after user feedback ("ты похоже скролл инвертировал"). |
+| 69 | `c5ebc1b` | `term_gpu/examples/term_grid.rs` | Real fix — `was_at_bottom` check was inverted relative to `term_grid`'s convention; Cmd+End / Cmd+Home jump destinations swapped. |
+
+Lessons:
+
+1. **Per-snapshot rendering can absorb the scroll position math.**
+   No new scroll uniform per panel, no separate render pass. The
+   data crate (`term_core`) is unchanged; the renderer translates
+   row indices to physical Y per cell, including the scroll offset.
+   Multi-panel just works.
+
+2. **One in-flight gesture, keyed by panel id.** Per-panel
+   momentum threads would be overengineering for a UX where users
+   scroll one thing at a time. A single `App.scrolling_panel:
+   Option<PanelId>` and a single `momentum_abort` handle are
+   enough. The `CustomEvent::MomentumTick(PanelId)` payload lets
+   stale ticks be dropped cleanly when focus moves.
+
+3. **Convention divergence from a library doc is fine — but
+   commit to it.** The `term_gpu::ScrollState` doc says
+   `offset_y == 0` is the top. `term_grid` flips this: 0 is the
+   bottom, max is the top. The flip is what makes natural macOS
+   scrolling work without sign inversion AND keeps the default
+   state ("at cursor") at `offset_y = 0`. The mistake was
+   "correcting" populate_panel to match the docs (e56a33e)
+   without realizing the wheel direction was tuned to the
+   inverted convention. The fix wasn't to change `populate_panel`
+   — it was to align `was_at_bottom` and the jump destinations
+   to the same convention the renderer was already using. The
+   convention is now documented as a comment block in
+   `populate_panel`.
+
+4. **Capture user state PRE-change, act on it POST.** Follow mode
+   snapshots `was_at_bottom` before processing bytes. If we
+   checked after, the new `max_offset` would erase the signal.
+   Same pattern works for "auto-anything when state shifts".
+
+## 19. Branch state at end of scrollback
+
+69 commits on `feat/gpu-terminal`. `term_grid` now usable as a
+real terminal — long shell output (`man bash`, `seq 1 1000`,
+`ls /usr/bin`) scrolls cleanly, momentum matches scroll_demo's
+feel, and follow mode keeps the cursor visible while the shell
+prints. Phase 6 remaining: selection, clipboard, font fallback,
+performance pass.

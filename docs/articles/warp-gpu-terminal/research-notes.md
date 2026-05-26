@@ -782,3 +782,146 @@ in (palette? font system? scale factor?), and a less self-contained
 example. YAGNI says wait for a third consumer. When `anyclaude`
 itself starts rendering through `term_gpu` (Phase 5), that's the
 third consumer and the natural extraction point.
+
+## 17. Scrollback in `term_grid` (Phase 6 partial)
+
+Six functional commits + one revert + one fix.
+`scroll_demo` (Phase 3.5 prototype) already had the momentum
+integrator and the wheel-event plumbing; this work was port plus
+multi-panel and follow mode.
+
+### Snapshot grew
+
+`RenderSnapshot.rows` previously cloned just the visible region.
+Rendering scrollback needs every row, so the field grew to hold
+the full buffer (scrollback first, then visible) alongside a new
+`visible_rows: usize`. Helpers `visible_start()` and
+`visible_iter()` keep existing consumers minimal:
+
+```rust
+pub struct RenderSnapshot {
+    pub rows: Vec<Row>,           // ALL rows now (was visible-only)
+    pub visible_rows: usize,       // count of trailing visible rows
+    pub cursor: CursorState,
+    pub title: String,
+    pub cwd: Option<String>,
+}
+```
+
+`render_term` and the `dump` example switched to `visible_iter()`
+so their behavior is unchanged. `term_grid` walks
+`snapshot.rows.iter()` directly with the scroll offset applied
+per row.
+
+### Per-panel ScrollState, app-level in-flight gesture
+
+```rust
+struct PanelState { /* ... */ scroll: ScrollState }
+
+struct App {
+    /* ... */
+    scrolling_panel: Option<PanelId>,
+    scroll_velocity: Option<ScrollVelocity>,
+    momentum_abort: Option<AbortHandle>,
+    gesture_end_abort: Option<AbortHandle>,
+}
+```
+
+Only one panel has inflight momentum at a time. Switching panels
+(by hovering a new one with a wheel event) discards the previous
+velocity sample and points the abort handles at the new target.
+`CustomEvent::MomentumTick(PanelId)` carries the panel id so a
+stale tick after focus change can be dropped:
+
+```rust
+CustomEvent::MomentumTick(id) => {
+    if self.scrolling_panel == Some(id) {
+        self.on_momentum_tick();
+    }
+}
+```
+
+### Rendering: baseline + offset projection
+
+```rust
+let scroll_offset_y_physical = scroll_offset_y_logical * sf;
+let total_rows = snapshot.rows.len();
+let visible_rows = snapshot.visible_rows;
+let baseline_offset_phys =
+    (total_rows.saturating_sub(visible_rows)) as f32 * cell_h_phys;
+for (row_idx, row) in snapshot.rows.iter().enumerate() {
+    let row_y_phys = row_idx as f32 * cell_h_phys
+        - baseline_offset_phys
+        + scroll_offset_y_physical;
+    if row_y_phys + cell_h_phys <= 0.0 || row_y_phys >= panel_max_y_phys {
+        continue;
+    }
+    // ...render cells...
+}
+```
+
+Note `continue`, not `break`. The loop now starts at row 0
+(potentially far above the panel when scroll is near max), so the
+first iterations skip; later iterations land in the panel.
+
+### Follow mode: capture pre, act post
+
+```rust
+fn drain_panel(&mut self, id: PanelId) {
+    self.refresh_scroll_geometry(id);
+    let was_at_bottom = self.panels.get(&id)
+        .map(|p| p.scroll.offset_y <= SCROLL_BOTTOM_EPSILON)
+        .unwrap_or(true);
+    // ...apply PTY bytes...
+    if was_at_bottom {
+        self.refresh_scroll_geometry(id);
+        if let Some(panel) = self.panels.get_mut(&id) {
+            panel.scroll.offset_y = 0.0;
+        }
+    }
+}
+```
+
+`SCROLL_BOTTOM_EPSILON = 0.5` (logical px) swallows float
+accumulation from wheel deltas. Users who scrolled up explicitly
+keep their position — `was_at_bottom` is false, follow mode
+doesn't engage.
+
+### The convention divergence
+
+`term_gpu::ScrollState` is documented with `offset_y == 0` at the
+top of content. `term_grid` uses the opposite: 0 is at the BOTTOM
+(cursor visible), `max_offset` is at the TOP of scrollback. The
+flip is deliberate:
+
+1. Default state of `ScrollState::default()` puts `offset_y = 0`,
+   which under `term_grid`'s convention means "at the cursor".
+   Matches the expected initial state of a fresh terminal.
+2. macOS natural scrolling delivers positive `MouseScrollDelta`
+   on the fingers-down gesture. `scroll_by(positive)` increases
+   `offset_y` — under `term_grid`'s convention, that's "scroll up
+   into scrollback". No manual sign inversion needed.
+
+Mid-debug I "corrected" `populate_panel` to match the
+ScrollState docs (`offset_y == 0` → render top of buffer). The
+user reported the scroll felt inverted. The actual bug was in
+`drain_panel`'s `was_at_bottom` check (it was
+`offset_y >= max - eps`, the right side for ScrollState's
+convention but the wrong side for `term_grid`'s). Reverting
+`populate_panel` and fixing `was_at_bottom = offset_y <= eps`
+restored both follow mode and the wheel direction.
+
+The convention is now documented as a comment block in
+`populate_panel`:
+
+```rust
+// Scroll convention:
+//   * offset_y == 0           → BOTTOM (cursor visible)
+//   * offset_y == max_offset  → TOP of scrollback
+```
+
+Lesson: a library's documented convention is what the library
+was designed around, not a law for downstream callers. The fix
+when something feels wrong isn't necessarily "align to the
+library" — it's "make every part of the downstream code
+consistent with itself".

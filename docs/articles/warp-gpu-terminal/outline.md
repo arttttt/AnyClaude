@@ -390,6 +390,68 @@ Sin: `term_grid` and `render_term` ended up with copy-pasted SGR
 logic. Two consumers = below the DRY threshold; extraction waits
 for a third (YAGNI).
 
+## Act 15 — Scrollback with momentum, follow mode, jumps
+
+The next user-visible Phase 6 item. Without scrollback, the demo
+only shows the last visible_rows lines — barely usable as a real
+terminal. The momentum integrator already existed in `scroll_demo`
+(Phase 3.5 prototype); this work was port + multi-panel
+integration + follow mode + finding a convention bug.
+
+Architectural calls:
+
+1. **Per-snapshot rendering, not a per-panel scroll uniform.**
+   `RenderSnapshot.rows` grew to include the full buffer (scrollback
+   + visible), and a `visible_rows: usize` field plus
+   `visible_iter()` helper let existing consumers keep their old
+   "just the visible region" view. `populate_panel` translates
+   row indices to physical Y per cell, including the scroll
+   offset. No new uniform, no new render pass — multi-panel just
+   works.
+
+2. **One in-flight gesture, keyed by panel id.** `PanelState`
+   carries its own `ScrollState`, but `App.scrolling_panel`,
+   `momentum_abort`, and `gesture_end_abort` are app-level and
+   refer to whichever panel last got a wheel event. Per-panel
+   momentum threads would be over-engineering for a UX where the
+   user scrolls one thing at a time. `CustomEvent::MomentumTick(PanelId)`
+   carries the panel id so stale ticks (after focus change or
+   panel close) are dropped cleanly.
+
+3. **Follow mode = capture state pre-change, act post.**
+   `drain_panel` snapshots `was_at_bottom` from the current
+   `ScrollState` BEFORE processing bytes. If true, after the
+   buffer grows, it re-pins `offset_y` to the new bottom. Users
+   who explicitly scrolled up stay where they were.
+
+The convention bug deserves its own act:
+
+## Act 16 — When a library doc tells you the opposite
+
+`term_gpu::ScrollState` is documented with `offset_y == 0` at the
+top of content and `max_offset` at the bottom. `term_grid` flips
+this: 0 is at the bottom (cursor visible), max is at the top of
+scrollback. The flip is deliberate — keeps the default state
+"at the cursor" matching `ScrollState::default()`, and natural
+macOS scrolling delivers positive wheel deltas on the
+fingers-down gesture, which then increases `offset_y` toward
+scrollback with no manual sign inversion.
+
+Mid-implementation I "fixed" `populate_panel` to match
+ScrollState's docs (commit `e56a33e`). The user reported scroll
+felt inverted. The actual bug was in `drain_panel`'s
+`was_at_bottom` check (it was comparing against `max_offset` —
+the wrong side under our flipped convention). Once `was_at_bottom`
+was fixed to `offset_y <= eps`, the original `populate_panel`
+worked.
+
+Lesson: library docs describe what the library was designed
+around. When a downstream user inverts the convention deliberately,
+mid-debug "let's align to the docs" can be the wrong direction.
+The fix is to make every part of the downstream code consistent
+with itself, not with the docs. The convention is now recorded as
+a comment block in `populate_panel`.
+
 ## Outro — Takeaways
 
 1. **Read the source.** Warp's MIT crates contain answers to questions
@@ -518,6 +580,24 @@ for a third (YAGNI).
     `render_term` carry identical SGR plumbing. Extracting it
     when there are only two consumers buys nothing; YAGNI says
     wait for the third.
+29. **One in-flight gesture, keyed by id, beats per-thing threads.**
+    Per-panel momentum threads would be gratuitous for a UX where
+    users scroll one thing at a time. A single
+    `App.scrolling_panel: Option<PanelId>` and a single momentum
+    abort handle do the job; the `CustomEvent::MomentumTick(PanelId)`
+    payload makes stale ticks easy to ignore when focus moves.
+30. **Capture user state pre-change, act on it post.** Follow mode
+    snapshots `was_at_bottom` BEFORE applying bytes; checks AFTER
+    would see the new `max_offset` and lose the signal. Generalizes
+    to any "auto-anything when something shifts" decision.
+31. **Library doc conventions are not laws for downstream callers.**
+    `ScrollState`'s docs say `offset_y == 0` is the top. `term_grid`
+    flips this so 0 is at the cursor (matches `Default::default()`
+    and natural macOS scroll direction with no sign inversion).
+    Mid-debug I "aligned to the docs" and broke the wheel feel.
+    The fix wasn't to change the convention — it was to make
+    every comparison in `term_grid` consistent with its own
+    chosen convention.
 
 ## Possible follow-up articles
 
