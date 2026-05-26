@@ -10,13 +10,14 @@
 //! no IPC, no shutdown coordinator, no proxy. The full bootstrap is
 //! wired in at the C10 cutover.
 
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::sync::mpsc;
 
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 
 pub struct ShellPty {
     master: Box<dyn MasterPty + Send>,
+    writer: Box<dyn Write + Send>,
     bytes_rx: mpsc::Receiver<Vec<u8>>,
 }
 
@@ -50,6 +51,10 @@ impl ShellPty {
             .master
             .try_clone_reader()
             .map_err(|e| io::Error::other(e.to_string()))?;
+        let writer = pair
+            .master
+            .take_writer()
+            .map_err(|e| io::Error::other(e.to_string()))?;
         let (tx, rx) = mpsc::channel::<Vec<u8>>();
 
         std::thread::spawn(move || {
@@ -70,6 +75,7 @@ impl ShellPty {
 
         Ok(Self {
             master: pair.master,
+            writer,
             bytes_rx: rx,
         })
     }
@@ -91,5 +97,12 @@ impl ShellPty {
             pixel_width: 0,
             pixel_height: 0,
         });
+    }
+
+    /// Write `bytes` to the PTY's stdin. Returns an error when the
+    /// shell has closed (broken pipe) or the underlying write fails.
+    pub fn write(&mut self, bytes: &[u8]) -> io::Result<()> {
+        self.writer.write_all(bytes)?;
+        self.writer.flush()
     }
 }

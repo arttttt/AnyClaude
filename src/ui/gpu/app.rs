@@ -11,13 +11,14 @@ use std::sync::Arc;
 
 use term_core::{create_emulator, AnsiPalette, TerminalEmulator};
 use term_gpu::{
-    build_cursor_rect, measure_cell_metrics, populate_panel, CellMetrics, FontFamily, FontSystem,
-    GlyphInstance, GpuRenderer, PanelRect, RectInstance, SwashCache, TextShapeCache,
+    build_cursor_rect, encode_key, measure_cell_metrics, populate_panel, CellMetrics, FontFamily,
+    FontSystem, GlyphInstance, GpuRenderer, PanelRect, RectInstance, SwashCache, TextShapeCache,
 };
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
-use winit::event::WindowEvent;
+use winit::event::{ElementState, Modifiers, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
+use winit::keyboard::ModifiersState;
 use winit::window::{Window, WindowAttributes, WindowId};
 
 use crate::ui::gpu::pty::ShellPty;
@@ -77,6 +78,8 @@ struct GpuApp {
     pty: Option<ShellPty>,
     emulator: Option<Box<dyn TerminalEmulator>>,
     grid_size: (usize, usize),
+
+    modifiers: ModifiersState,
 }
 
 impl GpuApp {
@@ -94,6 +97,7 @@ impl GpuApp {
             pty: None,
             emulator: None,
             grid_size: (INITIAL_GRID_COLS, INITIAL_GRID_ROWS),
+            modifiers: ModifiersState::empty(),
         }
     }
 
@@ -290,10 +294,39 @@ impl ApplicationHandler<UserEvent> for GpuApp {
                     w.request_redraw();
                 }
             }
+            WindowEvent::ModifiersChanged(mods) => {
+                self.update_modifiers(mods);
+            }
+            WindowEvent::KeyboardInput { event, .. }
+                if event.state == ElementState::Pressed =>
+            {
+                // Cmd/Super combos are reserved for app-level shortcuts
+                // (clipboard, quit) and lands in C3e; for now we only
+                // forward when no super modifier is held. Ctrl combos
+                // belong to the shell (Ctrl+C / Ctrl+D / ...) and pass
+                // straight through encode_key.
+                if self.modifiers.super_key() {
+                    return;
+                }
+                let Some(bytes) = encode_key(&event.logical_key, self.modifiers) else {
+                    return;
+                };
+                if let Some(pty) = self.pty.as_mut() {
+                    if let Err(e) = pty.write(&bytes) {
+                        eprintln!("anyclaude: PTY write failed: {e}");
+                    }
+                }
+            }
             WindowEvent::RedrawRequested => {
                 self.redraw();
             }
             _ => {}
         }
+    }
+}
+
+impl GpuApp {
+    fn update_modifiers(&mut self, mods: Modifiers) {
+        self.modifiers = mods.state();
     }
 }
