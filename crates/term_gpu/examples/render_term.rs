@@ -121,6 +121,10 @@ struct App {
     palette: AnsiPalette,
     scale_factor: f32,
     cell_metrics: Option<CellMetrics>,
+    /// Last (cols, rows) we resized the emulator to. Skip `emulator.resize`
+    /// when nothing changed — guards against repeated work when winit
+    /// fires multiple `Resized` events per drag frame.
+    grid_size: (usize, usize),
 }
 
 impl App {
@@ -139,6 +143,7 @@ impl App {
             palette: AnsiPalette::default_dark(),
             scale_factor: 1.0,
             cell_metrics: None,
+            grid_size: (DEFAULT_COLS, DEFAULT_ROWS),
         }
     }
 
@@ -150,6 +155,24 @@ impl App {
             self.emulator.process(&chunk);
         }
         let _ = self.emulator.take_responses();
+    }
+
+    /// Resize the emulator's grid to fit the current window, but only
+    /// when the computed `(cols, rows)` differ from the last applied
+    /// size. Safe to call every frame.
+    fn fit_grid_to_window(&mut self) {
+        let Some(renderer) = self.renderer.as_ref() else {
+            return;
+        };
+        let size = renderer.size();
+        let metrics = self.cell_metrics();
+        let cols = ((size.width as f32 / metrics.width_physical).floor() as usize).max(1);
+        let rows = ((size.height as f32 / metrics.height_physical).floor() as usize).max(1);
+        if (cols, rows) == self.grid_size {
+            return;
+        }
+        self.emulator.resize(cols, rows);
+        self.grid_size = (cols, rows);
     }
 
     /// Return cell metrics, measuring on the first call. Cell width is
@@ -185,6 +208,12 @@ impl App {
     }
 
     fn on_redraw(&mut self) {
+        // Pick up any pending grid resize lazily on the redraw path. Doing
+        // it here (rather than in the Resized/ScaleFactorChanged handlers)
+        // keeps event handlers short, lets winit coalesce a drag burst into
+        // a single grid resize, and avoids re-entry into the emulator
+        // while it's still being read for the previous frame's snapshot.
+        self.fit_grid_to_window();
         let metrics = self.cell_metrics();
         // Split-borrow: snapshot is read-only, the rest are mutated by
         // shape/atlas insertion. Pull each field out before borrowing.
@@ -393,6 +422,9 @@ impl ApplicationHandler<CustomEvent> for App {
         self.renderer = Some(renderer);
         // Flush any chunks the reader queued before the window existed
         // (BytesArrived events fired then would have hit a None window).
+        // Grid resize happens from the `Resized` event winit fires
+        // immediately after window creation — keep this handler short so
+        // we return to the event loop before macOS expects it.
         self.drain_bytes();
         if let Some(w) = self.window.as_ref() {
             w.request_redraw();
@@ -406,6 +438,21 @@ impl ApplicationHandler<CustomEvent> for App {
                 if let Some(r) = self.renderer.as_mut() {
                     r.resize(new_size);
                 }
+                if let Some(w) = self.window.as_ref() {
+                    w.request_redraw();
+                }
+            }
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                self.scale_factor = scale_factor as f32;
+                if let Some(r) = self.renderer.as_mut() {
+                    r.set_scale_factor(self.scale_factor);
+                }
+                // Cell metrics depend on scale_factor (shape advances are
+                // measured at `font_size × scale_factor`); the next call to
+                // cell_metrics() will re-measure. fit_grid_to_window runs
+                // on the redraw path and will catch up to the new cell
+                // size automatically.
+                self.cell_metrics = None;
                 if let Some(w) = self.window.as_ref() {
                     w.request_redraw();
                 }
