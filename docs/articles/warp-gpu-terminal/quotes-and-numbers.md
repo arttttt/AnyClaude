@@ -543,9 +543,9 @@ End-to-end terminal: every leaf in `PanelTree` owns a real
   skip glyphs/cursors whose origin lies outside the panel's logical
   bounds — necessary because the PanelTree's rect updates on drag
   motion but the emulator's `(cols, rows)` only updates on release.
-- **Known limitation**: `Grid::resize` is destructive on column
-  shrink — alacritty-style reflow is now an explicit Phase 6
-  deliverable.
+- **Known limitation (resolved in reflow phase below)**: at this
+  point `Grid::resize` was destructive on column shrink. See the
+  "Reflow on column resize" section for the fix.
 
 ## Branch state at end of term_grid
 
@@ -558,6 +558,55 @@ demos. All clippy clean, all term_core / term_layout tests passing.
 | `render_term` | term_core × term_gpu single-panel pipe |
 | `layout_demo` | term_layout BSP shape + drag |
 | `term_grid` | All three crates + per-panel PTY shells |
+
+## Reflow on column resize (Phase 6 partial, May 2026)
+
+Three atomic commits (`4e5c5e2`, `901ed78`, `e2a4c4b`),
+~250 LoC including tests. Fixes the destructive column-shrink in
+`Grid::resize` that left "history fragments" after `term_grid`
+drag-resize.
+
+**Source reference:** warpdotdev/warp,
+`crates/warp_terminal/src/model/grid/flat_storage/index.rs::Index::rebuild`.
+The flag encoding (`Flags::WRAPLINE = 1 << 4` in their
+`cell.rs`) was the key takeaway — alacritty has the same
+encoding; both projects mark soft-wrap on the row's trailing cell,
+not as a per-row field.
+
+| Component | Lines |
+|---|---|
+| `CellFlags::WRAPLINE` (bit 12) | 8 |
+| `Grid::print` auto-wrap branch | 6 |
+| `Grid::reflow_columns` + helpers | ~110 |
+| `Grid::resize` outer (cursor abs tracking, top-anchored grow) | ~20 |
+| `tests/reflow.rs` (12 tests) | ~200 |
+| `tests/emulator_smoke.rs` (2 added) | ~25 |
+
+**Top-anchored grow formula:**
+```rust
+let prev_scrollback = self.rows.len().saturating_sub(self.visible_rows);
+let visible_increment = rows.saturating_sub(self.visible_rows);
+let scrollback_to_keep = prev_scrollback.saturating_sub(visible_increment);
+let target = scrollback_to_keep + rows;
+```
+
+When `visible_rows` grows, the new vertical space absorbs existing
+scrollback (rows slide back into view). When it shrinks,
+scrollback length is preserved. Matches the user's "контент не
+двигается" expectation.
+
+## Branch state at end of reflow
+
+57 commits on `feat/gpu-terminal`. 56 integration tests in
+`term_core` alone (24 emulator + 20 parser + 12 reflow). 28 tests
+in `term_layout`. Workspace builds clean, all examples compile,
+zero clippy warnings outside of pre-existing.
+
+| Crate | Tests | Notable |
+|---|---|---|
+| `term_core` | 56 | reflow done |
+| `term_gpu` | 0 (visual demos only) | 4 examples |
+| `term_layout` | 28 | BSP shape + drag |
 
 ## License attribution snippet
 

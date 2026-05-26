@@ -310,11 +310,51 @@ The "eventually" is the interesting bit:
 
 3. **Reflow is not free.** Tmux and alacritty wrap long lines on
    column shrink with a continuation marker, then unwrap on grow.
-   Our `Grid::resize` doesn't — shrinking past a row's filled width
-   truncates the tail forever, and re-growing pads with blanks. We
-   ship the destructive version with the limitation documented,
-   and pushed reflow into Phase 6 with a pointer to alacritty's
-   reference implementation.
+   The destructive first version shipped with the limitation
+   documented; reflow landed in Act 13 below.
+
+## Act 13 — Reflow: making resize non-destructive
+
+Three commits, ~250 LoC including tests. The first two are
+trivial — add a `WRAPLINE` bit to `CellFlags`, set it in
+`Grid::print` on the auto-wrap branch. The third is the actual
+reflow.
+
+The algorithm came from Warp, not alacritty. Both have it; Warp's
+`crates/warp_terminal/src/model/grid/flat_storage/index.rs::Index::rebuild`
+is the cleanest mental model: walk old content in order, re-emit
+at the new column count. Our cell-based grid simplifies this — no
+flat byte buffer, no grapheme-run indexing, no `ByteOffset` math.
+Just `chunks(new_cols)` over flat `Vec<Cell>` logical lines.
+
+Three lessons stuck:
+
+1. **Use a cell-level flag, not a per-Row field.** The flag lives
+   on the row's trailing cell, not as a separate `Row.wrapped:
+   bool`. Why does this matter? The flag survives cell mutation
+   because the cell carrying it is at column `cols-1`, not the one
+   being overwritten. Warp does this. Alacritty does this. We
+   started with `Row.wrapped` and switched after reading
+   `FlatStorage::add_row`.
+
+2. **Cursor tracked by absolute row across multi-step resize.**
+   Mid-resize `visible_start` shifts (because `rows.len()` mutates
+   in both the reflow step AND the pad/truncate step). A
+   visible-relative cursor mid-flow lands on the wrong row. The
+   fix is a one-line discipline: keep a local `cursor_abs`,
+   project to visible-relative at the very end.
+
+3. **Drop trailing all-blank logical lines before re-wrap.**
+   First test pass had `helloworld` ending up in scrollback. The
+   empty rows below the cursor in the source buffer were becoming
+   real rows in the rewrapped output, pushing visible_start down
+   past the content. The outer pad-with-blanks step recreates
+   trailing blanks already — re-emitting them is double-counting.
+
+`term_grid` picks up reflow for free — `Grid::resize` signature
+unchanged. Drag-divider release no longer leaves history
+fragments. 12 integration tests in `tests/reflow.rs` pin the
+behavior.
 
 ## Outro — Takeaways
 
@@ -409,6 +449,26 @@ The "eventually" is the interesting bit:
     combo flows through `encode_key` to the PTY. No conflicts
     with the shell's signal handling (Ctrl+C, Ctrl+Z) or readline
     (Ctrl+A, Ctrl+E, Ctrl+R, …).
+23. **Cell-level wrap marker is better than a per-Row field.**
+    Warp and alacritty put soft-wrap state on `row[cols-1].flags`
+    (bit 12 = `WRAPLINE`), not on `Row` itself. The flag survives
+    cell mutation because it lives on a different index than the
+    one being overwritten, and `Row` stays a pure cell container.
+    Free architectural simplification, picked up from
+    `FlatStorage::add_row`'s wrap detection.
+24. **"Top-anchored grow" absorbs scrollback into the viewport.**
+    When `visible_rows` grows, the new vertical space pulls
+    scrollback content back into view. The formula is
+    `scrollback_to_keep = prev_scrollback - visible_increment`,
+    not `target = prev_scrollback + new_visible`. The latter pins
+    scrollback length and starves the new vertical space — content
+    you expected to see after the window grew stays hidden.
+25. **Trim trailing all-blank logical lines before re-wrap.** The
+    outer pad-with-blanks step recreates them; re-emitting them
+    inside reflow double-counts and pushes real content into
+    scrollback. Discovered when a `"helloworld"` round-trip
+    through shrink+grow disappeared into the scrollback that
+    didn't exist before the resize.
 
 ## Possible follow-up articles
 

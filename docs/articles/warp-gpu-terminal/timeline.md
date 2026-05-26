@@ -341,3 +341,47 @@ shell. It runs at 120 fps on Retina with multiple shells active
 simultaneously. Phase 5 (anyclaude integration) and Phase 6
 (polish: reflow, SGR visual flags, selection, clipboard,
 scrollback, performance pass) remain.
+
+## 14. Reflow on column resize (3 commits)
+
+Phase 6 partial. `term_grid` was leaving "history fragments" after
+drag-resize — `Grid::resize` truncated cells past the new column
+count, leaving partial copies of the previous prompt on screen.
+Reflow fixes this by rewrapping content via a per-cell soft-wrap
+marker.
+
+| # | Commit | Lines | Why |
+|---|---|---|---|
+| 55 | `4e5c5e2` | `crates/term_core/src/attrs.rs` | Add `CellFlags::WRAPLINE` (bit 12). |
+| 56 | `901ed78` | `crates/term_core/src/grid.rs`, `crates/term_core/tests/emulator_smoke.rs` | `Grid::print` sets WRAPLINE on the auto-wrap branch; two smoke tests pin the contract. |
+| 57 | `e2a4c4b` | `crates/term_core/src/grid.rs`, `crates/term_core/tests/reflow.rs` | Reflow algorithm (~80 LoC helpers) + 12 integration tests. |
+
+Three lessons stuck:
+
+1. **Cell-level flag beats per-Row field.** First plan had
+   `Row.wrapped: bool`; switched after reading Warp's
+   `FlatStorage::add_row` — it tests
+   `row[cols-1].flags().intersects(WRAPLINE)`. The flag lives on a
+   different cell than the one being overwritten, so it survives
+   cell mutation. No extra `Row` state needed.
+
+2. **Cursor by absolute row, not visible-relative, across multi-step
+   resize.** Mid-resize `visible_start` shifts because `rows.len()`
+   changes. A visible-relative cursor mid-flow lands on the wrong
+   row. Track `cursor_abs` as a local, project to visible at the
+   very end.
+
+3. **Drop trailing all-blank logical lines before re-wrap.**
+   First test pass had `helloworld` ending up in scrollback because
+   the empty rows below the cursor in the source buffer became real
+   rows in the rewrapped output, pushing visible_start down. The
+   outer pad-with-blanks step recreates trailing blanks already —
+   re-emitting them is double-counting.
+
+## 15. Branch state at end of reflow
+
+57 commits on `feat/gpu-terminal`. 56 integration tests in
+`term_core` alone (24 + 20 + 12). `term_grid` drag-resize now
+preserves content cleanly. Phase 6 remaining: SGR visual flags,
+selection, clipboard, scrollback navigation, font fallback,
+performance pass.

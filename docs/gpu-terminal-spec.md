@@ -2370,8 +2370,33 @@ SIGWINCH spam). Render-side culling so glyphs/cursor don't spill
 past the panel during a drag. Per-panel `grid_size` cache guards
 against redundant resizes. `PanelExited(PanelId)` event triggers
 panel + PTY teardown; closing the last panel exits the demo.
-Known limitation: `Grid::resize` is destructive on column shrink
-(reflow → Phase 6).
+
+
+### Reflow on column resize ✅ done (May 2026)
+**Files:** `crates/term_core/src/attrs.rs`, `crates/term_core/src/grid.rs`,
+`crates/term_core/tests/reflow.rs`.
+**Delivered:** Column-resize now rewraps content via the WRAPLINE
+chain instead of truncating. Algorithm is adapted from Warp's
+`crates/warp_terminal/src/model/grid/flat_storage/index.rs::Index::rebuild`
+(walk old content in order, re-emit at new width), simplified for
+our cell-based model:
+
+1. `CellFlags::WRAPLINE` (bit 12) marks the last cell of any row
+   whose content soft-wrapped to the next row. `Grid::print` sets
+   it on the auto-wrap branch; CR/LF/CUP leave it clear.
+2. `Grid::resize` checks for a column change, collects logical
+   lines from the WRAPLINE chain, drops trailing all-blank lines
+   (the outer pad-with-blanks step recreates them), re-emits rows
+   at the new width, and tracks the cursor by absolute row across
+   reflow + pad/truncate.
+3. On visible-rows grow, existing scrollback is absorbed into the
+   new viewport (`scrollback_to_keep = prev_scrollback -
+   visible_increment`), so "content does not move on resize".
+
+`term_grid` picks this up via the unchanged `Grid::resize`
+signature — drag-divider release no longer leaves history
+fragments. 12 integration tests in `tests/reflow.rs` pin the
+behavior.
 
 ### Phase 5 — Integration (2 weeks) ⬜ pending
 **Files:** `src/ui/runtime.rs`, `src/pty/emulator/mod.rs`,
@@ -2380,20 +2405,17 @@ Known limitation: `Grid::resize` is destructive on column shrink
 renders correctly. **Blocker:** UX decisions — panels↔sessions
 mapping, tab semantics, header/footer chrome.
 
-### Phase 6 — Polish (1 week) ⬜ pending
-**Deliverable:**
-- **Reflow on column shrink/grow** in `term_core::Grid::resize`.
-  Currently the resize is destructive: `row.resize(new_cols)`
-  truncates cells past `new_cols`, and re-growing pads with blanks
-  instead of restoring the lost content. Tmux/alacritty wrap long
-  lines on shrink (overflow text moves to the next row, marked as a
-  continuation) and unwrap on grow. Reference: alacritty's
-  `grid_storage/resize.rs::shrink_cols` / `grow_cols` (~130 LoC).
+### Phase 6 — Polish (1 week, partial) ⏳ in progress
+**Delivered:**
+- Reflow on column shrink/grow in `term_core::Grid::resize` — see
+  "Reflow on column resize" entry above.
+
+**Remaining:**
 - Selection (drag-to-select cells, clipboard).
 - Font fallback configuration.
 - BOLD / ITALIC / UNDERLINE / STRIKE visual rendering.
 - Direct codepoint→glyph_id lookup (avoid per-cell shape allocation).
-- Scrollback navigation in `render_term`.
+- Scrollback navigation in `term_grid` (port momentum from `scroll_demo`).
 - Drop-shadow shader for overlays (§3.4).
 
 **Progress: ~7 weeks done of ~11 planned.**

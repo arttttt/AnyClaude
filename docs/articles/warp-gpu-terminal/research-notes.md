@@ -586,17 +586,68 @@ and never reach the shell — which means there's no conflict with
 the shell's own use of `Ctrl`-combos for signal handling and
 readline shortcuts.
 
-### Reflow is non-trivial; reflow lands in Phase 6
+### Reflow lands (Phase 6 partial)
 
-The destructive column-shrink in `Grid::resize` means dragging a
-panel narrow truncates the tail of every row forever, and dragging
-back wide pads with blanks instead of restoring the lost content.
-Real terminals (tmux, alacritty) handle this with reflow: long
-lines wrap on shrink with a per-row continuation flag, and unwrap
-back on grow. Alacritty's `grid_storage/resize.rs::shrink_cols`
-and `grow_cols` are ~130 LoC and need a per-row wrap flag we don't
-have yet on `Row`. We accept the destructive behaviour for the
-demo, document the limitation, and pushed reflow into Phase 6.
+The destructive column-shrink described above was fixed in three
+atomic commits (`4e5c5e2`, `901ed78`, `e2a4c4b`). The algorithm
+came from Warp, not alacritty — `Index::rebuild` in
+`crates/warp_terminal/src/model/grid/flat_storage/index.rs` is the
+clearest reference. Both projects mark soft-wrap with a per-cell
+flag (`Flags::WRAPLINE` on `row[cols-1]`), not a per-row field.
+
+Adapted for our cell-based grid (no flat byte buffer, no
+grapheme-run indexing):
+
+```rust
+fn reflow_columns(&mut self, new_cols: usize) -> Option<usize> {
+    let cursor_abs_row = self.visible_start()
+        + self.cursor_row.min(self.visible_rows.saturating_sub(1));
+    let (cur_line, cur_offset) = locate_cursor_logical(
+        &self.rows, self.cols, cursor_abs_row, self.cursor_col,
+    );
+
+    let logical = collect_logical_lines(&self.rows, self.cols);
+    let new_rows = rewrap(&logical, new_cols);
+    let (new_abs_row, new_col) = place_cursor_logical(
+        &logical, cur_line, cur_offset, new_cols,
+    );
+
+    self.rows = new_rows;
+    self.cursor_col = new_col;
+    Some(new_abs_row)
+}
+```
+
+Three findings worth keeping:
+
+1. **Cell-level flag, not per-Row field.** Started with
+   `Row.wrapped: bool` (cleaner Rust API), switched after reading
+   Warp's `FlatStorage::add_row` — it does
+   `row[cols-1].flags().intersects(WRAPLINE)`. The flag lives on a
+   different cell than the one being overwritten, so it survives
+   cell mutation. `Row` stays a pure cell container.
+
+2. **Drop trailing all-blank logical lines before re-wrap.** First
+   test pass had `helloworld` ending up in scrollback after a
+   shrink → grow round-trip. The empty rows below the cursor were
+   becoming real rows in the rewrapped output, pushing visible_start
+   down past the content. The outer pad-with-blanks step recreates
+   trailing blanks already; re-emitting them inside reflow
+   double-counts.
+
+3. **"Top-anchored grow" absorbs scrollback.** Initially the outer
+   `Grid::resize` computed `target = prev_scrollback + new_visible`,
+   which pinned scrollback length and starved the new vertical
+   space. The fix: `scrollback_to_keep = prev_scrollback -
+   visible_increment` — when the window gets taller, old scrollback
+   slides back into view. Matches the user's "content does not
+   move on resize" mental model.
+
+`term_grid` picks this up via the unchanged `Grid::resize`
+signature — drag-divider release no longer leaves history
+fragments. 12 integration tests in `tests/reflow.rs` pin the
+behavior; the existing render-side cull (transient drag state)
+stays as-is.
 
 ### `portable-pty` as a dev-dependency
 
