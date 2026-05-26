@@ -36,7 +36,7 @@ use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Instant;
 
-use cosmic_text::{FontSystem, SwashCache};
+use cosmic_text::{CacheKey, CacheKeyFlags, FontSystem, SwashCache};
 use futures::future::{abortable, AbortHandle};
 use futures_timer::Delay;
 use glam::Vec2;
@@ -1392,14 +1392,6 @@ fn populate_panel(
             // decoration lines (matches xterm/iTerm behavior).
             let push_glyph = !cell.flags.hidden() && !is_blank;
             if push_glyph {
-                cell_text.clear();
-                cell_text.push(cell.c);
-                if let Some(extra) = &cell.extra {
-                    for c in &extra.zerowidth {
-                        cell_text.push(*c);
-                    }
-                }
-
                 let cell_origin_x_phys = panel_origin_x_physical + col_x_phys;
                 let cell_origin_y_phys = panel_origin_y_physical + row_y_phys;
 
@@ -1413,33 +1405,86 @@ fn populate_panel(
                 } else {
                     Style::Normal
                 };
-                let shaped = shape_cache.shape(
-                    font_system,
-                    &cell_text,
-                    FONT_SIZE,
-                    sf,
-                    None,
-                    weight,
-                    style,
-                );
-                for line in &shaped.lines {
-                    let baseline_y = (cell_origin_y_phys + line.line_y).round();
-                    for glyph in &line.glyphs {
-                        let physical = glyph.physical((cell_origin_x_phys, baseline_y), 1.0);
-                        let Some(placed) = atlas.get_or_insert(physical.cache_key, || {
-                            rasterize_glyph(font_system, swash_cache, physical.cache_key)
-                        }) else {
-                            continue;
-                        };
-                        let pos_x = (physical.x as f32 + placed.offset_x) / sf;
-                        let pos_y = (physical.y as f32 - placed.offset_y) / sf;
-                        glyphs.push(GlyphInstance {
-                            pos: [pos_x, pos_y],
-                            size: [placed.width / sf, placed.height / sf],
-                            uv_min: placed.uv_min,
-                            uv_max: placed.uv_max,
-                            color,
-                        });
+
+                // Fast path: single-codepoint cell with no combining marks
+                // resolves through direct cmap (TextShapeCache::shape_char)
+                // — no String alloc, no cosmic-text shaper. Mirrors Warp's
+                // CellGlyphCache.glyph_cache hot path. Combining clusters
+                // and missing-glyph fallbacks drop through to the slow
+                // String-keyed path below.
+                let zerowidth_count = cell.extra.as_ref().map_or(0, |e| e.zerowidth.len());
+                let mut fast_path_handled = false;
+                if zerowidth_count == 0 {
+                    if let Some(cg) = shape_cache.shape_char(
+                        font_system,
+                        cell.c,
+                        FONT_SIZE,
+                        sf,
+                        weight,
+                        style,
+                    ) {
+                        let font_size_physical = FONT_SIZE * sf;
+                        let baseline_y_phys = cell_origin_y_phys + cg.baseline_y_physical;
+                        let (cache_key, glyph_x_floor, glyph_y_floor) = CacheKey::new(
+                            cg.font_id,
+                            cg.glyph_id,
+                            font_size_physical,
+                            (cell_origin_x_phys, baseline_y_phys),
+                            CacheKeyFlags::empty(),
+                        );
+                        if let Some(placed) = atlas.get_or_insert(cache_key, || {
+                            rasterize_glyph(font_system, swash_cache, cache_key)
+                        }) {
+                            let pos_x = (glyph_x_floor as f32 + placed.offset_x) / sf;
+                            let pos_y = (glyph_y_floor as f32 - placed.offset_y) / sf;
+                            glyphs.push(GlyphInstance {
+                                pos: [pos_x, pos_y],
+                                size: [placed.width / sf, placed.height / sf],
+                                uv_min: placed.uv_min,
+                                uv_max: placed.uv_max,
+                                color,
+                            });
+                        }
+                        fast_path_handled = true;
+                    }
+                }
+
+                if !fast_path_handled {
+                    cell_text.clear();
+                    cell_text.push(cell.c);
+                    if let Some(extra) = &cell.extra {
+                        for c in &extra.zerowidth {
+                            cell_text.push(*c);
+                        }
+                    }
+                    let shaped = shape_cache.shape(
+                        font_system,
+                        &cell_text,
+                        FONT_SIZE,
+                        sf,
+                        None,
+                        weight,
+                        style,
+                    );
+                    for line in &shaped.lines {
+                        let baseline_y = (cell_origin_y_phys + line.line_y).round();
+                        for glyph in &line.glyphs {
+                            let physical = glyph.physical((cell_origin_x_phys, baseline_y), 1.0);
+                            let Some(placed) = atlas.get_or_insert(physical.cache_key, || {
+                                rasterize_glyph(font_system, swash_cache, physical.cache_key)
+                            }) else {
+                                continue;
+                            };
+                            let pos_x = (physical.x as f32 + placed.offset_x) / sf;
+                            let pos_y = (physical.y as f32 - placed.offset_y) / sf;
+                            glyphs.push(GlyphInstance {
+                                pos: [pos_x, pos_y],
+                                size: [placed.width / sf, placed.height / sf],
+                                uv_min: placed.uv_min,
+                                uv_max: placed.uv_max,
+                                color,
+                            });
+                        }
                     }
                 }
             }
