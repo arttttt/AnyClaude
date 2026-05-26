@@ -84,6 +84,24 @@ const FOCUS_COLOR: [f32; 4] = [1.0, 1.0, 1.0, 0.35];
 /// `rgba(118, 167, 250, 0.4)`.
 const SELECTION_COLOR: [f32; 4] = [118.0 / 255.0, 167.0 / 255.0, 250.0 / 255.0, 0.4];
 
+/// Maximum elapsed time between consecutive mouse presses at the same
+/// cell for them to count as a double/triple click. macOS's system
+/// default is ~500 ms; 400 ms is a comfortable middle ground.
+const MULTI_CLICK_THRESHOLD_MS: u128 = 400;
+
+/// Word-boundary characters used by double-click "word" selection.
+/// Lifted from Warp's
+/// `crates/warpui_core/src/text/words.rs::DEFAULT_WORD_BOUNDARY_CHARS`
+/// so the experience matches Warp's terminal exactly.
+const WORD_BOUNDARY_CHARS: [char; 33] = [
+    '`', '~', '!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '-', '=', '+', '[', '{', ']', '}',
+    '\\', '|', ';', ':', '\'', '"', ',', '.', '<', '>', '/', '?', '«', '»',
+];
+
+fn is_word_boundary(c: char) -> bool {
+    c.is_whitespace() || WORD_BOUNDARY_CHARS.contains(&c)
+}
+
 #[derive(Debug, Clone, Copy)]
 enum CustomEvent {
     /// At least one panel's reader thread queued new bytes.
@@ -213,7 +231,19 @@ struct App {
     /// a divider) and the emulator is not in mouse-reporting mode,
     /// CursorMoved events update this panel's selection.cursor.
     dragging_selection: Option<PanelId>,
+    /// Tracks consecutive clicks at the same cell for double/triple
+    /// click detection. Cleared when the next click lands elsewhere
+    /// or after `MULTI_CLICK_THRESHOLD_MS` of inactivity.
+    last_click: Option<LastClick>,
     proxy: EventLoopProxy<CustomEvent>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LastClick {
+    time: Instant,
+    panel: PanelId,
+    point: CellPoint,
+    count: u32,
 }
 
 impl App {
@@ -237,6 +267,7 @@ impl App {
             momentum_abort: None,
             gesture_end_abort: None,
             dragging_selection: None,
+            last_click: None,
             proxy,
         }
     }
@@ -715,10 +746,45 @@ impl App {
                 .unwrap_or(false);
             if !owns_mouse {
                 if let Some(point) = self.cell_at_panel(id, x, y) {
+                    let count = self.bump_click_count(id, point);
+                    // Need snapshot for word / line expansion; take it
+                    // before re-borrowing panel mutably.
+                    let snap = self
+                        .panels
+                        .get(&id)
+                        .map(|p| p.emulator.snapshot());
                     if let Some(panel) = self.panels.get_mut(&id) {
-                        panel.selection = Some(Selection::new(point));
+                        match count {
+                            1 => {
+                                panel.selection = Some(Selection::new(point));
+                                self.dragging_selection = Some(id);
+                            }
+                            2 => {
+                                let (start, end) = snap
+                                    .as_ref()
+                                    .map(|s| expand_word(point, s))
+                                    .unwrap_or((point, point));
+                                panel.selection = Some(Selection {
+                                    anchor: start,
+                                    cursor: end,
+                                });
+                                // No drag after double-click; user
+                                // re-clicks to start a linear selection.
+                                self.dragging_selection = None;
+                            }
+                            _ => {
+                                let (start, end) = snap
+                                    .as_ref()
+                                    .map(|s| expand_line(point, s))
+                                    .unwrap_or((point, point));
+                                panel.selection = Some(Selection {
+                                    anchor: start,
+                                    cursor: end,
+                                });
+                                self.dragging_selection = None;
+                            }
+                        }
                     }
-                    self.dragging_selection = Some(id);
                 }
             }
             if focus_changed {
@@ -727,6 +793,34 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Update `self.last_click` based on the new press and return the
+    /// 1..=3 click count. Resets to 1 when the click misses the
+    /// previous cell / panel or arrives after the threshold.
+    fn bump_click_count(&mut self, panel: PanelId, point: CellPoint) -> u32 {
+        let now = Instant::now();
+        let new_count = match self.last_click {
+            Some(lc)
+                if lc.panel == panel
+                    && lc.point == point
+                    && now.duration_since(lc.time).as_millis() <= MULTI_CLICK_THRESHOLD_MS =>
+            {
+                if lc.count >= 3 {
+                    1
+                } else {
+                    lc.count + 1
+                }
+            }
+            _ => 1,
+        };
+        self.last_click = Some(LastClick {
+            time: now,
+            panel,
+            point,
+            count: new_count,
+        });
+        new_count
     }
 
     fn on_mouse_release(&mut self) {
@@ -1281,6 +1375,63 @@ fn populate_panel(
             }
         }
     }
+}
+
+/// Expand a click point to the surrounding "word" by walking left
+/// and right until hitting a word-boundary character of the opposite
+/// class (or the row's edge). Modelled on Warp's `semantic_search_*`
+/// helpers (`app/src/terminal/model/selection.rs:507-509`). Returns
+/// `(start, end)` with `end.col` one past the last selected cell so
+/// it matches the half-open range convention used in
+/// `push_selection_rects`.
+fn expand_word(point: CellPoint, snapshot: &RenderSnapshot) -> (CellPoint, CellPoint) {
+    let Some(row) = snapshot.rows.get(point.row) else {
+        return (point, point);
+    };
+    let cells = &row.cells;
+    if cells.is_empty() || point.col >= cells.len() {
+        return (point, point);
+    }
+    let center_is_boundary = is_word_boundary(cells[point.col].c);
+    let mut start_col = point.col;
+    while start_col > 0 && is_word_boundary(cells[start_col - 1].c) == center_is_boundary {
+        start_col -= 1;
+    }
+    let mut end_col = point.col;
+    while end_col + 1 < cells.len()
+        && is_word_boundary(cells[end_col + 1].c) == center_is_boundary
+    {
+        end_col += 1;
+    }
+    (
+        CellPoint {
+            row: point.row,
+            col: start_col,
+        },
+        CellPoint {
+            row: point.row,
+            col: end_col + 1,
+        },
+    )
+}
+
+/// Expand a click point to its entire physical row.
+fn expand_line(point: CellPoint, snapshot: &RenderSnapshot) -> (CellPoint, CellPoint) {
+    let cols = snapshot
+        .rows
+        .get(point.row)
+        .map(|r| r.cells.len())
+        .unwrap_or(0);
+    (
+        CellPoint {
+            row: point.row,
+            col: 0,
+        },
+        CellPoint {
+            row: point.row,
+            col: cols,
+        },
+    )
 }
 
 /// Push a `RectInstance` for every cell inside the selection range,
