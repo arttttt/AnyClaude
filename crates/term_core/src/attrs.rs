@@ -21,6 +21,11 @@ impl CellFlags {
     pub const WIDE_CHAR: u16 = 1 << 10;
     /// Right half of a wide character — placeholder, has no glyph of its own.
     pub const WIDE_CHAR_SPACER: u16 = 1 << 11;
+    /// Soft-wrap marker: set on the **last cell** of a row whose content
+    /// overflowed and continued on the next row. Inspected by reflow to
+    /// rejoin logical lines when the column count changes. Distinct from
+    /// a hard line break (CR/LF), which does not set this flag.
+    pub const WRAPLINE: u16 = 1 << 12;
 
     pub const fn empty() -> Self {
         Self(0)
@@ -81,5 +86,8 @@ impl CellFlags {
     }
     pub fn wide_char_spacer(self) -> bool {
         self.contains(Self::WIDE_CHAR_SPACER)
+    }
+    pub fn wrap_line(self) -> bool {
+        self.contains(Self::WRAPLINE)
     }
 }
