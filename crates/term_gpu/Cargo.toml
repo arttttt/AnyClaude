@@ -15,21 +15,18 @@ futures-timer = "3"
 glam = "0.30"
 pollster = "0.4"
 cosmic-text = "0.14"
+# `panel_render` consumes term_core's `RenderSnapshot` / `AnsiPalette` /
+# `CursorState` to project a VT grid onto the GPU. The bridge module is
+# the only term_core touchpoint — the rest of term_gpu (atlas, text,
+# instances, scroll) stays VT-agnostic.
+term_core = { path = "../term_core" }
 
 [dev-dependencies]
-# term_core is only used by the `render_term` example to wire raw ANSI
-# bytes through a VT emulator into the GPU renderer. Not a runtime
-# dependency — term_gpu the library knows nothing about VT parsing.
-term_core = { path = "../term_core" }
-# term_layout is only used by the `layout_demo` example to visualise the
-# BSP tree as coloured panels. Same rationale — not a runtime dep.
+# layout_demo visualises the BSP tree as coloured panels.
 term_layout = { path = "../term_layout" }
-# portable-pty is only used by the `term_grid` example to spawn a real
-# shell PTY per panel. Not a runtime dep — term_gpu doesn't know about
-# processes either.
+# term_grid spawns a real shell PTY per panel.
 portable-pty = "0.9"
-# term_clipboard backs the `term_grid` example's Cmd+C / Cmd+V flow.
-# Not a runtime dep — term_gpu has no clipboard story of its own.
+# term_clipboard backs the term_grid example's Cmd+C / Cmd+V flow.
 term_clipboard = { path = "../term_clipboard" }
 
 [[example]]

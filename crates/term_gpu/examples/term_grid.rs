@@ -36,7 +36,7 @@ use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Instant;
 
-use cosmic_text::{CacheKey, CacheKeyFlags, FontSystem, SwashCache};
+use cosmic_text::{FontSystem, SwashCache};
 use futures::future::{abortable, AbortHandle};
 use futures_timer::Delay;
 use glam::Vec2;
@@ -46,13 +46,13 @@ use term_clipboard::{
     ImageData, CLIPBOARD_IMAGE_MIME_TYPES,
 };
 use term_core::{
-    create_emulator, AnsiPalette, CellFlags, CursorState, CursorStyle, MouseMode, RenderSnapshot,
-    TermColor, TerminalEmulator,
+    create_emulator, AnsiPalette, CellFlags, MouseMode, RenderSnapshot, TerminalEmulator,
 };
 use term_gpu::{
-    decay_velocity, rasterize_glyph, FontFamily, GlyphAtlas, GlyphInstance, GpuRenderer,
-    RectInstance, ScrollState, ScrollVelocity, Style, TextShapeCache, Weight, GESTURE_END_TIMEOUT,
-    MOMENTUM_FRAME_INTERVAL, MOMENTUM_MIN_VELOCITY, MOMENTUM_THRESHOLD, NUM_PIXELS_PER_LINE,
+    build_cursor_rect, decay_velocity, measure_cell_metrics, populate_panel, CellMetrics,
+    FontFamily, GlyphInstance, GpuRenderer, PanelRect, RectInstance, ScrollState, ScrollVelocity,
+    TextShapeCache, GESTURE_END_TIMEOUT, MOMENTUM_FRAME_INTERVAL, MOMENTUM_MIN_VELOCITY,
+    MOMENTUM_THRESHOLD, NUM_PIXELS_PER_LINE,
 };
 use term_layout::{BranchId, Divider, PanelId, PanelTree, Rect, Split};
 use winit::application::ApplicationHandler;
@@ -66,9 +66,6 @@ const INITIAL_W: f32 = 960.0;
 const INITIAL_H: f32 = 600.0;
 const FONT_SIZE: f32 = 14.0;
 const LINE_HEIGHT_RATIO: f32 = 1.3;
-const DEFAULT_FG: [f32; 4] = [0.78, 0.78, 0.78, 1.0];
-const CURSOR_COLOR: [f32; 4] = [0.95, 0.95, 0.95, 0.55];
-const CURSOR_STROKE_PHYSICAL: f32 = 2.0;
 const INITIAL_GRID_COLS: usize = 80;
 const INITIAL_GRID_ROWS: usize = 24;
 const SCROLLBACK_LINES: usize = 1000;
@@ -184,12 +181,6 @@ impl Selection {
     }
 }
 
-#[derive(Clone, Copy)]
-struct CellMetrics {
-    width_physical: f32,
-    height_physical: f32,
-}
-
 struct PanelState {
     emulator: Box<dyn TerminalEmulator>,
     bytes_rx: mpsc::Receiver<Vec<u8>>,
@@ -285,29 +276,13 @@ impl App {
         if let Some(m) = self.cell_metrics {
             return m;
         }
-        let sf = self.scale_factor;
-        let shaped = self.shape_cache.shape(
+        let metrics = measure_cell_metrics(
             &mut self.font_system,
-            "M",
+            &mut self.shape_cache,
             FONT_SIZE,
-            sf,
-            None,
-            Weight::NORMAL,
-            Style::Normal,
+            self.scale_factor,
+            LINE_HEIGHT_RATIO,
         );
-        let width_physical = shaped
-            .lines
-            .first()
-            .and_then(|line| line.glyphs.first())
-            .map(|g| g.w)
-            .unwrap_or(FONT_SIZE * 0.6 * sf)
-            .round()
-            .max(1.0);
-        let height_physical = (FONT_SIZE * LINE_HEIGHT_RATIO * sf).round().max(1.0);
-        let metrics = CellMetrics {
-            width_physical,
-            height_physical,
-        };
         self.cell_metrics = Some(metrics);
         metrics
     }
@@ -995,12 +970,13 @@ impl App {
             let scroll_offset_y = panel.scroll.offset_y;
             populate_panel(
                 &snapshot,
-                panel_rect,
+                PanelRect::new(panel_rect.x, panel_rect.y, panel_rect.w, panel_rect.h),
                 palette,
                 font_system,
                 swash_cache,
                 renderer.atlas_mut(),
                 shape_cache,
+                FONT_SIZE,
                 sf,
                 metrics,
                 scroll_offset_y,
@@ -1022,7 +998,7 @@ impl App {
                 if let Some(cr) = build_cursor_rect(
                     snapshot.cursor,
                     snapshot.visible_start(),
-                    panel_rect,
+                    PanelRect::new(panel_rect.x, panel_rect.y, panel_rect.w, panel_rect.h),
                     sf,
                     metrics,
                     scroll_offset_y,
@@ -1299,230 +1275,6 @@ fn schedule_momentum_loop(
     abort
 }
 
-#[allow(clippy::too_many_arguments)]
-fn populate_panel(
-    snapshot: &RenderSnapshot,
-    panel_rect: Rect,
-    palette: &AnsiPalette,
-    font_system: &mut FontSystem,
-    swash_cache: &mut SwashCache,
-    atlas: &mut GlyphAtlas,
-    shape_cache: &mut TextShapeCache,
-    scale_factor: f32,
-    metrics: CellMetrics,
-    scroll_offset_y_logical: f32,
-    rects: &mut Vec<RectInstance>,
-    glyphs: &mut Vec<GlyphInstance>,
-) {
-    let sf = scale_factor;
-    let cell_w_logical = metrics.width_physical / sf;
-    let cell_h_logical = metrics.height_physical / sf;
-    let panel_origin_x_physical = panel_rect.x * sf;
-    let panel_origin_y_physical = panel_rect.y * sf;
-    let scroll_offset_y_physical = scroll_offset_y_logical * sf;
-    let total_rows = snapshot.rows.len();
-    let visible_rows = snapshot.visible_rows;
-    // The visible region of the buffer is anchored at the BOTTOM of the
-    // panel — i.e. with `scroll_offset_y = 0` (no scrollback shown) row
-    // `total - visible` should land at the panel's first cell. We
-    // accomplish this by shifting every row up by
-    // `(total - visible) * cell_h`, then applying the scroll offset.
-    let baseline_offset_phys = (total_rows.saturating_sub(visible_rows)) as f32
-        * metrics.height_physical;
-    let mut cell_text = String::with_capacity(8);
-
-    // Clip the cell grid to the panel's logical bounds. While a
-    // drag is in flight the PanelTree's rect updates immediately but
-    // the emulator (and its `rows.len()` / `cells.len()`) is still
-    // sized to the pre-drag bounds; without this cull, glyphs from
-    // the larger grid spill into the neighbouring panel.
-    let panel_max_x_phys = panel_rect.w * sf;
-    let panel_max_y_phys = panel_rect.h * sf;
-    for (row_idx, row) in snapshot.rows.iter().enumerate() {
-        // Y of this row's top edge relative to panel top, in physical px.
-        // `+ scroll_offset` because scrolling UP visually moves rows DOWN.
-        let row_y_phys = row_idx as f32 * metrics.height_physical
-            - baseline_offset_phys
-            + scroll_offset_y_physical;
-        if row_y_phys + metrics.height_physical <= 0.0 || row_y_phys >= panel_max_y_phys {
-            continue;
-        }
-        for (col_idx, cell) in row.cells.iter().enumerate() {
-            let col_x_phys = col_idx as f32 * metrics.width_physical;
-            if col_x_phys >= panel_max_x_phys {
-                break;
-            }
-            let inverse = cell.flags.contains(CellFlags::INVERSE);
-            let (fg_eff, bg_eff) = if inverse {
-                (cell.bg, cell.fg)
-            } else {
-                (cell.fg, cell.bg)
-            };
-
-            let pos_x_logical = (panel_origin_x_physical + col_x_phys) / sf;
-            let pos_y_logical = (panel_origin_y_physical + row_y_phys) / sf;
-
-            if bg_eff != TermColor::Default {
-                rects.push(RectInstance {
-                    pos: [pos_x_logical, pos_y_logical],
-                    size: [cell_w_logical, cell_h_logical],
-                    color: bg_eff.to_rgba(palette),
-                });
-            }
-
-            let is_blank = cell.c == ' ' || cell.c == '\0';
-            let has_decoration = cell.flags.underline()
-                || cell.flags.double_underline()
-                || cell.flags.strike();
-            // Nothing to render: blank cell with no fg, no decorations.
-            if is_blank && fg_eff == TermColor::Default && !has_decoration {
-                continue;
-            }
-
-            let mut color = if fg_eff == TermColor::Default {
-                DEFAULT_FG
-            } else {
-                fg_eff.to_rgba(palette)
-            };
-            if cell.flags.faint() {
-                color[3] *= 0.5;
-            }
-
-            // SGR HIDDEN suppresses the glyph but keeps bg and any
-            // decoration lines (matches xterm/iTerm behavior).
-            let push_glyph = !cell.flags.hidden() && !is_blank;
-            if push_glyph {
-                let cell_origin_x_phys = panel_origin_x_physical + col_x_phys;
-                let cell_origin_y_phys = panel_origin_y_physical + row_y_phys;
-
-                let weight = if cell.flags.bold() {
-                    Weight::BOLD
-                } else {
-                    Weight::NORMAL
-                };
-                let style = if cell.flags.italic() {
-                    Style::Italic
-                } else {
-                    Style::Normal
-                };
-
-                // Fast path: single-codepoint cell with no combining marks
-                // resolves through direct cmap (TextShapeCache::shape_char)
-                // — no String alloc, no cosmic-text shaper. Mirrors Warp's
-                // CellGlyphCache.glyph_cache hot path. Combining clusters
-                // and missing-glyph fallbacks drop through to the slow
-                // String-keyed path below.
-                let zerowidth_count = cell.extra.as_ref().map_or(0, |e| e.zerowidth.len());
-                let mut fast_path_handled = false;
-                if zerowidth_count == 0 {
-                    if let Some(cg) = shape_cache.shape_char(
-                        font_system,
-                        cell.c,
-                        FONT_SIZE,
-                        sf,
-                        weight,
-                        style,
-                    ) {
-                        let font_size_physical = FONT_SIZE * sf;
-                        let baseline_y_phys = cell_origin_y_phys + cg.baseline_y_physical;
-                        let (cache_key, glyph_x_floor, glyph_y_floor) = CacheKey::new(
-                            cg.font_id,
-                            cg.glyph_id,
-                            font_size_physical,
-                            (cell_origin_x_phys, baseline_y_phys),
-                            CacheKeyFlags::empty(),
-                        );
-                        if let Some(placed) = atlas.get_or_insert(cache_key, || {
-                            rasterize_glyph(font_system, swash_cache, cache_key)
-                        }) {
-                            let pos_x = (glyph_x_floor as f32 + placed.offset_x) / sf;
-                            let pos_y = (glyph_y_floor as f32 - placed.offset_y) / sf;
-                            glyphs.push(GlyphInstance {
-                                pos: [pos_x, pos_y],
-                                size: [placed.width / sf, placed.height / sf],
-                                uv_min: placed.uv_min,
-                                uv_max: placed.uv_max,
-                                color,
-                            });
-                        }
-                        fast_path_handled = true;
-                    }
-                }
-
-                if !fast_path_handled {
-                    cell_text.clear();
-                    cell_text.push(cell.c);
-                    if let Some(extra) = &cell.extra {
-                        for c in &extra.zerowidth {
-                            cell_text.push(*c);
-                        }
-                    }
-                    let shaped = shape_cache.shape(
-                        font_system,
-                        &cell_text,
-                        FONT_SIZE,
-                        sf,
-                        None,
-                        weight,
-                        style,
-                    );
-                    for line in &shaped.lines {
-                        let baseline_y = (cell_origin_y_phys + line.line_y).round();
-                        for glyph in &line.glyphs {
-                            let physical = glyph.physical((cell_origin_x_phys, baseline_y), 1.0);
-                            let Some(placed) = atlas.get_or_insert(physical.cache_key, || {
-                                rasterize_glyph(font_system, swash_cache, physical.cache_key)
-                            }) else {
-                                continue;
-                            };
-                            let pos_x = (physical.x as f32 + placed.offset_x) / sf;
-                            let pos_y = (physical.y as f32 - placed.offset_y) / sf;
-                            glyphs.push(GlyphInstance {
-                                pos: [pos_x, pos_y],
-                                size: [placed.width / sf, placed.height / sf],
-                                uv_min: placed.uv_min,
-                                uv_max: placed.uv_max,
-                                color,
-                            });
-                        }
-                    }
-                }
-            }
-
-            // SGR decoration lines. Positions are vertical fractions of
-            // the cell height: underline sits just below the baseline
-            // (~0.78), strike crosses the x-height midline (~0.42), the
-            // double-underline pair brackets the regular underline
-            // position.
-            if cell.flags.underline() {
-                rects.push(RectInstance {
-                    pos: [pos_x_logical, pos_y_logical + cell_h_logical * 0.78],
-                    size: [cell_w_logical, 1.0],
-                    color,
-                });
-            }
-            if cell.flags.double_underline() {
-                rects.push(RectInstance {
-                    pos: [pos_x_logical, pos_y_logical + cell_h_logical * 0.72],
-                    size: [cell_w_logical, 0.8],
-                    color,
-                });
-                rects.push(RectInstance {
-                    pos: [pos_x_logical, pos_y_logical + cell_h_logical * 0.84],
-                    size: [cell_w_logical, 0.8],
-                    color,
-                });
-            }
-            if cell.flags.strike() {
-                rects.push(RectInstance {
-                    pos: [pos_x_logical, pos_y_logical + cell_h_logical * 0.42],
-                    size: [cell_w_logical, 1.0],
-                    color,
-                });
-            }
-        }
-    }
-}
 
 /// Construct the platform clipboard. macOS gets `MacClipboard`;
 /// other platforms fall back to `InMemoryClipboard` (the demo is
@@ -1809,65 +1561,6 @@ fn focus_border(rect: Rect) -> [RectInstance; 4] {
     ]
 }
 
-fn build_cursor_rect(
-    cursor: CursorState,
-    visible_start: usize,
-    panel_rect: Rect,
-    scale_factor: f32,
-    metrics: CellMetrics,
-    scroll_offset_y_logical: f32,
-) -> Option<RectInstance> {
-    if !cursor.visible {
-        return None;
-    }
-    let sf = scale_factor;
-    let cell_offset_x_phys = cursor.col as f32 * metrics.width_physical;
-    // Cursor's row is visible-relative; combine with `visible_start` to
-    // get the absolute row, then subtract the visible-anchor offset so
-    // that `scroll_offset_y == 0` puts the cursor at its expected place
-    // inside the panel.
-    let abs_row = visible_start + cursor.row as usize;
-    let scroll_offset_y_phys = scroll_offset_y_logical * sf;
-    let baseline_offset_phys =
-        visible_start as f32 * metrics.height_physical;
-    let cell_offset_y_phys = abs_row as f32 * metrics.height_physical
-        - baseline_offset_phys
-        + scroll_offset_y_phys;
-    // Cull when the cursor's cell origin lies outside the panel's
-    // logical bounds — during a divider drag the PanelTree shrinks
-    // before the emulator gets SIGWINCH, AND when the user has
-    // scrolled up into history the cursor falls past the bottom of
-    // the visible region.
-    let panel_h_phys = panel_rect.h * sf;
-    if cell_offset_x_phys >= panel_rect.w * sf
-        || cell_offset_y_phys + metrics.height_physical <= 0.0
-        || cell_offset_y_phys >= panel_h_phys
-    {
-        return None;
-    }
-    let cell_x_phys = panel_rect.x * sf + cell_offset_x_phys;
-    let cell_y_phys = panel_rect.y * sf + cell_offset_y_phys;
-    let cell_w_phys = metrics.width_physical;
-    let cell_h_phys = metrics.height_physical;
-    let (pos_phys, size_phys) = match cursor.style {
-        CursorStyle::BlockSteady | CursorStyle::BlockBlink => {
-            ([cell_x_phys, cell_y_phys], [cell_w_phys, cell_h_phys])
-        }
-        CursorStyle::UnderlineSteady | CursorStyle::UnderlineBlink => (
-            [cell_x_phys, cell_y_phys + cell_h_phys - CURSOR_STROKE_PHYSICAL],
-            [cell_w_phys, CURSOR_STROKE_PHYSICAL],
-        ),
-        CursorStyle::BeamSteady | CursorStyle::BeamBlink => (
-            [cell_x_phys, cell_y_phys],
-            [CURSOR_STROKE_PHYSICAL, cell_h_phys],
-        ),
-    };
-    Some(RectInstance {
-        pos: [pos_phys[0] / sf, pos_phys[1] / sf],
-        size: [size_phys[0] / sf, size_phys[1] / sf],
-        color: CURSOR_COLOR,
-    })
-}
 
 /// Encode a winit key event into the byte sequence a typical
 /// terminal sends to the PTY. Covers printable text, named keys
