@@ -220,3 +220,22 @@ fn resize_shrinks_visible_region_into_scrollback() {
     let snap = em.snapshot();
     assert_eq!(snap.rows.len(), 10);
 }
+
+#[test]
+fn resize_keeps_top_content_anchored_through_shrink_and_grow() {
+    // Top-anchored resize: the visible region pins to row 0 of the row
+    // buffer. Top content never scrolls in response to window resizes
+    // (matches the user's Warp configuration). A shrink truncates blank
+    // rows at the bottom and a subsequent grow pads with blanks again,
+    // both leaving the original text exactly where it was.
+    let mut em = VtEmulator::new(80, 24, 100);
+    em.process(b"hello world");
+    em.resize(80, 10);
+    em.resize(80, 24);
+    let snap = em.snapshot();
+    let first_row: String = snap.rows[0].cells.iter().map(|c| c.c).collect();
+    assert!(
+        first_row.starts_with("hello world"),
+        "expected first visible row to start with 'hello world', got {first_row:?}"
+    );
+}

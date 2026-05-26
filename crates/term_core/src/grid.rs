@@ -665,20 +665,25 @@ impl Grid {
         for row in &mut self.rows {
             row.resize(cols);
         }
-        // Snapshot the current scrollback length BEFORE pushing — the
-        // target row count is `scrollback + rows`, but `scrollback_len()`
-        // and `visible_start()` both derive from `rows.len() -
-        // self.visible_rows` and the old `visible_rows` is still in
-        // place. Without the snapshot, each push grows `visible_start()`
-        // in lock-step with `rows.len()` and the loop never terminates.
+        // Top-anchored resize: the visible region always pins to the top
+        // of the row buffer. Content never scrolls in response to window
+        // size changes — only padded (grow) or truncated (shrink) at the
+        // bottom. Scrollback length is preserved.
         let scrollback = self.scrollback_len();
         let target = scrollback + rows;
-        while self.rows.len() < target {
-            self.rows.push(Row::new(cols));
+        if self.rows.len() < target {
+            while self.rows.len() < target {
+                self.rows.push(Row::new(cols));
+            }
+        } else if self.rows.len() > target {
+            self.rows.truncate(target);
         }
         self.cols = cols;
         self.visible_rows = rows;
         self.scroll_bottom = rows.saturating_sub(1);
+        // Cursor row is visible-relative; clamp to the new visible region
+        // so it stays on screen. We do NOT re-anchor to an absolute row —
+        // that would cause the cursor to slide as `visible_start` shifts.
         if self.cursor_row >= rows {
             self.cursor_row = rows.saturating_sub(1);
         }
