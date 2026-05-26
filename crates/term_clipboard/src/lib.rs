@@ -142,15 +142,39 @@ pub fn should_insert_text_on_paste(content: &ClipboardContent) -> bool {
     content.has_image_data() && content.num_paths() == 0
 }
 
-/// File extensions recognised as "this path is an image". Matches the
-/// MIME types `MacClipboard` knows how to read.
-const IMAGE_EXTENSIONS: [&str; 9] = [
-    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".tiff", ".tif",
+/// File extensions recognised as "this path is an image". Matches
+/// Warp's `crates/warpui_core/src/clipboard_utils.rs::IMAGE_EXTENSIONS`.
+pub const IMAGE_EXTENSIONS: &[&str] = &[".png", ".jpg", ".jpeg", ".gif", ".webp"];
+
+/// Preferred image MIME types for clipboard operations, in priority
+/// order. Mirrors Warp's
+/// `crates/warpui_core/src/clipboard_utils.rs::CLIPBOARD_IMAGE_MIME_TYPES`.
+/// Consumers (e.g. paste handlers) walk this list to pick the best
+/// available image MIME when several are on the clipboard.
+pub const CLIPBOARD_IMAGE_MIME_TYPES: &[&str] = &[
+    "image/png",
+    "image/jpeg",
+    "image/jpg",
+    "image/gif",
+    "image/webp",
 ];
 
-fn has_image_extension(path: &str) -> bool {
+/// `true` when the path's lowercased trailing characters match a
+/// known image extension. Used by [`ClipboardContent::has_non_image_filepaths`]
+/// and exposed for downstream paste handlers that filter file paths.
+pub fn has_image_extension(path: &str) -> bool {
     let lower = path.to_ascii_lowercase();
     IMAGE_EXTENSIONS.iter().any(|ext| lower.ends_with(ext))
+}
+
+/// Return only the file paths that look like image files. Matches
+/// Warp's `get_image_filepaths_from_paths`.
+pub fn get_image_filepaths_from_paths(paths: &[String]) -> Vec<String> {
+    paths
+        .iter()
+        .filter(|p| has_image_extension(p))
+        .cloned()
+        .collect()
 }
 
 /// In-process clipboard. The content lives in a mutex and is scoped to

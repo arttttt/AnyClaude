@@ -128,7 +128,7 @@ impl Clipboard for MacClipboard {
 fn mime_to_pasteboard_type(mime: &str) -> Option<&'static str> {
     match mime {
         "image/png" => Some("public.png"),
-        "image/jpeg" => Some("public.jpeg"),
+        "image/jpeg" | "image/jpg" => Some("public.jpeg"),
         "image/gif" => Some("public.gif"),
         "image/webp" => Some("public.webp"),
         "image/svg+xml" => Some("public.svg-image"),

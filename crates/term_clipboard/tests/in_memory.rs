@@ -2,7 +2,8 @@
 //! `should_insert_text_on_paste` heuristic.
 
 use term_clipboard::{
-    should_insert_text_on_paste, Clipboard, ClipboardContent, ImageData, InMemoryClipboard,
+    get_image_filepaths_from_paths, has_image_extension, should_insert_text_on_paste, Clipboard,
+    ClipboardContent, ImageData, InMemoryClipboard, CLIPBOARD_IMAGE_MIME_TYPES, IMAGE_EXTENSIONS,
 };
 
 fn img(mime: &str, filename: Option<&str>) -> ImageData {
@@ -140,6 +141,47 @@ fn insert_text_for_image_data_with_caption() {
         ..Default::default()
     };
     assert!(should_insert_text_on_paste(&c));
+}
+
+// ──── Image path helpers ────────────────────────────────────────────────
+
+#[test]
+fn image_extensions_match_warp() {
+    // Mirrors Warp's `IMAGE_EXTENSIONS` exactly so paste behavior
+    // stays consistent across the two implementations.
+    assert_eq!(IMAGE_EXTENSIONS, &[".png", ".jpg", ".jpeg", ".gif", ".webp"]);
+}
+
+#[test]
+fn clipboard_image_mime_types_match_warp() {
+    // Mirrors Warp's `CLIPBOARD_IMAGE_MIME_TYPES` priority order.
+    assert_eq!(
+        CLIPBOARD_IMAGE_MIME_TYPES,
+        &["image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"]
+    );
+}
+
+#[test]
+fn has_image_extension_case_insensitive() {
+    assert!(has_image_extension("photo.PNG"));
+    assert!(has_image_extension("/tmp/a.Jpg"));
+    assert!(has_image_extension("ANIM.gif"));
+    assert!(!has_image_extension("README.md"));
+    assert!(!has_image_extension("no_extension"));
+    // Warp's IMAGE_EXTENSIONS drops .svg / .bmp / .tiff intentionally.
+    assert!(!has_image_extension("vector.svg"));
+}
+
+#[test]
+fn get_image_filepaths_filters_to_images() {
+    let paths = vec![
+        "/a/photo.png".to_string(),
+        "/a/report.pdf".to_string(),
+        "/a/screencap.JPG".to_string(),
+        "/a/notes.txt".to_string(),
+    ];
+    let out = get_image_filepaths_from_paths(&paths);
+    assert_eq!(out, vec!["/a/photo.png", "/a/screencap.JPG"]);
 }
 
 #[test]
