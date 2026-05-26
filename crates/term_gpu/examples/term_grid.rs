@@ -6,10 +6,13 @@
 //! resizes it. Exiting the shell (`Ctrl+D`, `exit`) closes the
 //! corresponding panel; closing the last panel ends the demo.
 //!
-//! Per-panel PTY resize lives in the next commit — for now every
-//! shell stays at 80×24 regardless of its panel's actual size, so
-//! wide panels show empty padding to the right and tall panels show
-//! the prompt high up in their slot.
+//! Per-panel PTY resize: every tree mutation (window resize, split,
+//! close, divider drag, DPI change) runs `sync_panels_to_tree`, which
+//! walks the leaves and resizes each emulator + PTY master to fit its
+//! current bounds (cols/rows computed by integer floor of
+//! `rect_physical / cell_metrics`). Shells see SIGWINCH and reflow
+//! their output (`tput cols` reports the right value, `vim` /
+//! `htop` redraw to fit).
 //!
 //! ## Run
 //!
@@ -91,9 +94,12 @@ struct PanelState {
     emulator: Box<dyn TerminalEmulator>,
     bytes_rx: mpsc::Receiver<Vec<u8>>,
     writer: Box<dyn Write + Send>,
-    /// PTY master kept alive — dropping it closes the shell. Consumed
-    /// by `pty_master.resize` in the per-panel-resize commit.
-    _master: Box<dyn MasterPty + Send>,
+    /// PTY master — used for `resize()` calls; dropping it closes the
+    /// shell.
+    master: Box<dyn MasterPty + Send>,
+    /// Last `(cols, rows)` the emulator + PTY were resized to. Lets
+    /// `sync_panels_to_tree` skip work when nothing changed.
+    grid_size: (usize, usize),
 }
 
 struct App {
@@ -212,8 +218,39 @@ impl App {
             emulator,
             bytes_rx: rx,
             writer,
-            _master: pair.master,
+            master: pair.master,
+            grid_size: (cols, rows),
         })
+    }
+
+    /// Walk the panel tree and resize each panel's emulator + PTY
+    /// master to fit its current bounds. No-op when nothing changed
+    /// — the per-panel `grid_size` cache guards against redundant
+    /// SIGWINCH bursts during a drag.
+    fn sync_panels_to_tree(&mut self) {
+        let metrics = self.cell_metrics();
+        let sf = self.scale_factor;
+        let leaves = self.tree.panels();
+        for (id, rect) in leaves {
+            let Some(panel) = self.panels.get_mut(&id) else {
+                continue;
+            };
+            let cols =
+                ((rect.w * sf / metrics.width_physical).floor() as usize).max(1);
+            let rows =
+                ((rect.h * sf / metrics.height_physical).floor() as usize).max(1);
+            if panel.grid_size == (cols, rows) {
+                continue;
+            }
+            panel.emulator.resize(cols, rows);
+            let _ = panel.master.resize(PtySize {
+                rows: rows as u16,
+                cols: cols as u16,
+                pixel_width: 0,
+                pixel_height: 0,
+            });
+            panel.grid_size = (cols, rows);
+        }
     }
 
     fn drain_panel(&mut self, id: PanelId) {
@@ -242,8 +279,9 @@ impl App {
     }
 
     /// Split the focused panel and spawn a fresh shell into the new
-    /// pane. The new shell starts at the default 80×24 grid — the
-    /// per-panel resize commit will fit it to the actual bounds.
+    /// pane. The new shell starts at the default 80×24 grid; the
+    /// follow-up `sync_panels_to_tree` resizes both halves to fit
+    /// their post-split bounds.
     fn split_focused(&mut self, split: Split) {
         let focused = self.tree.focus();
         let Some(new_id) = self.tree.split(focused, split, 0.5) else {
@@ -257,8 +295,10 @@ impl App {
                 eprintln!("term_grid: failed to spawn shell into new panel: {e}");
                 // Roll back the split so the tree stays consistent.
                 self.tree.close(new_id);
+                return;
             }
         }
+        self.sync_panels_to_tree();
     }
 
     /// Close the focused panel and drop its PTY. Returns `true` if
@@ -267,7 +307,12 @@ impl App {
         let id = self.tree.focus();
         self.panels.remove(&id);
         self.tree.close(id);
-        self.tree.is_empty()
+        if self.tree.is_empty() {
+            true
+        } else {
+            self.sync_panels_to_tree();
+            false
+        }
     }
 
     fn divider_under(&self, x: f32, y: f32) -> Option<Divider> {
@@ -305,7 +350,18 @@ impl App {
     }
 
     fn on_mouse_release(&mut self) {
-        self.drag = None;
+        if self.drag.take().is_some() {
+            // Apply the accumulated divider drag to the PTYs in one
+            // shot. Doing this on every cursor move would spam the
+            // shell with SIGWINCHes, and our `Grid::resize` is
+            // destructive on column shrink (cells past the new width
+            // are dropped); the combination produced "ghost prompt"
+            // history fragments during a drag.
+            self.sync_panels_to_tree();
+            if let Some(w) = self.window.as_ref() {
+                w.request_redraw();
+            }
+        }
     }
 
     fn on_cursor_moved(&mut self, x: f32, y: f32) {
@@ -316,6 +372,8 @@ impl App {
                 Split::Vertical => (x - drag.bounds.x) / drag.bounds.w,
             };
             if self.tree.drag_divider(drag.branch, new_ratio) {
+                // Visual tree updates immediately; the PTY resize is
+                // deferred to `on_mouse_release` (see comment there).
                 if let Some(w) = self.window.as_ref() {
                     w.request_redraw();
                 }
@@ -407,6 +465,11 @@ impl ApplicationHandler<CustomEvent> for App {
                 return;
             }
         }
+        // Resize the initial panel to fit the actual window — winit
+        // doesn't fire `Resized` immediately after open on every
+        // platform, so an explicit sync here avoids the demo
+        // starting at 80×24 inside a much larger window.
+        self.sync_panels_to_tree();
         if let Some(w) = self.window.as_ref() {
             w.request_redraw();
         }
@@ -422,6 +485,7 @@ impl ApplicationHandler<CustomEvent> for App {
                 let logical_w = new_size.width as f32 / self.scale_factor;
                 let logical_h = new_size.height as f32 / self.scale_factor;
                 self.tree.resize(logical_w, logical_h);
+                self.sync_panels_to_tree();
                 if let Some(w) = self.window.as_ref() {
                     w.request_redraw();
                 }
@@ -431,7 +495,11 @@ impl ApplicationHandler<CustomEvent> for App {
                 if let Some(r) = self.renderer.as_mut() {
                     r.set_scale_factor(self.scale_factor);
                 }
+                // Cell metrics depend on scale_factor; invalidate the
+                // cache and resync panel grids to the new physical
+                // cell size.
                 self.cell_metrics = None;
+                self.sync_panels_to_tree();
                 if let Some(w) = self.window.as_ref() {
                     w.request_redraw();
                 }
@@ -511,8 +579,13 @@ impl ApplicationHandler<CustomEvent> for App {
                 self.tree.close(id);
                 if self.tree.is_empty() {
                     event_loop.exit();
-                } else if let Some(w) = self.window.as_ref() {
-                    w.request_redraw();
+                } else {
+                    // Sibling absorbed the closed panel's bounds —
+                    // resize its grid to match.
+                    self.sync_panels_to_tree();
+                    if let Some(w) = self.window.as_ref() {
+                        w.request_redraw();
+                    }
                 }
             }
         }
@@ -540,9 +613,23 @@ fn populate_panel(
     let panel_origin_y_physical = panel_rect.y * sf;
     let mut cell_text = String::with_capacity(8);
 
+    // Clip the cell grid to the panel's logical bounds. While a
+    // drag is in flight the PanelTree's rect updates immediately but
+    // the emulator (and its `rows.len()` / `cells.len()`) is still
+    // sized to the pre-drag bounds; without this cull, glyphs from
+    // the larger grid spill into the neighbouring panel.
+    let panel_max_x_phys = panel_rect.w * sf;
+    let panel_max_y_phys = panel_rect.h * sf;
     for (row_idx, row) in snapshot.rows.iter().enumerate() {
         let row_y_phys = row_idx as f32 * metrics.height_physical;
+        if row_y_phys >= panel_max_y_phys {
+            break;
+        }
         for (col_idx, cell) in row.cells.iter().enumerate() {
+            let col_x_phys = col_idx as f32 * metrics.width_physical;
+            if col_x_phys >= panel_max_x_phys {
+                break;
+            }
             let inverse = cell.flags.contains(CellFlags::INVERSE);
             let (fg_eff, bg_eff) = if inverse {
                 (cell.bg, cell.fg)
@@ -550,7 +637,6 @@ fn populate_panel(
                 (cell.fg, cell.bg)
             };
 
-            let col_x_phys = col_idx as f32 * metrics.width_physical;
             let pos_x_logical = (panel_origin_x_physical + col_x_phys) / sf;
             let pos_y_logical = (panel_origin_y_physical + row_y_phys) / sf;
 
@@ -645,8 +731,18 @@ fn build_cursor_rect(
         return None;
     }
     let sf = scale_factor;
-    let cell_x_phys = panel_rect.x * sf + cursor.col as f32 * metrics.width_physical;
-    let cell_y_phys = panel_rect.y * sf + cursor.row as f32 * metrics.height_physical;
+    let cell_offset_x_phys = cursor.col as f32 * metrics.width_physical;
+    let cell_offset_y_phys = cursor.row as f32 * metrics.height_physical;
+    // Cull when the cursor's cell origin would land outside the
+    // panel's logical bounds. During a divider drag the PanelTree
+    // shrinks the panel before the emulator gets the SIGWINCH (we
+    // defer that to mouse release), so the cursor's old column index
+    // can momentarily fall past the new panel width.
+    if cell_offset_x_phys >= panel_rect.w * sf || cell_offset_y_phys >= panel_rect.h * sf {
+        return None;
+    }
+    let cell_x_phys = panel_rect.x * sf + cell_offset_x_phys;
+    let cell_y_phys = panel_rect.y * sf + cell_offset_y_phys;
     let cell_w_phys = metrics.width_physical;
     let cell_h_phys = metrics.height_physical;
     let (pos_phys, size_phys) = match cursor.style {
