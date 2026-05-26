@@ -41,7 +41,7 @@ use futures::future::{abortable, AbortHandle};
 use futures_timer::Delay;
 use glam::Vec2;
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
-use term_clipboard::{Clipboard, ClipboardContent};
+use term_clipboard::{should_insert_text_on_paste, Clipboard, ClipboardContent};
 use term_core::{
     create_emulator, AnsiPalette, CellFlags, CursorState, CursorStyle, MouseMode, RenderSnapshot,
     TermColor, TerminalEmulator,
@@ -56,7 +56,7 @@ use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
-use winit::keyboard::{Key, ModifiersState, NamedKey};
+use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey};
 use winit::window::{Window, WindowAttributes, WindowId};
 
 const INITIAL_W: f32 = 960.0;
@@ -564,6 +564,28 @@ impl App {
         ));
     }
 
+    /// Read the system clipboard and paste its plain text into the
+    /// focused panel's PTY. Wraps the bytes in
+    /// `\x1b[200~` … `\x1b[201~` when the emulator has bracketed
+    /// paste enabled.
+    fn paste_into_focused(&mut self) {
+        let content = self.clipboard.read();
+        if !should_insert_text_on_paste(&content) || content.plain_text.is_empty() {
+            return;
+        }
+        let id = self.tree.focus();
+        let bracketed = self
+            .panels
+            .get(&id)
+            .map(|p| p.emulator.bracketed_paste())
+            .unwrap_or(false);
+        let bytes = encode_paste(&content.plain_text, bracketed);
+        if let Some(panel) = self.panels.get_mut(&id) {
+            let _ = panel.writer.write_all(&bytes);
+            let _ = panel.writer.flush();
+        }
+    }
+
     /// Copy the focused panel's selection to the system clipboard.
     /// No-op when nothing's selected or the selection is empty.
     /// Selection is not cleared on copy (modern UX — matches Warp).
@@ -1047,14 +1069,19 @@ impl ApplicationHandler<CustomEvent> for App {
                 // Cmd/Super handles the demo's own shortcuts; Ctrl
                 // combos belong to the shell (Ctrl+C / Ctrl+D / ...).
                 if self.modifiers.super_key() {
-                    if let Key::Character(c) = &event.logical_key {
+                    // Match on physical_key, not logical_key, so the
+                    // shortcuts work on every keyboard layout: a
+                    // Russian / French / Greek layout maps `KeyC`
+                    // physically to whatever character the OS pleases,
+                    // but Cmd+<physical C> should still mean "copy".
+                    if let PhysicalKey::Code(code) = event.physical_key {
                         let shift = self.modifiers.shift_key();
-                        match c.as_str() {
-                            "q" | "Q" => {
+                        match code {
+                            KeyCode::KeyQ => {
                                 event_loop.exit();
                                 return;
                             }
-                            "d" | "D" => {
+                            KeyCode::KeyD => {
                                 let split = if shift {
                                     Split::Horizontal
                                 } else {
@@ -1066,7 +1093,7 @@ impl ApplicationHandler<CustomEvent> for App {
                                 }
                                 return;
                             }
-                            "w" | "W" => {
+                            KeyCode::KeyW => {
                                 if self.close_focused() {
                                     event_loop.exit();
                                 } else if let Some(w) = self.window.as_ref() {
@@ -1074,8 +1101,12 @@ impl ApplicationHandler<CustomEvent> for App {
                                 }
                                 return;
                             }
-                            "c" | "C" => {
+                            KeyCode::KeyC => {
                                 self.copy_focused_selection();
+                                return;
+                            }
+                            KeyCode::KeyV => {
+                                self.paste_into_focused();
                                 return;
                             }
                             _ => {}
@@ -1416,6 +1447,23 @@ fn make_clipboard() -> Box<dyn Clipboard> {
     #[cfg(not(target_os = "macos"))]
     {
         Box::new(term_clipboard::InMemoryClipboard::default())
+    }
+}
+
+/// Prepare clipboard text for write to a PTY: normalise line
+/// endings to plain `\n` (macOS clipboard often carries CRLF from
+/// Windows-origin content) and wrap in the bracketed-paste markers
+/// `\e[200~` / `\e[201~` when the emulator has that mode on.
+fn encode_paste(text: &str, bracketed: bool) -> Vec<u8> {
+    let normalized: String = text.replace("\r\n", "\n").replace('\r', "\n");
+    if bracketed {
+        let mut out = Vec::with_capacity(normalized.len() + 8);
+        out.extend_from_slice(b"\x1b[200~");
+        out.extend_from_slice(normalized.as_bytes());
+        out.extend_from_slice(b"\x1b[201~");
+        out
+    } else {
+        normalized.into_bytes()
     }
 }
 
