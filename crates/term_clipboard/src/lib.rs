@@ -12,6 +12,11 @@
 
 use std::sync::Mutex;
 
+#[cfg(target_os = "macos")]
+mod mac;
+#[cfg(target_os = "macos")]
+pub use mac::MacClipboard;
+
 /// Read and write the system clipboard.
 ///
 /// Implementations must be `Send + 'static` so a `Box<dyn Clipboard>`
