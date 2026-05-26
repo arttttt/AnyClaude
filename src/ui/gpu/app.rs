@@ -36,6 +36,7 @@ use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
 use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
 use winit::window::{Window, WindowAttributes, WindowId};
 
+use crate::config::Config;
 use crate::ui::gpu::pty::ShellPty;
 
 const INITIAL_W: f32 = 1200.0;
@@ -88,6 +89,30 @@ const CHROME_TEXT_COLOR: [f32; 4] = [0.55, 0.55, 0.55, 1.0];
 /// the legacy ratatui chrome uses for STATUS_OK.
 const CHROME_FLASH_COLOR: [f32; 4] = [0.4, 0.85, 0.4, 1.0];
 
+/// Popup background color (dark grey with full alpha — opaque so the
+/// content underneath is hidden).
+const POPUP_BG_COLOR: [f32; 4] = [0.12, 0.12, 0.14, 1.0];
+/// Popup item highlight (selected row).
+const POPUP_HIGHLIGHT_COLOR: [f32; 4] = [0.22, 0.30, 0.42, 1.0];
+/// Popup border / frame (subtle).
+const POPUP_BORDER_COLOR: [f32; 4] = [0.30, 0.30, 0.35, 1.0];
+/// Popup drop shadow color — soft black at 45% opacity.
+const POPUP_SHADOW_COLOR: [f32; 4] = [0.0, 0.0, 0.0, 0.45];
+/// Drop shadow blur radius (logical px).
+const POPUP_SHADOW_BLUR: f32 = 24.0;
+/// Drop shadow downward offset (logical px).
+const POPUP_SHADOW_OFFSET_Y: f32 = 8.0;
+/// Rounded-corner radius for popup background.
+const POPUP_CORNER_RADIUS: f32 = 6.0;
+/// Popup line height (logical px) for items.
+const POPUP_LINE_HEIGHT: f32 = 22.0;
+/// Popup font size for items.
+const POPUP_FONT_SIZE: f32 = 13.0;
+/// Padding around popup content (logical px).
+const POPUP_PADDING: f32 = 12.0;
+/// Default popup width when items are short.
+const POPUP_MIN_WIDTH: f32 = 280.0;
+
 /// User event delivered to the winit loop. Drives redraws in response
 /// to PTY output and scroll momentum without polling.
 #[derive(Debug, Clone, Copy)]
@@ -105,11 +130,19 @@ enum UserEvent {
 /// anyclaude bootstrap (proxy + IPC + shim + claude command) lands at
 /// C10.
 pub fn run(_backend_override: Option<String>, _claude_args: Vec<String>) -> std::io::Result<()> {
+    // Pull the configured backend list so the Cmd+B popup has names
+    // to display. The popup's selection is a stub until C10 wires the
+    // proxy — failing to load config here just means the popup shows
+    // an empty list (same outcome as a config with zero backends).
+    let backend_names: Vec<String> = Config::load()
+        .map(|c| c.backends.iter().map(|b| b.display_name.clone()).collect())
+        .unwrap_or_default();
+
     let event_loop = EventLoop::<UserEvent>::with_user_event()
         .build()
         .map_err(|e| std::io::Error::other(e.to_string()))?;
     let proxy = event_loop.create_proxy();
-    let mut app = GpuApp::new(proxy);
+    let mut app = GpuApp::new(proxy, backend_names);
     event_loop
         .run_app(&mut app)
         .map_err(|e| std::io::Error::other(e.to_string()))?;
@@ -174,6 +207,29 @@ struct GpuApp {
     /// header. Updated every redraw so the click handler can hit-test
     /// without recomputing the layout.
     session_click_zone: Option<(f32, f32)>,
+
+    /// Configured backend display names, loaded once from Config at
+    /// startup. The Cmd+B popup walks this list. Empty when config is
+    /// missing or has no backends.
+    backend_names: Vec<String>,
+    /// Currently-open popup overlay, if any. While `Some`, popup
+    /// intercepts keyboard / mouse and selection / hotkey forwarding
+    /// is suppressed.
+    popup: Option<Popup>,
+}
+
+/// All popup variants are owned by this enum so the field-presence
+/// check (`Option<Popup>::is_some`) is enough to gate input routing.
+/// History and Settings variants land in C8 and C9.
+#[derive(Debug, Clone)]
+enum Popup {
+    BackendSwitch(BackendSwitchPopup),
+}
+
+#[derive(Debug, Clone)]
+struct BackendSwitchPopup {
+    items: Vec<String>,
+    selected: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -184,7 +240,7 @@ struct LastClick {
 }
 
 impl GpuApp {
-    fn new(proxy: EventLoopProxy<UserEvent>) -> Self {
+    fn new(proxy: EventLoopProxy<UserEvent>, backend_names: Vec<String>) -> Self {
         Self {
             proxy,
             window: None,
@@ -213,6 +269,8 @@ impl GpuApp {
             start_time: Instant::now(),
             session_copied_until: None,
             session_click_zone: None,
+            backend_names,
+            popup: None,
         }
     }
 
@@ -395,6 +453,72 @@ impl GpuApp {
         ));
     }
 
+    /// Open or close the Cmd+B backend-switch popup. When opening,
+    /// the items list is snapshotted from `self.backend_names` and
+    /// the selection starts at 0. Closing drops the popup state.
+    fn toggle_backend_switch_popup(&mut self) {
+        if matches!(self.popup, Some(Popup::BackendSwitch(_))) {
+            self.close_popup();
+            return;
+        }
+        if self.backend_names.is_empty() {
+            return;
+        }
+        self.popup = Some(Popup::BackendSwitch(BackendSwitchPopup {
+            items: self.backend_names.clone(),
+            selected: 0,
+        }));
+        if let Some(w) = self.window.as_ref() {
+            w.request_redraw();
+        }
+    }
+
+    fn close_popup(&mut self) {
+        self.popup = None;
+        if let Some(w) = self.window.as_ref() {
+            w.request_redraw();
+        }
+    }
+
+    /// Route a keyboard event to the open popup. Up/Down move the
+    /// selection; Enter triggers the popup's action (currently a stub
+    /// that just closes — C10 wires real backend-switch). Other keys
+    /// are swallowed so the shell underneath sees nothing while the
+    /// popup is open.
+    fn handle_popup_key(&mut self, event: &winit::event::KeyEvent) {
+        let Some(Popup::BackendSwitch(ref mut state)) = self.popup else {
+            return;
+        };
+        let len = state.items.len();
+        if len == 0 {
+            return;
+        }
+        match event.physical_key {
+            PhysicalKey::Code(KeyCode::ArrowUp) => {
+                state.selected = if state.selected == 0 {
+                    len - 1
+                } else {
+                    state.selected - 1
+                };
+            }
+            PhysicalKey::Code(KeyCode::ArrowDown) => {
+                state.selected = (state.selected + 1) % len;
+            }
+            PhysicalKey::Code(KeyCode::Enter) => {
+                // C7 stub: print the chosen backend and close. C10
+                // cutover replaces this with the real switch call.
+                let chosen = state.items[state.selected].clone();
+                eprintln!("anyclaude: [stub] would switch backend to: {chosen}");
+                self.close_popup();
+                return;
+            }
+            _ => return,
+        }
+        if let Some(w) = self.window.as_ref() {
+            w.request_redraw();
+        }
+    }
+
     /// Copy the session UUID to the clipboard and trigger the
     /// header's "Session ID copied!" flash. Used by header click and
     /// the keyboard shortcut path (potentially later).
@@ -532,6 +656,14 @@ impl GpuApp {
 
     fn on_mouse_press(&mut self) {
         let Some((x, y)) = self.cursor_pos else { return };
+        // When a popup is open, a click anywhere dismisses it
+        // (matching macOS modal-out behaviour) and is otherwise
+        // swallowed — the click never starts a selection in the
+        // terminal underneath.
+        if self.popup.is_some() {
+            self.close_popup();
+            return;
+        }
         // Header click — copy session id to clipboard and flash the
         // label. Takes priority over selection so a header click
         // never lands inside the terminal area's coords.
@@ -740,8 +872,44 @@ impl GpuApp {
             sf,
         );
 
+        // Build an optional overlay layer for the active popup.
+        let mut overlay_shadows: Vec<term_gpu::ShadowInstance> = Vec::new();
+        let mut overlay_rects: Vec<RectInstance> = Vec::new();
+        let mut overlay_glyphs: Vec<GlyphInstance> = Vec::new();
+        if let Some(popup) = self.popup.as_ref() {
+            draw_popup(
+                popup,
+                renderer.atlas_mut(),
+                &mut self.font_system,
+                &mut self.swash_cache,
+                &mut self.ui_shape_cache,
+                &mut overlay_shadows,
+                &mut overlay_rects,
+                &mut overlay_glyphs,
+                window_w_logical,
+                window_h_logical,
+                sf,
+            );
+        }
+        let overlay = if overlay_shadows.is_empty()
+            && overlay_rects.is_empty()
+            && overlay_glyphs.is_empty()
+        {
+            None
+        } else {
+            Some(RenderLayer {
+                shadows: &overlay_shadows,
+                rects: &overlay_rects,
+                glyphs: &overlay_glyphs,
+            })
+        };
+
         window.pre_present_notify();
-        renderer.render(RenderLayer::rects_and_glyphs(&rects, &glyphs), None, 0.0);
+        renderer.render(
+            RenderLayer::rects_and_glyphs(&rects, &glyphs),
+            overlay,
+            0.0,
+        );
         self.shape_cache.end_frame();
         self.ui_shape_cache.end_frame();
     }
@@ -1018,9 +1186,20 @@ impl ApplicationHandler<UserEvent> for GpuApp {
             WindowEvent::KeyboardInput { event, .. }
                 if event.state == ElementState::Pressed =>
             {
+                // Popups own keyboard input while open: navigation,
+                // selection, dismiss. Everything else (shell control
+                // codes, app shortcuts) is suppressed.
+                if self.popup.is_some() {
+                    if let PhysicalKey::Code(KeyCode::Escape) = event.physical_key {
+                        self.close_popup();
+                    } else {
+                        self.handle_popup_key(&event);
+                    }
+                    return;
+                }
                 // Cmd/Super combos are app-level shortcuts (clipboard,
-                // quit). Match on physical_key, not logical_key, so
-                // they work on every keyboard layout: Cmd+C on a
+                // quit, popups). Match on physical_key, not logical_key,
+                // so they work on every keyboard layout: Cmd+C on a
                 // Russian / French / Greek layout would otherwise see
                 // `Key::Character("с"|"ç"|"ψ")` and miss the match.
                 if self.modifiers.super_key() {
@@ -1028,6 +1207,7 @@ impl ApplicationHandler<UserEvent> for GpuApp {
                         match code {
                             KeyCode::KeyC => self.copy_selection(),
                             KeyCode::KeyV => self.paste_into_pty(),
+                            KeyCode::KeyB => self.toggle_backend_switch_popup(),
                             KeyCode::KeyQ => event_loop.exit(),
                             _ => {}
                         }
@@ -1093,6 +1273,162 @@ fn schedule_momentum_loop(proxy: EventLoopProxy<UserEvent>, interval: Duration) 
     });
     abort
 }
+
+/// Render the open popup (background, shadow, items, selection
+/// highlight) into the overlay buffers. The popup is centred
+/// horizontally and pinned slightly above vertical centre so it
+/// sits where the eye naturally lands. Items use the chrome's
+/// SansSerif cache; selection highlight is a rounded-rect-style
+/// background under the chosen row.
+#[allow(clippy::too_many_arguments)]
+fn draw_popup(
+    popup: &Popup,
+    atlas: &mut GlyphAtlas,
+    font_system: &mut FontSystem,
+    swash_cache: &mut SwashCache,
+    ui_shape_cache: &mut TextShapeCache,
+    shadows: &mut Vec<term_gpu::ShadowInstance>,
+    rects: &mut Vec<RectInstance>,
+    glyphs: &mut Vec<GlyphInstance>,
+    window_w: f32,
+    window_h: f32,
+    sf: f32,
+) {
+    let Popup::BackendSwitch(state) = popup;
+    let items = &state.items;
+    let title = "Switch Backend";
+
+    // Width: max of title / item widths plus padding, clamped to a
+    // sane minimum so a short list doesn't render as a thin sliver.
+    let title_w = measure_label_width(
+        font_system,
+        ui_shape_cache,
+        title,
+        POPUP_FONT_SIZE,
+        sf,
+        Weight::BOLD,
+        Style::Normal,
+    );
+    let mut content_w = title_w;
+    for item in items {
+        let w = measure_label_width(
+            font_system,
+            ui_shape_cache,
+            item,
+            POPUP_FONT_SIZE,
+            sf,
+            Weight::NORMAL,
+            Style::Normal,
+        );
+        if w > content_w {
+            content_w = w;
+        }
+    }
+    let width = (content_w + POPUP_PADDING * 2.0).max(POPUP_MIN_WIDTH);
+    let height = POPUP_PADDING * 2.0
+        + POPUP_LINE_HEIGHT // title row
+        + POPUP_LINE_HEIGHT * 0.5 // gap
+        + (items.len() as f32) * POPUP_LINE_HEIGHT;
+
+    let x = ((window_w - width) * 0.5).max(0.0);
+    let y = ((window_h - height) * 0.4).max(0.0);
+
+    // Drop shadow first — under the popup background.
+    shadows.push(term_gpu::ShadowInstance {
+        pos: [x, y],
+        size: [width, height],
+        blur_radius: POPUP_SHADOW_BLUR,
+        corner_radius: POPUP_CORNER_RADIUS,
+        offset: [0.0, POPUP_SHADOW_OFFSET_Y],
+        color: POPUP_SHADOW_COLOR,
+    });
+
+    // Popup background + 1px border ring.
+    rects.push(RectInstance {
+        pos: [x, y],
+        size: [width, height],
+        color: POPUP_BG_COLOR,
+    });
+    rects.push(RectInstance {
+        pos: [x, y],
+        size: [width, 1.0],
+        color: POPUP_BORDER_COLOR,
+    });
+    rects.push(RectInstance {
+        pos: [x, y + height - 1.0],
+        size: [width, 1.0],
+        color: POPUP_BORDER_COLOR,
+    });
+    rects.push(RectInstance {
+        pos: [x, y],
+        size: [1.0, height],
+        color: POPUP_BORDER_COLOR,
+    });
+    rects.push(RectInstance {
+        pos: [x + width - 1.0, y],
+        size: [1.0, height],
+        color: POPUP_BORDER_COLOR,
+    });
+
+    let content_x = x + POPUP_PADDING;
+    let mut cursor_y = y + POPUP_PADDING + POPUP_LINE_HEIGHT * 0.75;
+    // Title.
+    push_label(
+        font_system,
+        swash_cache,
+        atlas,
+        ui_shape_cache,
+        glyphs,
+        title,
+        content_x,
+        cursor_y,
+        POPUP_FONT_SIZE,
+        sf,
+        Weight::BOLD,
+        Style::Normal,
+        CHROME_TEXT_COLOR,
+    );
+    cursor_y += POPUP_LINE_HEIGHT;
+    // Gap before items.
+    cursor_y += POPUP_LINE_HEIGHT * 0.5;
+    let item_top_y = cursor_y - POPUP_LINE_HEIGHT * 0.75;
+
+    // Selection highlight bar under the chosen row.
+    let highlight_y = item_top_y + (state.selected as f32) * POPUP_LINE_HEIGHT;
+    rects.push(RectInstance {
+        pos: [x + 1.0, highlight_y],
+        size: [width - 2.0, POPUP_LINE_HEIGHT],
+        color: POPUP_HIGHLIGHT_COLOR,
+    });
+
+    for (idx, item) in items.iter().enumerate() {
+        let color = if idx == state.selected {
+            DEFAULT_FG_FOR_POPUP_SELECTED
+        } else {
+            CHROME_TEXT_COLOR
+        };
+        push_label(
+            font_system,
+            swash_cache,
+            atlas,
+            ui_shape_cache,
+            glyphs,
+            item,
+            content_x,
+            cursor_y,
+            POPUP_FONT_SIZE,
+            sf,
+            Weight::NORMAL,
+            Style::Normal,
+            color,
+        );
+        cursor_y += POPUP_LINE_HEIGHT;
+    }
+}
+
+/// Brighter foreground for the selected popup item to contrast with
+/// the highlight bar.
+const DEFAULT_FG_FOR_POPUP_SELECTED: [f32; 4] = [0.95, 0.95, 0.95, 1.0];
 
 /// Construct the platform clipboard. macOS gets `MacClipboard` with
 /// full pasteboard parity (text, HTML, file paths, images). Other
