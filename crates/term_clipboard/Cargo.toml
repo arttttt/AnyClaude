@@ -1,0 +1,15 @@
+[package]
+name = "term_clipboard"
+version = "0.1.0"
+edition = "2021"
+description = "Cross-platform clipboard for AnyClaude. Modeled on Warp's `warpui_core::clipboard` — read/write plain text, file paths, HTML, and bitmap images via the OS pasteboard. macOS implementation uses NSPasteboard via objc2."
+
+[lints]
+workspace = true
+
+[dependencies]
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = ["NSString", "NSArray", "NSData", "NSURL"] }
+objc2-app-kit = { version = "0.2", features = ["NSPasteboard"] }
