@@ -36,15 +36,21 @@ use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
 use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
 use winit::window::{Window, WindowAttributes, WindowId};
 
+use mvi::Store;
+
 use crate::args::build_spawn_params;
 use crate::backend::BackendState;
 use crate::config::{
-    save_claude_settings, ClaudeSettingsManager, Config, ConfigStore, DebugLogLevel, SettingId,
+    save_claude_settings, ClaudeSettingsManager, Config, ConfigStore, DebugLogLevel,
+    SettingsFieldSnapshot,
 };
 use crate::metrics::{init_global_logger, DebugLogger};
 use crate::proxy::ProxyServer;
 use crate::shim::TeammateShim;
+use crate::ui::backend_switch::{BackendSwitchActor, BackendSwitchIntent, BackendSwitchState};
 use crate::ui::gpu::pty::ChildPty;
+use crate::ui::history::{HistoryActor, HistoryDialogState, HistoryEntry, HistoryIntent};
+use crate::ui::settings::{SettingsActor, SettingsDialogState, SettingsIntent};
 
 const INITIAL_W: f32 = 1200.0;
 const INITIAL_H: f32 = 800.0;
@@ -351,54 +357,16 @@ struct GpuApp {
     /// popup confirm (Enter). Loaded from Config at startup so the
     /// popup reflects the user's last choice.
     settings_manager: ClaudeSettingsManager,
-    /// Currently-open popup overlay, if any. While `Some`, popup
-    /// intercepts keyboard / mouse and selection / hotkey forwarding
-    /// is suppressed.
-    popup: Option<Popup>,
+
+    /// MVI stores for the popup overlays. At most one is `Visible` at
+    /// a time; rendering and input routing check `is_visible()` on
+    /// each. State machines + intent handling live in the respective
+    /// `Actor` impls — this file is the wiring + render-side projection.
+    backend_switch_store: Store<BackendSwitchActor>,
+    history_store: Store<HistoryActor>,
+    settings_store: Store<SettingsActor>,
 }
 
-/// All popup variants are owned by this enum so the field-presence
-/// check (`Option<Popup>::is_some`) is enough to gate input routing.
-#[derive(Debug, Clone)]
-enum Popup {
-    BackendSwitch(BackendSwitchPopup),
-    History(HistoryPopup),
-    Settings(SettingsPopup),
-}
-
-#[derive(Debug, Clone)]
-struct BackendSwitchPopup {
-    /// Display labels shown in the list (one row per backend).
-    items: Vec<String>,
-    /// Backend `name` (id) parallel to `items`. On Enter the popup
-    /// calls `backend_state.switch_backend(ids[selected])`.
-    ids: Vec<String>,
-    selected: usize,
-}
-
-#[derive(Debug, Clone)]
-struct HistoryPopup {
-    /// Formatted entry rows ("timestamp · from → to"). Empty when no
-    /// switches have occurred yet (or until the proxy is wired in C10).
-    items: Vec<String>,
-    selected: usize,
-}
-
-#[derive(Debug, Clone)]
-struct SettingsPopup {
-    /// Mutable popup-local copy of each setting's current value.
-    /// Toggles edit this list; Enter applies it back to the manager
-    /// and saves to disk. Esc discards.
-    items: Vec<SettingItem>,
-    selected: usize,
-}
-
-#[derive(Debug, Clone)]
-struct SettingItem {
-    id: SettingId,
-    label: String,
-    value: bool,
-}
 
 #[derive(Debug, Clone, Copy)]
 struct LastClick {
@@ -449,7 +417,9 @@ impl GpuApp {
             spawn_args,
             spawn_env,
             settings_manager,
-            popup: None,
+            backend_switch_store: Store::new(BackendSwitchActor, |_effect| {}),
+            history_store: Store::new(HistoryActor, |_effect| {}),
+            settings_store: Store::new(SettingsActor, |_effect| {}),
         }
     }
 
@@ -632,13 +602,37 @@ impl GpuApp {
         ));
     }
 
-    /// Open or close the Cmd+B backend-switch popup. When opening,
-    /// the items list is snapshotted from the proxy's live backend
-    /// state; selection starts at the currently-active backend so
-    /// pressing Enter is a no-op if the user is just inspecting.
+    /// True when any popup MVI store is in its `Visible` state. Used
+    /// to gate input routing and mouse-click priority.
+    fn any_popup_visible(&self) -> bool {
+        self.backend_switch_store.state().is_visible()
+            || self.history_store.state().is_visible()
+            || self.settings_store.state().is_visible()
+    }
+
+    /// Dispatch `Close` to every popup store. Called by Cmd+B / +H /
+    /// +E before opening a new popup, by Esc, and by click-outside.
+    fn close_all_popups(&mut self) {
+        if self.backend_switch_store.state().is_visible() {
+            self.backend_switch_store.dispatch(BackendSwitchIntent::Close);
+        }
+        if self.history_store.state().is_visible() {
+            self.history_store.dispatch(HistoryIntent::Close);
+        }
+        if self.settings_store.state().is_visible() {
+            self.settings_store.dispatch(SettingsIntent::Close);
+        }
+        if let Some(w) = self.window.as_ref() {
+            w.request_redraw();
+        }
+    }
+
+    /// Cmd+B handler — open or close the backend switch popup. Open
+    /// dispatches the Open intent with the active backend pre-selected
+    /// so pressing Enter is a no-op if the user is just inspecting.
     fn toggle_backend_switch_popup(&mut self) {
-        if matches!(self.popup, Some(Popup::BackendSwitch(_))) {
-            self.close_popup();
+        if self.backend_switch_store.state().is_visible() {
+            self.close_all_popups();
             return;
         }
         let cfg = self.backend_state.get_config();
@@ -646,75 +640,92 @@ impl GpuApp {
             return;
         }
         let active = self.backend_state.get_active_backend();
-        let mut items = Vec::with_capacity(cfg.backends.len());
-        let mut ids = Vec::with_capacity(cfg.backends.len());
-        let mut selected = 0usize;
-        for (idx, b) in cfg.backends.iter().enumerate() {
-            items.push(b.display_name.clone());
-            ids.push(b.name.clone());
-            if b.name == active {
-                selected = idx;
-            }
-        }
-        self.popup = Some(Popup::BackendSwitch(BackendSwitchPopup {
-            items,
-            ids,
-            selected,
-        }));
+        let backend_selection = cfg
+            .backends
+            .iter()
+            .position(|b| b.name == active)
+            .unwrap_or(0);
+        // Close any other open popup first.
+        self.close_all_popups();
+        self.backend_switch_store
+            .dispatch(BackendSwitchIntent::Open {
+                backend_selection,
+                subagent_selection: 0,
+                teammate_selection: 0,
+                backends_count: cfg.backends.len(),
+            });
         if let Some(w) = self.window.as_ref() {
             w.request_redraw();
         }
     }
 
-    fn close_popup(&mut self) {
-        self.popup = None;
-        if let Some(w) = self.window.as_ref() {
-            w.request_redraw();
-        }
-    }
-
-    /// Open or close the Cmd+E settings popup. Items snapshot the
-    /// current `settings_manager` values; Space toggles the focused
-    /// row; Enter applies the changes (writes back to disk via
-    /// `save_claude_settings`) and closes; Esc discards the in-popup
-    /// edits.
-    fn toggle_settings_popup(&mut self) {
-        if matches!(self.popup, Some(Popup::Settings(_))) {
-            self.close_popup();
+    /// Cmd+H handler — open or close the history popup. The switch
+    /// log is snapshotted into the popup at open time; subsequent
+    /// switches only show up after the user reopens.
+    fn toggle_history_popup(&mut self) {
+        if self.history_store.state().is_visible() {
+            self.close_all_popups();
             return;
         }
-        let items: Vec<SettingItem> = self
+        let entries = self.backend_state.get_switch_log();
+        let mvi_entries: Vec<HistoryEntry> = entries
+            .into_iter()
+            .map(|e| HistoryEntry {
+                timestamp: e.timestamp,
+                from_backend: e.old_backend,
+                to_backend: e.new_backend,
+            })
+            .collect();
+        self.close_all_popups();
+        self.history_store
+            .dispatch(HistoryIntent::Load { entries: mvi_entries });
+        if let Some(w) = self.window.as_ref() {
+            w.request_redraw();
+        }
+    }
+
+    /// Cmd+E handler — open or close the settings popup. Field
+    /// snapshots are loaded from `settings_manager`; Space toggles
+    /// rows (marks state dirty), Enter applies and saves, Esc
+    /// discards.
+    fn toggle_settings_popup(&mut self) {
+        if self.settings_store.state().is_visible() {
+            self.close_all_popups();
+            return;
+        }
+        let fields: Vec<SettingsFieldSnapshot> = self
             .settings_manager
             .registry()
             .iter()
-            .map(|def| SettingItem {
+            .map(|def| SettingsFieldSnapshot {
                 id: def.id,
-                label: def.label.to_string(),
+                label: def.label,
+                description: def.description,
+                section: def.section,
                 value: self.settings_manager.get(def.id),
             })
             .collect();
-        if items.is_empty() {
+        if fields.is_empty() {
             return;
         }
-        self.popup = Some(Popup::Settings(SettingsPopup {
-            items,
-            selected: 0,
-        }));
+        self.close_all_popups();
+        self.settings_store
+            .dispatch(SettingsIntent::Load { fields });
         if let Some(w) = self.window.as_ref() {
             w.request_redraw();
         }
     }
 
-    /// Apply the settings popup's edits to the manager and persist to
-    /// disk. Errors from the save (e.g. missing config dir) are
-    /// printed but don't crash — the in-memory manager already
-    /// reflects the new values for the rest of the session.
+    /// Persist the settings popup's edits to disk. Reads the current
+    /// MVI state, applies each row to the manager, then calls
+    /// `save_claude_settings`. Errors are logged but non-fatal.
     fn apply_settings_and_save(&mut self) {
-        let Some(Popup::Settings(ref state)) = self.popup else {
-            return;
+        let fields = match self.settings_store.state() {
+            SettingsDialogState::Visible { fields, .. } => fields.clone(),
+            SettingsDialogState::Hidden => return,
         };
-        for item in &state.items {
-            self.settings_manager.set(item.id, item.value);
+        for field in &fields {
+            self.settings_manager.set(field.id, field.value);
         }
         let snapshot = self
             .settings_manager
@@ -727,102 +738,98 @@ impl GpuApp {
         }
     }
 
-    /// Open or close the Cmd+H history popup. Entries are snapshotted
-    /// from the proxy's switch log; an empty log renders the
-    /// "(no history yet)" placeholder.
-    fn toggle_history_popup(&mut self) {
-        if matches!(self.popup, Some(Popup::History(_))) {
-            self.close_popup();
-            return;
-        }
-        let log = self.backend_state.get_switch_log();
-        let items: Vec<String> = log
-            .iter()
-            .rev() // newest first
-            .map(|e| {
-                let secs = e
-                    .timestamp
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
-                let from = e.old_backend.as_deref().unwrap_or("(initial)");
-                format!("{secs}  ·  {from}  →  {}", e.new_backend)
-            })
-            .collect();
-        self.popup = Some(Popup::History(HistoryPopup {
-            items,
-            selected: 0,
-        }));
-        if let Some(w) = self.window.as_ref() {
-            w.request_redraw();
+    /// Route a keyboard event to the currently-open popup. Each store
+    /// owns its own intent vocabulary; this method translates winit
+    /// key events into the right dispatch. Esc is handled at the call
+    /// site (close_all_popups). Enter triggers the popup's action
+    /// (switch backend / save settings / dismiss history) and closes
+    /// the popup.
+    fn handle_popup_key(&mut self, event: &winit::event::KeyEvent) {
+        if self.backend_switch_store.state().is_visible() {
+            self.handle_backend_switch_key(event);
+        } else if self.history_store.state().is_visible() {
+            self.handle_history_key(event);
+        } else if self.settings_store.state().is_visible() {
+            self.handle_settings_key(event);
         }
     }
 
-    /// Route a keyboard event to the open popup. Up/Down move the
-    /// selection; Enter triggers the popup's action (currently a stub
-    /// for backend-switch — C10 wires the real call). History is
-    /// read-only — Enter just closes. Other keys are swallowed so the
-    /// shell underneath sees nothing while the popup is open.
-    fn handle_popup_key(&mut self, event: &winit::event::KeyEvent) {
-        let items_len = match self.popup {
-            Some(Popup::BackendSwitch(ref s)) => s.items.len(),
-            Some(Popup::History(ref s)) => s.items.len(),
-            Some(Popup::Settings(ref s)) => s.items.len(),
-            None => return,
-        };
-        if items_len == 0 {
-            // No items to navigate; Enter is also no-op. Esc is
-            // handled at the call site.
-            return;
-        }
-        let selected = match self.popup {
-            Some(Popup::BackendSwitch(ref s)) => s.selected,
-            Some(Popup::History(ref s)) => s.selected,
-            Some(Popup::Settings(ref s)) => s.selected,
-            None => return,
-        };
-        let new_selected = match event.physical_key {
-            PhysicalKey::Code(KeyCode::ArrowUp) => Some(if selected == 0 {
-                items_len - 1
-            } else {
-                selected - 1
-            }),
-            PhysicalKey::Code(KeyCode::ArrowDown) => Some((selected + 1) % items_len),
-            PhysicalKey::Code(KeyCode::Space) => {
-                if let Some(Popup::Settings(ref mut s)) = self.popup {
-                    if let Some(item) = s.items.get_mut(s.selected) {
-                        item.value = !item.value;
-                    }
-                    if let Some(w) = self.window.as_ref() {
-                        w.request_redraw();
-                    }
-                }
-                return;
+    fn handle_backend_switch_key(&mut self, event: &winit::event::KeyEvent) {
+        match event.physical_key {
+            PhysicalKey::Code(KeyCode::ArrowUp) => {
+                self.backend_switch_store
+                    .dispatch(BackendSwitchIntent::MoveUp);
+                self.request_redraw();
+            }
+            PhysicalKey::Code(KeyCode::ArrowDown) => {
+                self.backend_switch_store
+                    .dispatch(BackendSwitchIntent::MoveDown);
+                self.request_redraw();
+            }
+            PhysicalKey::Code(KeyCode::Tab) => {
+                self.backend_switch_store
+                    .dispatch(BackendSwitchIntent::NextSection);
+                self.request_redraw();
             }
             PhysicalKey::Code(KeyCode::Enter) => {
-                match self.popup {
-                    Some(Popup::BackendSwitch(ref s)) => {
-                        let id = s.ids[s.selected].clone();
+                if let BackendSwitchState::Visible {
+                    backend_selection, ..
+                } = *self.backend_switch_store.state()
+                {
+                    let cfg = self.backend_state.get_config();
+                    if let Some(b) = cfg.backends.get(backend_selection) {
+                        let id = b.name.clone();
                         if let Err(e) = self.backend_state.switch_backend(&id) {
                             eprintln!("anyclaude: backend switch failed: {e}");
                         }
                     }
-                    Some(Popup::Settings(_)) => {
-                        self.apply_settings_and_save();
-                    }
-                    _ => {}
                 }
-                self.close_popup();
-                return;
+                self.close_all_popups();
             }
-            _ => return,
-        };
-        match self.popup {
-            Some(Popup::BackendSwitch(ref mut s)) => s.selected = new_selected.unwrap(),
-            Some(Popup::History(ref mut s)) => s.selected = new_selected.unwrap(),
-            Some(Popup::Settings(ref mut s)) => s.selected = new_selected.unwrap(),
-            None => {}
+            _ => {}
         }
+    }
+
+    fn handle_history_key(&mut self, event: &winit::event::KeyEvent) {
+        match event.physical_key {
+            PhysicalKey::Code(KeyCode::ArrowUp) => {
+                self.history_store.dispatch(HistoryIntent::ScrollUp);
+                self.request_redraw();
+            }
+            PhysicalKey::Code(KeyCode::ArrowDown) => {
+                self.history_store.dispatch(HistoryIntent::ScrollDown);
+                self.request_redraw();
+            }
+            PhysicalKey::Code(KeyCode::Enter) => {
+                self.close_all_popups();
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_settings_key(&mut self, event: &winit::event::KeyEvent) {
+        match event.physical_key {
+            PhysicalKey::Code(KeyCode::ArrowUp) => {
+                self.settings_store.dispatch(SettingsIntent::MoveUp);
+                self.request_redraw();
+            }
+            PhysicalKey::Code(KeyCode::ArrowDown) => {
+                self.settings_store.dispatch(SettingsIntent::MoveDown);
+                self.request_redraw();
+            }
+            PhysicalKey::Code(KeyCode::Space) => {
+                self.settings_store.dispatch(SettingsIntent::Toggle);
+                self.request_redraw();
+            }
+            PhysicalKey::Code(KeyCode::Enter) => {
+                self.apply_settings_and_save();
+                self.close_all_popups();
+            }
+            _ => {}
+        }
+    }
+
+    fn request_redraw(&self) {
         if let Some(w) = self.window.as_ref() {
             w.request_redraw();
         }
@@ -969,8 +976,8 @@ impl GpuApp {
         // (matching macOS modal-out behaviour) and is otherwise
         // swallowed — the click never starts a selection in the
         // terminal underneath.
-        if self.popup.is_some() {
-            self.close_popup();
+        if self.any_popup_visible() {
+            self.close_all_popups();
             return;
         }
         // Header click — copy session id to clipboard and flash the
@@ -1183,13 +1190,55 @@ impl GpuApp {
             sf,
         );
 
-        // Build an optional overlay layer for the active popup.
+        // Build an optional overlay layer for whichever popup MVI
+        // store is currently `Visible`. At most one popup is shown at
+        // a time (close_all_popups before opening) so the dispatch
+        // is sequential — first match wins.
         let mut overlay_shadows: Vec<term_gpu::ShadowInstance> = Vec::new();
         let mut overlay_rects: Vec<RectInstance> = Vec::new();
         let mut overlay_glyphs: Vec<GlyphInstance> = Vec::new();
-        if let Some(popup) = self.popup.as_ref() {
-            draw_popup(
-                popup,
+        let backend_state_visible = self.backend_switch_store.state().is_visible();
+        let history_state_visible = self.history_store.state().is_visible();
+        let settings_state_visible = self.settings_store.state().is_visible();
+        if backend_state_visible {
+            let items_and_ids: Vec<(String, String)> = self
+                .backend_state
+                .get_config()
+                .backends
+                .iter()
+                .map(|b| (b.display_name.clone(), b.name.clone()))
+                .collect();
+            draw_backend_switch_popup(
+                self.backend_switch_store.state(),
+                &items_and_ids,
+                renderer.atlas_mut(),
+                &mut self.font_system,
+                &mut self.swash_cache,
+                &mut self.ui_shape_cache,
+                &mut overlay_shadows,
+                &mut overlay_rects,
+                &mut overlay_glyphs,
+                window_w_logical,
+                window_h_logical,
+                sf,
+            );
+        } else if history_state_visible {
+            draw_history_popup(
+                self.history_store.state(),
+                renderer.atlas_mut(),
+                &mut self.font_system,
+                &mut self.swash_cache,
+                &mut self.ui_shape_cache,
+                &mut overlay_shadows,
+                &mut overlay_rects,
+                &mut overlay_glyphs,
+                window_w_logical,
+                window_h_logical,
+                sf,
+            );
+        } else if settings_state_visible {
+            draw_settings_popup(
+                self.settings_store.state(),
                 renderer.atlas_mut(),
                 &mut self.font_system,
                 &mut self.swash_cache,
@@ -1509,9 +1558,9 @@ impl ApplicationHandler<UserEvent> for GpuApp {
                 // Popups own keyboard input while open: navigation,
                 // selection, dismiss. Everything else (shell control
                 // codes, app shortcuts) is suppressed.
-                if self.popup.is_some() {
+                if self.any_popup_visible() {
                     if let PhysicalKey::Code(KeyCode::Escape) = event.physical_key {
-                        self.close_popup();
+                        self.close_all_popups();
                     } else {
                         self.handle_popup_key(&event);
                     }
@@ -1596,11 +1645,15 @@ fn schedule_momentum_loop(proxy: EventLoopProxy<UserEvent>, interval: Duration) 
     abort
 }
 
-/// Dispatch to the variant-specific draw routine. The popup is owned
-/// by `GpuApp::popup`; this is the read-only render path.
+/// Render the backend-switch popup from its MVI store state. Items
+/// come from the parallel `(display_name, id)` slice the caller
+/// snapshotted from `backend_state.get_config().backends`. C7 stage
+/// renders only the Active section; Subagent / Teammate state lives
+/// in the store but isn't projected yet (post-Phase-5 polish).
 #[allow(clippy::too_many_arguments)]
-fn draw_popup(
-    popup: &Popup,
+fn draw_backend_switch_popup(
+    state: &BackendSwitchState,
+    items_and_ids: &[(String, String)],
     atlas: &mut GlyphAtlas,
     font_system: &mut FontSystem,
     swash_cache: &mut SwashCache,
@@ -1612,69 +1665,129 @@ fn draw_popup(
     window_h: f32,
     sf: f32,
 ) {
-    match popup {
-        Popup::BackendSwitch(state) => draw_string_list_popup(
-            "Switch Backend",
-            &state.items,
-            state.selected,
-            None,
-            atlas,
-            font_system,
-            swash_cache,
-            ui_shape_cache,
-            shadows,
-            rects,
-            glyphs,
-            window_w,
-            window_h,
-            sf,
-        ),
-        Popup::History(state) => draw_string_list_popup(
-            "History",
-            &state.items,
-            state.selected,
-            Some("(no history yet)"),
-            atlas,
-            font_system,
-            swash_cache,
-            ui_shape_cache,
-            shadows,
-            rects,
-            glyphs,
-            window_w,
-            window_h,
-            sf,
-        ),
-        Popup::Settings(state) => {
-            // Format each item as "[x] Label" or "[ ] Label" and let
-            // draw_string_list_popup do the rendering — the checkbox
-            // is just a glyph prefix, no separate state column needed.
-            let formatted: Vec<String> = state
-                .items
-                .iter()
-                .map(|i| {
-                    let mark = if i.value { "[x]" } else { "[ ]" };
-                    format!("{mark}  {}", i.label)
-                })
-                .collect();
-            draw_string_list_popup(
-                "Settings  ·  Space toggle · Enter save · Esc cancel",
-                &formatted,
-                state.selected,
-                None,
-                atlas,
-                font_system,
-                swash_cache,
-                ui_shape_cache,
-                shadows,
-                rects,
-                glyphs,
-                window_w,
-                window_h,
-                sf,
-            );
-        }
-    }
+    let selected = match *state {
+        BackendSwitchState::Visible {
+            backend_selection, ..
+        } => backend_selection,
+        BackendSwitchState::Hidden => return,
+    };
+    let items: Vec<String> = items_and_ids.iter().map(|(name, _id)| name.clone()).collect();
+    draw_string_list_popup(
+        "Switch Backend",
+        &items,
+        selected,
+        None,
+        atlas,
+        font_system,
+        swash_cache,
+        ui_shape_cache,
+        shadows,
+        rects,
+        glyphs,
+        window_w,
+        window_h,
+        sf,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_history_popup(
+    state: &HistoryDialogState,
+    atlas: &mut GlyphAtlas,
+    font_system: &mut FontSystem,
+    swash_cache: &mut SwashCache,
+    ui_shape_cache: &mut TextShapeCache,
+    shadows: &mut Vec<term_gpu::ShadowInstance>,
+    rects: &mut Vec<RectInstance>,
+    glyphs: &mut Vec<GlyphInstance>,
+    window_w: f32,
+    window_h: f32,
+    sf: f32,
+) {
+    let (entries, scroll_offset) = match state {
+        HistoryDialogState::Visible {
+            entries,
+            scroll_offset,
+        } => (entries, *scroll_offset),
+        HistoryDialogState::Hidden => return,
+    };
+    let items: Vec<String> = entries
+        .iter()
+        .rev()
+        .map(|e| {
+            let secs = e
+                .timestamp
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let from = e.from_backend.as_deref().unwrap_or("(initial)");
+            format!("{secs}  ·  {from}  →  {}", e.to_backend)
+        })
+        .collect();
+    draw_string_list_popup(
+        "History",
+        &items,
+        scroll_offset.min(items.len().saturating_sub(1)),
+        Some("(no history yet)"),
+        atlas,
+        font_system,
+        swash_cache,
+        ui_shape_cache,
+        shadows,
+        rects,
+        glyphs,
+        window_w,
+        window_h,
+        sf,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_settings_popup(
+    state: &SettingsDialogState,
+    atlas: &mut GlyphAtlas,
+    font_system: &mut FontSystem,
+    swash_cache: &mut SwashCache,
+    ui_shape_cache: &mut TextShapeCache,
+    shadows: &mut Vec<term_gpu::ShadowInstance>,
+    rects: &mut Vec<RectInstance>,
+    glyphs: &mut Vec<GlyphInstance>,
+    window_w: f32,
+    window_h: f32,
+    sf: f32,
+) {
+    let (fields, focused) = match state {
+        SettingsDialogState::Visible {
+            fields, focused, ..
+        } => (fields, *focused),
+        SettingsDialogState::Hidden => return,
+    };
+    // Format each row as "[x] Label" / "[ ] Label" — checkbox is a
+    // glyph prefix; the focus highlight comes from
+    // draw_string_list_popup's selection bar.
+    let formatted: Vec<String> = fields
+        .iter()
+        .map(|f| {
+            let mark = if f.value { "[x]" } else { "[ ]" };
+            format!("{mark}  {}", f.label)
+        })
+        .collect();
+    draw_string_list_popup(
+        "Settings  ·  Space toggle · Enter save · Esc cancel",
+        &formatted,
+        focused,
+        None,
+        atlas,
+        font_system,
+        swash_cache,
+        ui_shape_cache,
+        shadows,
+        rects,
+        glyphs,
+        window_w,
+        window_h,
+        sf,
+    );
 }
 
 /// Render a centered popup whose body is a list of strings with one
