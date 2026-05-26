@@ -29,6 +29,7 @@ mvi = { path = "crates/mvi" }
 # GPU UI (Phase 5 in progress — runs alongside the legacy ratatui
 # pipeline. The legacy UI stays until the C10 cutover.)
 term_gpu = { path = "crates/term_gpu" }
+term_core = { path = "crates/term_core" }
 winit = "0.30"
 
 # TUI (legacy — removed in Phase 5 C10)

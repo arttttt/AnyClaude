@@ -201,6 +201,7 @@ dependencies = [
  "serde_json",
  "signal-hook 0.4.3",
  "tempfile",
+ "term_core",
  "term_gpu",
  "term_input",
  "thiserror 2.0.18",

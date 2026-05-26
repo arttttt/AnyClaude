@@ -26,7 +26,7 @@ pub use scroll::{
 };
 pub use text::{rasterize_glyph, CharGlyph, FontFamily, ShapedLine, ShapedText, TextShapeCache};
 
-/// Re-exported cosmic-text font attribute types. Consumers shape with
-/// these via `TextShapeCache::shape` rather than importing cosmic-text
-/// directly.
-pub use cosmic_text::{Style, Weight};
+/// Re-exported cosmic-text types. Consumers wire these through
+/// `TextShapeCache::shape` / `populate_panel` rather than importing
+/// cosmic-text directly — keeps the dependency contained.
+pub use cosmic_text::{FontSystem, Style, SwashCache, Weight};
