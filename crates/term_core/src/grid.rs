@@ -668,15 +668,44 @@ impl Grid {
     // ─── Resize / reset ────────────────────────────────────────────────────
 
     pub fn resize(&mut self, cols: usize, rows: usize) {
+        // Reflow soft-wrapped content when the column count changes.
+        // Modelled on Warp's `Index::rebuild` (see warp_terminal/.../index.rs):
+        // walk cells through the WRAPLINE chain to produce flat logical
+        // lines, then re-emit rows at the new width. Hard line breaks
+        // (no WRAPLINE on the trailing cell) survive intact.
+        //
+        // We track the cursor's absolute row across both reflow and the
+        // outer pad/truncate step, then project back to a visible-relative
+        // row at the very end. Doing the visible-relative conversion
+        // before pad/truncate would race with the moving visible_start.
+        let cursor_abs_before = self.visible_start()
+            + self.cursor_row.min(self.visible_rows.saturating_sub(1));
+        let cursor_abs = if cols != self.cols && cols > 0 {
+            self.reflow_columns(cols).unwrap_or(cursor_abs_before)
+        } else {
+            cursor_abs_before
+        };
+
         for row in &mut self.rows {
             row.resize(cols);
         }
         // Top-anchored resize: the visible region always pins to the top
         // of the row buffer. Content never scrolls in response to window
-        // size changes — only padded (grow) or truncated (shrink) at the
-        // bottom. Scrollback length is preserved.
-        let scrollback = self.scrollback_len();
-        let target = scrollback + rows;
+        // size changes.
+        //
+        // When visible_rows grows, we let it absorb existing scrollback
+        // (so older content re-enters the viewport) instead of preserving
+        // the old scrollback row count verbatim. This matches the user's
+        // mental model of "content does not move on resize" — a taller
+        // window simply sees more rows, top first.
+        //
+        // When visible_rows shrinks (or stays the same), scrollback is
+        // preserved; trailing blank rows beyond the new visible region
+        // are truncated.
+        let prev_scrollback = self.rows.len().saturating_sub(self.visible_rows);
+        let visible_increment = rows.saturating_sub(self.visible_rows);
+        let scrollback_to_keep = prev_scrollback.saturating_sub(visible_increment);
+        let target = scrollback_to_keep + rows;
         if self.rows.len() < target {
             while self.rows.len() < target {
                 self.rows.push(Row::new(cols));
@@ -687,15 +716,39 @@ impl Grid {
         self.cols = cols;
         self.visible_rows = rows;
         self.scroll_bottom = rows.saturating_sub(1);
-        // Cursor row is visible-relative; clamp to the new visible region
-        // so it stays on screen. We do NOT re-anchor to an absolute row —
-        // that would cause the cursor to slide as `visible_start` shifts.
-        if self.cursor_row >= rows {
-            self.cursor_row = rows.saturating_sub(1);
-        }
+        // Project the cursor's absolute row back to the new visible region.
+        let visible_start = self.rows.len().saturating_sub(self.visible_rows);
+        self.cursor_row = cursor_abs
+            .saturating_sub(visible_start)
+            .min(rows.saturating_sub(1));
         if self.cursor_col >= cols {
             self.cursor_col = cols.saturating_sub(1);
         }
+    }
+
+    /// Rebuilds rows at `new_cols`, preserving soft-wrapped logical lines.
+    /// Returns the cursor's new absolute row in the rebuilt buffer (for the
+    /// outer `resize` to convert to visible-relative once pad/truncate
+    /// settles `visible_start`).
+    fn reflow_columns(&mut self, new_cols: usize) -> Option<usize> {
+        let old_cols = self.cols;
+        if old_cols == 0 {
+            return None;
+        }
+
+        let cursor_abs_row =
+            self.visible_start() + self.cursor_row.min(self.visible_rows.saturating_sub(1));
+        let (cur_line, cur_offset) =
+            locate_cursor_logical(&self.rows, old_cols, cursor_abs_row, self.cursor_col);
+
+        let logical = collect_logical_lines(&self.rows, old_cols);
+        let new_rows = rewrap(&logical, new_cols);
+        let (new_abs_row, new_col) =
+            place_cursor_logical(&logical, cur_line, cur_offset, new_cols);
+
+        self.rows = new_rows;
+        self.cursor_col = new_col;
+        Some(new_abs_row)
     }
 
     pub fn reset(&mut self) {
@@ -724,4 +777,146 @@ impl Grid {
             self.row_mut(r).clear_range(0..cols);
         }
     }
+}
+
+// ──── Reflow helpers ──────────────────────────────────────────────────────
+//
+// Logical line = concatenated cells from a chain of rows joined by
+// CellFlags::WRAPLINE on the trailing cell. Rebuilding rows at a new
+// column count is then a plain `chunks(new_cols)` over the trimmed
+// content, with WRAPLINE set on the last cell of every chunk except
+// the final one.
+
+struct LogicalLine {
+    cells: Vec<Cell>,
+}
+
+fn row_wraps(row: &Row, old_cols: usize) -> bool {
+    if old_cols == 0 {
+        return false;
+    }
+    row.cells
+        .get(old_cols - 1)
+        .map(|c| c.flags.wrap_line())
+        .unwrap_or(false)
+}
+
+fn trim_trailing_blanks(cells: &[Cell]) -> usize {
+    let blank = Cell::space();
+    let mut len = cells.len();
+    while len > 0 && cells[len - 1] == blank {
+        len -= 1;
+    }
+    len
+}
+
+fn collect_logical_lines(rows: &[Row], old_cols: usize) -> Vec<LogicalLine> {
+    let mut out = Vec::with_capacity(rows.len());
+    let mut current: Vec<Cell> = Vec::new();
+    for row in rows {
+        current.extend(row.cells.iter().cloned());
+        if !row_wraps(row, old_cols) {
+            out.push(LogicalLine {
+                cells: std::mem::take(&mut current),
+            });
+        }
+    }
+    // Final dangling chain (last row had WRAPLINE) — defensive; should not
+    // normally happen since the bottom row of the buffer is the cursor's
+    // current line and hasn't wrapped yet.
+    if !current.is_empty() {
+        out.push(LogicalLine { cells: current });
+    }
+    // Drop trailing logical lines that are entirely blank. They represent
+    // the "below the cursor" empty area in the source buffer; the outer
+    // `Grid::resize` re-creates those blank rows by padding to fit the
+    // visible region, so emitting them here would double up and push real
+    // content into scrollback under our bottom-anchored visible window.
+    while out
+        .last()
+        .map(|l| trim_trailing_blanks(&l.cells) == 0)
+        .unwrap_or(false)
+    {
+        out.pop();
+    }
+    out
+}
+
+fn rewrap(logical: &[LogicalLine], new_cols: usize) -> Vec<Row> {
+    debug_assert!(new_cols > 0);
+    let mut out = Vec::with_capacity(logical.len());
+    for line in logical {
+        let trimmed = trim_trailing_blanks(&line.cells);
+        if trimmed == 0 {
+            out.push(Row::new(new_cols));
+            continue;
+        }
+        let mut cells: Vec<Cell> = line.cells[..trimmed].to_vec();
+        // WRAPLINE was set on the OLD column boundary inside each row;
+        // clear it everywhere so we can re-set it at the new boundaries.
+        for cell in &mut cells {
+            cell.flags.clear(CellFlags::WRAPLINE);
+        }
+        let mut start = 0;
+        while start < cells.len() {
+            let end = (start + new_cols).min(cells.len());
+            let mut row = Row::new(new_cols);
+            for (i, cell) in cells[start..end].iter().enumerate() {
+                row.cells[i] = cell.clone();
+            }
+            if end < cells.len() {
+                row.cells[new_cols - 1].flags.set(CellFlags::WRAPLINE);
+            }
+            out.push(row);
+            start = end;
+        }
+    }
+    out
+}
+
+fn locate_cursor_logical(
+    rows: &[Row],
+    old_cols: usize,
+    abs_row: usize,
+    col: usize,
+) -> (usize, usize) {
+    let mut logical_idx = 0;
+    let mut offset_in_line = 0;
+    for (idx, row) in rows.iter().enumerate() {
+        let wraps = row_wraps(row, old_cols);
+        if idx == abs_row {
+            return (logical_idx, offset_in_line + col.min(old_cols));
+        }
+        offset_in_line += old_cols;
+        if !wraps {
+            logical_idx += 1;
+            offset_in_line = 0;
+        }
+    }
+    (logical_idx, offset_in_line)
+}
+
+fn place_cursor_logical(
+    logical: &[LogicalLine],
+    line_idx: usize,
+    offset_in_line: usize,
+    new_cols: usize,
+) -> (usize, usize) {
+    let mut abs_row = 0;
+    for (i, line) in logical.iter().enumerate() {
+        let trimmed = trim_trailing_blanks(&line.cells);
+        let rows_for_line = if trimmed == 0 {
+            1
+        } else {
+            (trimmed + new_cols - 1) / new_cols
+        };
+        if i == line_idx {
+            let capped = offset_in_line.min(trimmed);
+            let row_off = (capped / new_cols).min(rows_for_line.saturating_sub(1));
+            let col = (capped % new_cols).min(new_cols.saturating_sub(1));
+            return (abs_row + row_off, col);
+        }
+        abs_row += rows_for_line;
+    }
+    (abs_row, 0)
 }
