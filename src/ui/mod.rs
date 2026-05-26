@@ -2,6 +2,7 @@ pub mod app;
 pub mod backend_switch;
 pub mod events;
 pub mod footer;
+pub mod gpu;
 pub mod header;
 pub mod history;
 pub mod input;

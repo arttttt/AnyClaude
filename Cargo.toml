@@ -26,7 +26,12 @@ signal-hook = "0.4"
 term_input = { path = "crates/term_input" }
 mvi = { path = "crates/mvi" }
 
-# TUI
+# GPU UI (Phase 5 in progress — runs alongside the legacy ratatui
+# pipeline. The legacy UI stays until the C10 cutover.)
+term_gpu = { path = "crates/term_gpu" }
+winit = "0.30"
+
+# TUI (legacy — removed in Phase 5 C10)
 ratatui = "0.30"
 
 # Async runtime
