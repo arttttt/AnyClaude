@@ -4118,6 +4118,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "term_layout"
+version = "0.1.0"
+
+[[package]]
 name = "termcolor"
 version = "1.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
