@@ -24,6 +24,10 @@ term_core = { path = "../term_core" }
 # term_layout is only used by the `layout_demo` example to visualise the
 # BSP tree as coloured panels. Same rationale — not a runtime dep.
 term_layout = { path = "../term_layout" }
+# portable-pty is only used by the `term_grid` example to spawn a real
+# shell PTY per panel. Not a runtime dep — term_gpu doesn't know about
+# processes either.
+portable-pty = "0.9"
 
 [[example]]
 name = "scroll_demo"
@@ -36,3 +40,7 @@ path = "examples/render_term.rs"
 [[example]]
 name = "layout_demo"
 path = "examples/layout_demo.rs"
+
+[[example]]
+name = "term_grid"
+path = "examples/term_grid.rs"

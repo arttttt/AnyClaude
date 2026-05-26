@@ -4105,6 +4105,7 @@ dependencies = [
  "futures-timer",
  "glam",
  "pollster",
+ "portable-pty",
  "term_core",
  "term_layout",
  "wgpu",
