@@ -655,65 +655,109 @@ fn populate_panel(
             }
 
             let is_blank = cell.c == ' ' || cell.c == '\0';
-            if is_blank && fg_eff == TermColor::Default {
+            let has_decoration = cell.flags.underline()
+                || cell.flags.double_underline()
+                || cell.flags.strike();
+            // Nothing to render: blank cell with no fg, no decorations.
+            if is_blank && fg_eff == TermColor::Default && !has_decoration {
                 continue;
             }
 
-            cell_text.clear();
-            cell_text.push(cell.c);
-            if let Some(extra) = &cell.extra {
-                for c in &extra.zerowidth {
-                    cell_text.push(*c);
-                }
-            }
-
-            let color = if fg_eff == TermColor::Default {
+            let mut color = if fg_eff == TermColor::Default {
                 DEFAULT_FG
             } else {
                 fg_eff.to_rgba(palette)
             };
+            if cell.flags.faint() {
+                color[3] *= 0.5;
+            }
 
-            let cell_origin_x_phys = panel_origin_x_physical + col_x_phys;
-            let cell_origin_y_phys = panel_origin_y_physical + row_y_phys;
-
-            let weight = if cell.flags.bold() {
-                Weight::BOLD
-            } else {
-                Weight::NORMAL
-            };
-            let style = if cell.flags.italic() {
-                Style::Italic
-            } else {
-                Style::Normal
-            };
-            let shaped = shape_cache.shape(
-                font_system,
-                &cell_text,
-                FONT_SIZE,
-                sf,
-                None,
-                weight,
-                style,
-            );
-            for line in &shaped.lines {
-                let baseline_y = (cell_origin_y_phys + line.line_y).round();
-                for glyph in &line.glyphs {
-                    let physical = glyph.physical((cell_origin_x_phys, baseline_y), 1.0);
-                    let Some(placed) = atlas.get_or_insert(physical.cache_key, || {
-                        rasterize_glyph(font_system, swash_cache, physical.cache_key)
-                    }) else {
-                        continue;
-                    };
-                    let pos_x = (physical.x as f32 + placed.offset_x) / sf;
-                    let pos_y = (physical.y as f32 - placed.offset_y) / sf;
-                    glyphs.push(GlyphInstance {
-                        pos: [pos_x, pos_y],
-                        size: [placed.width / sf, placed.height / sf],
-                        uv_min: placed.uv_min,
-                        uv_max: placed.uv_max,
-                        color,
-                    });
+            // SGR HIDDEN suppresses the glyph but keeps bg and any
+            // decoration lines (matches xterm/iTerm behavior).
+            let push_glyph = !cell.flags.hidden() && !is_blank;
+            if push_glyph {
+                cell_text.clear();
+                cell_text.push(cell.c);
+                if let Some(extra) = &cell.extra {
+                    for c in &extra.zerowidth {
+                        cell_text.push(*c);
+                    }
                 }
+
+                let cell_origin_x_phys = panel_origin_x_physical + col_x_phys;
+                let cell_origin_y_phys = panel_origin_y_physical + row_y_phys;
+
+                let weight = if cell.flags.bold() {
+                    Weight::BOLD
+                } else {
+                    Weight::NORMAL
+                };
+                let style = if cell.flags.italic() {
+                    Style::Italic
+                } else {
+                    Style::Normal
+                };
+                let shaped = shape_cache.shape(
+                    font_system,
+                    &cell_text,
+                    FONT_SIZE,
+                    sf,
+                    None,
+                    weight,
+                    style,
+                );
+                for line in &shaped.lines {
+                    let baseline_y = (cell_origin_y_phys + line.line_y).round();
+                    for glyph in &line.glyphs {
+                        let physical = glyph.physical((cell_origin_x_phys, baseline_y), 1.0);
+                        let Some(placed) = atlas.get_or_insert(physical.cache_key, || {
+                            rasterize_glyph(font_system, swash_cache, physical.cache_key)
+                        }) else {
+                            continue;
+                        };
+                        let pos_x = (physical.x as f32 + placed.offset_x) / sf;
+                        let pos_y = (physical.y as f32 - placed.offset_y) / sf;
+                        glyphs.push(GlyphInstance {
+                            pos: [pos_x, pos_y],
+                            size: [placed.width / sf, placed.height / sf],
+                            uv_min: placed.uv_min,
+                            uv_max: placed.uv_max,
+                            color,
+                        });
+                    }
+                }
+            }
+
+            // SGR decoration lines. Positions are vertical fractions of
+            // the cell height: underline sits just below the baseline
+            // (~0.78), strike crosses the x-height midline (~0.42), the
+            // double-underline pair brackets the regular underline
+            // position.
+            if cell.flags.underline() {
+                rects.push(RectInstance {
+                    pos: [pos_x_logical, pos_y_logical + cell_h_logical * 0.78],
+                    size: [cell_w_logical, 1.0],
+                    color,
+                });
+            }
+            if cell.flags.double_underline() {
+                rects.push(RectInstance {
+                    pos: [pos_x_logical, pos_y_logical + cell_h_logical * 0.72],
+                    size: [cell_w_logical, 0.8],
+                    color,
+                });
+                rects.push(RectInstance {
+                    pos: [pos_x_logical, pos_y_logical + cell_h_logical * 0.84],
+                    size: [cell_w_logical, 0.8],
+                    color,
+                });
+            }
+            if cell.flags.strike() {
+                rects.push(RectInstance {
+                    pos: [pos_x_logical, pos_y_logical + cell_h_logical * 0.42],
+                    size: [cell_w_logical, 1.0],
+                    color,
+                });
             }
         }
     }
