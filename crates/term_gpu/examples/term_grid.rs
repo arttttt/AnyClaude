@@ -933,26 +933,30 @@ fn populate_panel(
     let panel_origin_x_physical = panel_rect.x * sf;
     let panel_origin_y_physical = panel_rect.y * sf;
     let scroll_offset_y_physical = scroll_offset_y_logical * sf;
+    let total_rows = snapshot.rows.len();
+    let visible_rows = snapshot.visible_rows;
+    // The visible region of the buffer is anchored at the BOTTOM of the
+    // panel — i.e. with `scroll_offset_y = 0` (no scrollback shown) row
+    // `total - visible` should land at the panel's first cell. We
+    // accomplish this by shifting every row up by
+    // `(total - visible) * cell_h`, then applying the scroll offset.
+    let baseline_offset_phys = (total_rows.saturating_sub(visible_rows)) as f32
+        * metrics.height_physical;
     let mut cell_text = String::with_capacity(8);
 
-    // Scroll convention (matching `term_gpu::ScrollState`):
-    //   * `offset_y == 0`           → view the TOP of the buffer (oldest
-    //                                  scrollback row at the panel's top edge).
-    //   * `offset_y == max_offset`  → view the BOTTOM of the buffer (visible
-    //                                  region at the panel's top edge — cursor
-    //                                  appears at the expected place).
-    // Follow mode in `drain_panel` pins `offset_y` to the new max each time
-    // the buffer grows while the user was at the bottom.
-    //
-    // Clip cells to the panel's logical bounds. While a drag is in flight
-    // the PanelTree's rect updates immediately but the emulator (and its
-    // `rows.len()` / `cells.len()`) is still sized to the pre-drag bounds;
-    // without this cull, glyphs from the larger grid spill into the
-    // neighbouring panel.
+    // Clip the cell grid to the panel's logical bounds. While a
+    // drag is in flight the PanelTree's rect updates immediately but
+    // the emulator (and its `rows.len()` / `cells.len()`) is still
+    // sized to the pre-drag bounds; without this cull, glyphs from
+    // the larger grid spill into the neighbouring panel.
     let panel_max_x_phys = panel_rect.w * sf;
     let panel_max_y_phys = panel_rect.h * sf;
     for (row_idx, row) in snapshot.rows.iter().enumerate() {
-        let row_y_phys = row_idx as f32 * metrics.height_physical - scroll_offset_y_physical;
+        // Y of this row's top edge relative to panel top, in physical px.
+        // `+ scroll_offset` because scrolling UP visually moves rows DOWN.
+        let row_y_phys = row_idx as f32 * metrics.height_physical
+            - baseline_offset_phys
+            + scroll_offset_y_physical;
         if row_y_phys + metrics.height_physical <= 0.0 || row_y_phys >= panel_max_y_phys {
             continue;
         }
@@ -1127,14 +1131,17 @@ fn build_cursor_rect(
     }
     let sf = scale_factor;
     let cell_offset_x_phys = cursor.col as f32 * metrics.width_physical;
-    // Same scroll convention as `populate_panel`: `offset_y == max` is at
-    // the bottom (cursor visible at the expected row); decreasing the
-    // offset reveals scrollback above. The cursor's absolute row is
-    // `visible_start + cursor.row`; subtract the panel's scroll offset
-    // and the position works for both follow mode and history scrolling.
+    // Cursor's row is visible-relative; combine with `visible_start` to
+    // get the absolute row, then subtract the visible-anchor offset so
+    // that `scroll_offset_y == 0` puts the cursor at its expected place
+    // inside the panel.
     let abs_row = visible_start + cursor.row as usize;
     let scroll_offset_y_phys = scroll_offset_y_logical * sf;
-    let cell_offset_y_phys = abs_row as f32 * metrics.height_physical - scroll_offset_y_phys;
+    let baseline_offset_phys =
+        visible_start as f32 * metrics.height_physical;
+    let cell_offset_y_phys = abs_row as f32 * metrics.height_physical
+        - baseline_offset_phys
+        + scroll_offset_y_phys;
     // Cull when the cursor's cell origin lies outside the panel's
     // logical bounds — during a divider drag the PanelTree shrinks
     // before the emulator gets SIGWINCH, AND when the user has
