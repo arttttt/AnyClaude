@@ -4,8 +4,7 @@
 //! what to do with them. No rendering, no PTY, no UX hooks. See
 //! `docs/gpu-terminal-spec.md` §6 for the surrounding design.
 //!
-//! `split` / `resize` / `close` / `hit_test` are in place; the only
-//! remaining mutator is `drag_divider`, which lands in the next commit.
+//! Final core mutator — `drag_divider` — lands in this commit.
 
 /// Minimum and maximum split ratios. Splits clamp the requested ratio
 /// into this range to avoid degenerate zero-area panels.
@@ -17,6 +16,13 @@ pub const MAX_RATIO: f32 = 0.95;
 /// panel does not free its id for reissue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PanelId(pub u64);
+
+/// Stable handle for a divider (i.e. the line dividing the two
+/// children of a `Branch`). Issued at split time and stable across
+/// resizes, so a mouse drag can hold a `BranchId` from mouse-down to
+/// mouse-up without worrying about the tree shifting underneath.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct BranchId(pub u64);
 
 /// Axis-aligned rectangle in logical pixels. Anchored at the top-left
 /// like the rest of the GPU stack.
@@ -45,6 +51,7 @@ enum Node {
         bounds: Rect,
     },
     Branch {
+        id: BranchId,
         split: Split,
         ratio: f32,
         bounds: Rect,
@@ -53,11 +60,12 @@ enum Node {
     },
 }
 
-/// The panel layout tree. Holds the root node, the next id to issue,
-/// and the currently focused panel.
+/// The panel layout tree. Holds the root node, the next panel/branch
+/// ids to issue, and the currently focused panel.
 pub struct PanelTree {
     root: Option<Node>,
-    next_id: u64,
+    next_panel_id: u64,
+    next_branch_id: u64,
     focus: PanelId,
 }
 
@@ -77,7 +85,8 @@ impl PanelTree {
         };
         Self {
             root: Some(root),
-            next_id: 1,
+            next_panel_id: 1,
+            next_branch_id: 0,
             focus: id,
         }
     }
@@ -116,15 +125,17 @@ impl PanelTree {
     /// Warp / tmux.
     pub fn split(&mut self, target: PanelId, split: Split, ratio: f32) -> Option<PanelId> {
         let ratio = ratio.clamp(MIN_RATIO, MAX_RATIO);
-        let new_id = PanelId(self.next_id);
+        let new_panel = PanelId(self.next_panel_id);
+        let new_branch = BranchId(self.next_branch_id);
         let happened = match self.root.as_mut() {
-            Some(root) => split_node(root, target, split, ratio, new_id),
+            Some(root) => split_node(root, target, split, ratio, new_panel, new_branch),
             None => false,
         };
         if happened {
-            self.next_id += 1;
-            self.focus = new_id;
-            Some(new_id)
+            self.next_panel_id += 1;
+            self.next_branch_id += 1;
+            self.focus = new_panel;
+            Some(new_panel)
         } else {
             None
         }
@@ -153,6 +164,29 @@ impl PanelTree {
     /// edges to avoid two panels claiming the same divider pixel).
     pub fn hit_test(&self, x: f32, y: f32) -> Option<PanelId> {
         self.root.as_ref().and_then(|root| hit_test_node(root, x, y))
+    }
+
+    /// All current dividers — one per `Branch` — with their stable id,
+    /// orientation, and the 1-px-thin rectangle the divider line
+    /// occupies. Renderers draw this strip; UI code can expand it by a
+    /// few pixels to make it easier to grab.
+    pub fn dividers(&self) -> Vec<Divider> {
+        let mut out = Vec::new();
+        if let Some(root) = &self.root {
+            collect_dividers(root, &mut out);
+        }
+        out
+    }
+
+    /// Set the divider's ratio to `new_ratio` (clamped to
+    /// `[MIN_RATIO, MAX_RATIO]`), then reflow the affected subtree.
+    /// Returns `true` if the branch was found and updated.
+    pub fn drag_divider(&mut self, id: BranchId, new_ratio: f32) -> bool {
+        let new_ratio = new_ratio.clamp(MIN_RATIO, MAX_RATIO);
+        match self.root.as_mut() {
+            Some(root) => set_branch_ratio(root, id, new_ratio),
+            None => false,
+        }
     }
 
     /// Remove a panel. The sibling (or sibling subtree) absorbs the
@@ -186,6 +220,7 @@ fn close_node(node: Node, target: PanelId) -> Option<Node> {
         Node::Leaf { id, .. } if id == target => None,
         leaf @ Node::Leaf { .. } => Some(leaf),
         Node::Branch {
+            id,
             split,
             ratio,
             bounds,
@@ -202,6 +237,7 @@ fn close_node(node: Node, target: PanelId) -> Option<Node> {
                     Some(survivor)
                 }
                 (Some(l), Some(r)) => Some(Node::Branch {
+                    id,
                     split,
                     ratio,
                     bounds,
@@ -218,7 +254,8 @@ fn split_node(
     target: PanelId,
     split: Split,
     ratio: f32,
-    new_id: PanelId,
+    new_panel: PanelId,
+    new_branch: BranchId,
 ) -> bool {
     match node {
         Node::Leaf { id, bounds } if *id == target => {
@@ -226,6 +263,7 @@ fn split_node(
             let old_id = *id;
             let (left_bounds, right_bounds) = split_bounds(parent_bounds, split, ratio);
             *node = Node::Branch {
+                id: new_branch,
                 split,
                 ratio,
                 bounds: parent_bounds,
@@ -234,7 +272,7 @@ fn split_node(
                     bounds: left_bounds,
                 }),
                 right: Box::new(Node::Leaf {
-                    id: new_id,
+                    id: new_panel,
                     bounds: right_bounds,
                 }),
             };
@@ -242,8 +280,80 @@ fn split_node(
         }
         Node::Leaf { .. } => false,
         Node::Branch { left, right, .. } => {
-            split_node(left, target, split, ratio, new_id)
-                || split_node(right, target, split, ratio, new_id)
+            split_node(left, target, split, ratio, new_panel, new_branch)
+                || split_node(right, target, split, ratio, new_panel, new_branch)
+        }
+    }
+}
+
+/// Returned by [`PanelTree::dividers`]. `rect` is the 1-px-thin
+/// rectangle the divider line occupies — use it directly for drawing,
+/// or grow it by a tolerance margin for mouse hit-testing.
+#[derive(Debug, Clone, Copy)]
+pub struct Divider {
+    pub id: BranchId,
+    pub split: Split,
+    pub rect: Rect,
+}
+
+fn collect_dividers(node: &Node, out: &mut Vec<Divider>) {
+    match node {
+        Node::Leaf { .. } => {}
+        Node::Branch {
+            id,
+            split,
+            ratio,
+            bounds,
+            left,
+            right,
+        } => {
+            let rect = match split {
+                Split::Horizontal => Rect {
+                    x: bounds.x,
+                    y: bounds.y + bounds.h * *ratio,
+                    w: bounds.w,
+                    h: 1.0,
+                },
+                Split::Vertical => Rect {
+                    x: bounds.x + bounds.w * *ratio,
+                    y: bounds.y,
+                    w: 1.0,
+                    h: bounds.h,
+                },
+            };
+            out.push(Divider {
+                id: *id,
+                split: *split,
+                rect,
+            });
+            collect_dividers(left, out);
+            collect_dividers(right, out);
+        }
+    }
+}
+
+fn set_branch_ratio(node: &mut Node, target: BranchId, new_ratio: f32) -> bool {
+    match node {
+        Node::Leaf { .. } => false,
+        Node::Branch {
+            id,
+            ratio,
+            split,
+            bounds,
+            left,
+            right,
+        } if *id == target => {
+            *ratio = new_ratio;
+            let parent_bounds = *bounds;
+            let split = *split;
+            let (lb, rb) = split_bounds(parent_bounds, split, new_ratio);
+            recompute_bounds(left, lb);
+            recompute_bounds(right, rb);
+            true
+        }
+        Node::Branch { left, right, .. } => {
+            set_branch_ratio(left, target, new_ratio)
+                || set_branch_ratio(right, target, new_ratio)
         }
     }
 }
@@ -276,6 +386,7 @@ fn recompute_bounds(node: &mut Node, new_bounds: Rect) {
             bounds,
             left,
             right,
+            ..
         } => {
             *bounds = new_bounds;
             let (lb, rb) = split_bounds(new_bounds, *split, *ratio);
