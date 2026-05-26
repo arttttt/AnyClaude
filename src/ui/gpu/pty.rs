@@ -1,31 +1,39 @@
-//! Lightweight shell PTY session for the GPU UI.
+//! Lightweight child-process PTY session for the GPU UI.
 //!
-//! Spawns the user's shell via `portable-pty` and ships its output
+//! Spawns the given command via `portable-pty` and ships its output
 //! bytes through an `mpsc::channel`. A user-supplied callback fires
-//! after every successful read so the host event loop (winit) can wake
-//! up and drain. Resize and write are direct pass-throughs to the
-//! master PTY.
+//! after every successful read so the host event loop (winit) can
+//! wake up and drain. Resize and write are direct pass-throughs to
+//! the master PTY.
 //!
-//! This is intentionally simpler than the legacy `pty::PtySession` —
-//! no IPC, no shutdown coordinator, no proxy. The full bootstrap is
-//! wired in at the C10 cutover.
+//! Intentionally simpler than the legacy `pty::PtySession` — there's
+//! no `AppEvent::ProcessExit` signaling because the GPU UI doesn't
+//! own a restart state machine yet. Restart support lands together
+//! with the post-Phase-5 MVI App store integration.
 
 use std::io::{self, Read, Write};
 use std::sync::mpsc;
 
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 
-pub struct ShellPty {
+pub struct ChildPty {
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     bytes_rx: mpsc::Receiver<Vec<u8>>,
 }
 
-impl ShellPty {
-    /// Spawn the user's `$SHELL` (or `/bin/sh` fallback) at the given
-    /// grid size. `on_data` is invoked from the reader thread after
+impl ChildPty {
+    /// Spawn `command` with `args` and the additional environment
+    /// vars in `env`. `on_data` fires from the reader thread after
     /// every successful read so the caller can request a redraw.
-    pub fn spawn<F>(cols: u16, rows: u16, on_data: F) -> io::Result<Self>
+    pub fn spawn<F>(
+        cols: u16,
+        rows: u16,
+        command: String,
+        args: Vec<String>,
+        env: Vec<(String, String)>,
+        on_data: F,
+    ) -> io::Result<Self>
     where
         F: Fn() + Send + 'static,
     {
@@ -39,12 +47,17 @@ impl ShellPty {
             })
             .map_err(|e| io::Error::other(e.to_string()))?;
 
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-        let cmd = CommandBuilder::new(shell);
+        let mut cmd = CommandBuilder::new(command);
+        cmd.args(args);
+        cmd.cwd(std::env::current_dir()?);
+        cmd.env("TERM", "xterm-256color");
+        for (key, value) in env {
+            cmd.env(key, value);
+        }
         pair.slave
             .spawn_command(cmd)
             .map_err(|e| io::Error::other(e.to_string()))?;
-        // Drop slave so the PTY closes when the shell exits.
+        // Drop slave so the PTY closes when the child exits.
         drop(pair.slave);
 
         let mut reader = pair
@@ -100,7 +113,7 @@ impl ShellPty {
     }
 
     /// Write `bytes` to the PTY's stdin. Returns an error when the
-    /// shell has closed (broken pipe) or the underlying write fails.
+    /// child has closed (broken pipe) or the underlying write fails.
     pub fn write(&mut self, bytes: &[u8]) -> io::Result<()> {
         self.writer.write_all(bytes)?;
         self.writer.flush()

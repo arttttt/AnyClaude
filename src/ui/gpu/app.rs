@@ -36,8 +36,15 @@ use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
 use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
 use winit::window::{Window, WindowAttributes, WindowId};
 
-use crate::config::{save_claude_settings, ClaudeSettingsManager, Config, SettingId};
-use crate::ui::gpu::pty::ShellPty;
+use crate::args::build_spawn_params;
+use crate::backend::BackendState;
+use crate::config::{
+    save_claude_settings, ClaudeSettingsManager, Config, ConfigStore, DebugLogLevel, SettingId,
+};
+use crate::metrics::{init_global_logger, DebugLogger};
+use crate::proxy::ProxyServer;
+use crate::shim::TeammateShim;
+use crate::ui::gpu::pty::ChildPty;
 
 const INITIAL_W: f32 = 1200.0;
 const INITIAL_H: f32 = 800.0;
@@ -122,38 +129,153 @@ enum UserEvent {
     MomentumTick,
 }
 
-/// Entry point for the GPU UI. Signature mirrors `ui::run` so the C10
-/// cutover only flips which function `main.rs` calls.
-///
-/// `_backend_override` and `_claude_args` are accepted but ignored at
-/// this stage — the C2 scope renders a shell PTY only. The full
-/// anyclaude bootstrap (proxy + IPC + shim + claude command) lands at
-/// C10.
-pub fn run(_backend_override: Option<String>, _claude_args: Vec<String>) -> std::io::Result<()> {
-    // Pull the configured backend list + claude-settings values so
-    // the Cmd+B and Cmd+E popups have real data. Backend selection is
-    // a stub until C10 wires the proxy; settings (Cmd+E Enter) saves
-    // back to disk for real, taking effect on the next claude spawn.
-    let (backend_names, settings_manager) = {
-        let cfg = Config::load().unwrap_or_default();
-        let mut sm = ClaudeSettingsManager::new();
-        sm.load_from_toml(&cfg.claude_settings);
-        let names = cfg
-            .backends
-            .iter()
-            .map(|b| b.display_name.clone())
-            .collect();
-        (names, sm)
-    };
+/// Entry point for the GPU UI. Performs the full anyclaude bootstrap
+/// (config, debug logger, proxy server, teammate shim) and prepares
+/// the spawn params for Claude Code, then hands off to the winit
+/// event loop. The proxy + tokio runtime live in this function's
+/// scope so they outlive the event loop and drop cleanly after
+/// `event_loop.run_app` returns.
+pub fn run(
+    backend_override: Option<String>,
+    claude_args: Vec<String>,
+) -> std::io::Result<()> {
+    // --- Config + backend override ----------------------------------
+    let mut config = Config::load()
+        .map_err(|e| std::io::Error::other(format!("Failed to load config: {e}")))?;
+    if let Some(name) = backend_override {
+        config.defaults.active = name;
+    }
+    let config_path = Config::config_path();
+    let config_store = ConfigStore::new(config, config_path);
+    let base_proxy_url = config_store.get().proxy.base_url.clone();
+    let scrollback_lines = config_store.get().terminal.scrollback_lines;
 
+    // --- Settings manager (seed from config) ------------------------
+    let mut settings_manager = ClaudeSettingsManager::new();
+    settings_manager.load_from_toml(&config_store.get().claude_settings);
+
+    // --- Session token + tokio runtime ------------------------------
+    let session_token = Uuid::new_v4().to_string();
+    let async_runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
+
+    // --- Initial spawn params (URL gets patched after proxy.bind) ---
+    let mut spawn = build_spawn_params(
+        &claude_args,
+        &base_proxy_url,
+        &session_token,
+        &settings_manager,
+        None, // shim PATH injected below once it exists
+        None, // proxy port unknown — patched below
+    );
+    let session_id = spawn.session_id.clone();
+
+    // --- Per-session debug logger -----------------------------------
+    let debug_config = {
+        let mut cfg = config_store.get().debug_logging.clone();
+        if !session_id.is_empty() {
+            cfg.file_path = match cfg.file_path.rfind('.') {
+                Some(dot) => format!(
+                    "{}.{}.{}",
+                    &cfg.file_path[..dot],
+                    session_id,
+                    &cfg.file_path[dot + 1..]
+                ),
+                None => format!("{}.{session_id}", cfg.file_path),
+            };
+        }
+        cfg
+    };
+    let debug_logger = Arc::new(DebugLogger::new(debug_config));
+    init_global_logger(debug_logger.clone());
+
+    // --- Proxy server + bind ----------------------------------------
+    let mut proxy_server = ProxyServer::new(
+        config_store.clone(),
+        debug_logger.clone(),
+        Some(session_token.clone()),
+    )
+    .map_err(|e| std::io::Error::other(e.to_string()))?;
+    let (actual_addr, actual_base_url) = async_runtime
+        .block_on(async { proxy_server.try_bind(&config_store).await })
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
+    // Patch ANTHROPIC_BASE_URL with the actually-bound port.
+    for (key, value) in &mut spawn.env {
+        if key == "ANTHROPIC_BASE_URL" {
+            *value = actual_base_url.clone();
+        }
+    }
+
+    // --- Teammate shim (optional — config-driven) -------------------
+    let log_enabled = config_store.get().debug_logging.level != DebugLogLevel::Off;
+    let teammate_shim =
+        match TeammateShim::create(actual_addr.port(), &session_token, &session_id, log_enabled) {
+            Ok(shim) => {
+                crate::metrics::app_log(
+                    "gpu_runtime",
+                    &format!(
+                        "Agent team routing enabled, shim dir prepended to PATH. tmux log: {}",
+                        shim.tmux_log_path().display()
+                    ),
+                );
+                Some(shim)
+            }
+            Err(e) => {
+                crate::metrics::app_log(
+                    "gpu_runtime",
+                    &format!("Agent team routing disabled: {e}"),
+                );
+                None
+            }
+        };
+
+    // --- Inject subagent hooks into spawn.args ----------------------
+    spawn
+        .args
+        .extend(crate::args::ArgAssembler::new().with_subagent_hooks(actual_addr.port()).build());
+
+    // --- Inject shim PATH into spawn.env ----------------------------
+    if let Some(ref shim) = teammate_shim {
+        let (key, value) = shim.path_env();
+        if let Some(existing) = spawn.env.iter_mut().find(|(k, _)| k == &key) {
+            existing.1 = value;
+        } else {
+            spawn.env.push((key, value));
+        }
+    }
+
+    // --- Capture proxy state and run proxy as a tokio task ----------
+    let backend_state = proxy_server.backend_state();
+    let _proxy_task = async_runtime.spawn(async move {
+        if let Err(e) = proxy_server.run().await {
+            crate::metrics::app_log_error("gpu_runtime", "Proxy server exited", &e.to_string());
+        }
+    });
+
+    // --- Hand off to the winit event loop ---------------------------
+    let _ = scrollback_lines; // Reserved for future grid configuration.
     let event_loop = EventLoop::<UserEvent>::with_user_event()
         .build()
         .map_err(|e| std::io::Error::other(e.to_string()))?;
     let proxy = event_loop.create_proxy();
-    let mut app = GpuApp::new(proxy, backend_names, settings_manager);
+    let mut app = GpuApp::new(
+        proxy,
+        spawn.command,
+        spawn.args,
+        spawn.env,
+        backend_state,
+        settings_manager,
+    );
     event_loop
         .run_app(&mut app)
         .map_err(|e| std::io::Error::other(e.to_string()))?;
+
+    // Tokio runtime + teammate shim drop here, shutting the proxy
+    // task down and cleaning up the shim's temp directory.
+    drop(teammate_shim);
+    drop(async_runtime);
     Ok(())
 }
 
@@ -179,7 +301,7 @@ struct GpuApp {
 
     // Lazily initialised in `resumed`: spawning the shell needs to know
     // the window's pixel size, which we don't have until then.
-    pty: Option<ShellPty>,
+    pty: Option<ChildPty>,
     emulator: Option<Box<dyn TerminalEmulator>>,
     grid_size: (usize, usize),
 
@@ -216,10 +338,15 @@ struct GpuApp {
     /// without recomputing the layout.
     session_click_zone: Option<(f32, f32)>,
 
-    /// Configured backend display names, loaded once from Config at
-    /// startup. The Cmd+B popup walks this list. Empty when config is
-    /// missing or has no backends.
-    backend_names: Vec<String>,
+    /// Live proxy backend state. Backend popup reads the list from
+    /// here and Enter calls `switch_backend`; history popup pulls
+    /// from `get_switch_log()`.
+    backend_state: BackendState,
+    /// Spawn params for Claude Code, prepared by `run()` before the
+    /// event loop. Used in `resumed()` to spawn the PTY child.
+    spawn_command: String,
+    spawn_args: Vec<String>,
+    spawn_env: Vec<(String, String)>,
     /// Settings registry + current values. Persisted to disk on Cmd+E
     /// popup confirm (Enter). Loaded from Config at startup so the
     /// popup reflects the user's last choice.
@@ -241,7 +368,11 @@ enum Popup {
 
 #[derive(Debug, Clone)]
 struct BackendSwitchPopup {
+    /// Display labels shown in the list (one row per backend).
     items: Vec<String>,
+    /// Backend `name` (id) parallel to `items`. On Enter the popup
+    /// calls `backend_state.switch_backend(ids[selected])`.
+    ids: Vec<String>,
     selected: usize,
 }
 
@@ -279,7 +410,10 @@ struct LastClick {
 impl GpuApp {
     fn new(
         proxy: EventLoopProxy<UserEvent>,
-        backend_names: Vec<String>,
+        spawn_command: String,
+        spawn_args: Vec<String>,
+        spawn_env: Vec<(String, String)>,
+        backend_state: BackendState,
         settings_manager: ClaudeSettingsManager,
     ) -> Self {
         Self {
@@ -310,7 +444,10 @@ impl GpuApp {
             start_time: Instant::now(),
             session_copied_until: None,
             session_click_zone: None,
-            backend_names,
+            backend_state,
+            spawn_command,
+            spawn_args,
+            spawn_env,
             settings_manager,
             popup: None,
         }
@@ -496,19 +633,33 @@ impl GpuApp {
     }
 
     /// Open or close the Cmd+B backend-switch popup. When opening,
-    /// the items list is snapshotted from `self.backend_names` and
-    /// the selection starts at 0. Closing drops the popup state.
+    /// the items list is snapshotted from the proxy's live backend
+    /// state; selection starts at the currently-active backend so
+    /// pressing Enter is a no-op if the user is just inspecting.
     fn toggle_backend_switch_popup(&mut self) {
         if matches!(self.popup, Some(Popup::BackendSwitch(_))) {
             self.close_popup();
             return;
         }
-        if self.backend_names.is_empty() {
+        let cfg = self.backend_state.get_config();
+        if cfg.backends.is_empty() {
             return;
         }
+        let active = self.backend_state.get_active_backend();
+        let mut items = Vec::with_capacity(cfg.backends.len());
+        let mut ids = Vec::with_capacity(cfg.backends.len());
+        let mut selected = 0usize;
+        for (idx, b) in cfg.backends.iter().enumerate() {
+            items.push(b.display_name.clone());
+            ids.push(b.name.clone());
+            if b.name == active {
+                selected = idx;
+            }
+        }
         self.popup = Some(Popup::BackendSwitch(BackendSwitchPopup {
-            items: self.backend_names.clone(),
-            selected: 0,
+            items,
+            ids,
+            selected,
         }));
         if let Some(w) = self.window.as_ref() {
             w.request_redraw();
@@ -576,17 +727,30 @@ impl GpuApp {
         }
     }
 
-    /// Open or close the Cmd+H history popup. History entries come
-    /// from the proxy's switch log when wired (C10); for now the list
-    /// is empty and the popup renders an "(no history yet)"
-    /// placeholder.
+    /// Open or close the Cmd+H history popup. Entries are snapshotted
+    /// from the proxy's switch log; an empty log renders the
+    /// "(no history yet)" placeholder.
     fn toggle_history_popup(&mut self) {
         if matches!(self.popup, Some(Popup::History(_))) {
             self.close_popup();
             return;
         }
+        let log = self.backend_state.get_switch_log();
+        let items: Vec<String> = log
+            .iter()
+            .rev() // newest first
+            .map(|e| {
+                let secs = e
+                    .timestamp
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let from = e.old_backend.as_deref().unwrap_or("(initial)");
+                format!("{secs}  ·  {from}  →  {}", e.new_backend)
+            })
+            .collect();
         self.popup = Some(Popup::History(HistoryPopup {
-            items: Vec::new(),
+            items,
             selected: 0,
         }));
         if let Some(w) = self.window.as_ref() {
@@ -638,11 +802,10 @@ impl GpuApp {
             PhysicalKey::Code(KeyCode::Enter) => {
                 match self.popup {
                     Some(Popup::BackendSwitch(ref s)) => {
-                        // Stub: C7-C9 don't have the proxy wired yet.
-                        let chosen = s.items[s.selected].clone();
-                        eprintln!(
-                            "anyclaude: [stub] would switch backend to: {chosen}"
-                        );
+                        let id = s.ids[s.selected].clone();
+                        if let Err(e) = self.backend_state.switch_backend(&id) {
+                            eprintln!("anyclaude: backend switch failed: {e}");
+                        }
                     }
                     Some(Popup::Settings(_)) => {
                         self.apply_settings_and_save();
@@ -992,12 +1155,14 @@ impl GpuApp {
                 self.session_copied_until = None;
             }
         }
+        let active_backend = self.backend_state.get_active_backend();
         self.session_click_zone = draw_header(
             renderer.atlas_mut(),
             &mut self.font_system,
             &mut self.swash_cache,
             &mut self.ui_shape_cache,
             &mut glyphs,
+            &active_backend,
             &self.session_id,
             self.start_time,
             self.session_copied_until.is_some(),
@@ -1075,18 +1240,20 @@ fn draw_header(
     swash_cache: &mut SwashCache,
     ui_shape_cache: &mut TextShapeCache,
     glyphs: &mut Vec<GlyphInstance>,
+    active_backend: &str,
     session_id: &str,
     start_time: Instant,
     session_copied_active: bool,
     sf: f32,
 ) -> Option<(f32, f32)> {
-    // Backend names: the proxy isn't running in the GPU UI yet —
-    // C10 cutover wires real status. Until then, "unknown" is the
-    // same placeholder Header::widget shows when status is None in
-    // the legacy chrome.
-    let backend = "unknown";
-    let sub = "unknown";
-    let team = "unknown";
+    // Subagent / teammate routing surface comes from
+    // ProxyServer::{subagent_backend,teammate_backend} — wiring them
+    // through is straightforward but punted to a post-Phase-5 polish
+    // commit (no popup or hot-path depends on the labels). Reqs
+    // counter is similarly deferred.
+    let backend = active_backend;
+    let sub = "—";
+    let team = "—";
     let reqs: u64 = 0;
     let uptime_s = start_time.elapsed().as_secs();
 
@@ -1247,9 +1414,16 @@ impl ApplicationHandler<UserEvent> for GpuApp {
         self.emulator = Some(create_emulator(cols, rows, SCROLLBACK_LINES));
 
         let proxy = self.proxy.clone();
-        match ShellPty::spawn(cols as u16, rows as u16, move || {
-            let _ = proxy.send_event(UserEvent::PtyBytesArrived);
-        }) {
+        match ChildPty::spawn(
+            cols as u16,
+            rows as u16,
+            self.spawn_command.clone(),
+            self.spawn_args.clone(),
+            self.spawn_env.clone(),
+            move || {
+                let _ = proxy.send_event(UserEvent::PtyBytesArrived);
+            },
+        ) {
             Ok(pty) => {
                 self.pty = Some(pty);
             }
