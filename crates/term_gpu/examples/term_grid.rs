@@ -1,9 +1,15 @@
 //! Multi-panel virtual terminal demo.
 //!
-//! Single panel hosts a real shell PTY; keyboard input is encoded to
-//! ANSI/VT100 byte sequences and written to that PTY. Multi-panel
-//! split/close and per-panel resize propagation land in subsequent
-//! commits.
+//! Each panel owns a real shell PTY. Keyboard input goes to the
+//! focused panel; `Cmd+D` / `Cmd+Shift+D` / `Cmd+W` mutate the
+//! `PanelTree`; mouse click focuses; left-drag near a divider
+//! resizes it. Exiting the shell (`Ctrl+D`, `exit`) closes the
+//! corresponding panel; closing the last panel ends the demo.
+//!
+//! Per-panel PTY resize lives in the next commit — for now every
+//! shell stays at 80×24 regardless of its panel's actual size, so
+//! wide panels show empty padding to the right and tall panels show
+//! the prompt high up in their slot.
 //!
 //! ## Run
 //!
@@ -11,13 +17,15 @@
 //! cargo run -p term_gpu --example term_grid --release
 //! ```
 //!
-//! ## Status
+//! ## Shortcuts
 //!
-//! `Cmd+Q` (or `Ctrl+Q`) quits the demo before the byte ever reaches
-//! the PTY. Everything else — printable text, Enter, Backspace, Tab,
-//! Esc, arrow keys, control combos (`Ctrl+C`, `Ctrl+D`, ...) — is
-//! forwarded to the shell. Emulator responses (DA, DSR) flow back to
-//! the PTY too.
+//! - `Cmd+Q` — quit the demo.
+//! - `Cmd+D` — vertical split (new shell on the right).
+//! - `Cmd+Shift+D` — horizontal split (new shell on the bottom).
+//! - `Cmd+W` — close the focused panel.
+//! - Mouse click on a panel — focus it.
+//! - Mouse left-drag near a divider — resize.
+//! - Everything else — forwarded to the focused shell.
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -34,10 +42,10 @@ use term_gpu::{
     rasterize_glyph, FontFamily, GlyphAtlas, GlyphInstance, GpuRenderer, RectInstance,
     TextShapeCache,
 };
-use term_layout::{PanelId, PanelTree, Rect};
+use term_layout::{BranchId, Divider, PanelId, PanelTree, Rect, Split};
 use winit::application::ApplicationHandler;
-use winit::dpi::LogicalSize;
-use winit::event::{ElementState, WindowEvent};
+use winit::dpi::{LogicalSize, PhysicalPosition};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowAttributes, WindowId};
@@ -52,11 +60,25 @@ const CURSOR_STROKE_PHYSICAL: f32 = 2.0;
 const INITIAL_GRID_COLS: usize = 80;
 const INITIAL_GRID_ROWS: usize = 24;
 const SCROLLBACK_LINES: usize = 1000;
+/// Logical-pixel tolerance for "did the mouse click on a divider?".
+const DIVIDER_HIT_TOLERANCE: f32 = 6.0;
+/// Focus border thickness and colour (alpha-blended, slim).
+const FOCUS_BORDER: f32 = 2.0;
+const FOCUS_COLOR: [f32; 4] = [1.0, 1.0, 1.0, 0.35];
 
 #[derive(Debug, Clone, Copy)]
 enum CustomEvent {
     /// At least one panel's reader thread queued new bytes.
     BytesArrived(PanelId),
+    /// A panel's PTY reader hit EOF — the shell exited.
+    PanelExited(PanelId),
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DragState {
+    branch: BranchId,
+    split: Split,
+    bounds: Rect,
 }
 
 #[derive(Clone, Copy)]
@@ -86,6 +108,8 @@ struct App {
     scale_factor: f32,
     cell_metrics: Option<CellMetrics>,
     modifiers: ModifiersState,
+    cursor: Option<(f32, f32)>,
+    drag: Option<DragState>,
     proxy: EventLoopProxy<CustomEvent>,
 }
 
@@ -103,6 +127,8 @@ impl App {
             scale_factor: 1.0,
             cell_metrics: None,
             modifiers: ModifiersState::empty(),
+            cursor: None,
+            drag: None,
             proxy,
         }
     }
@@ -176,6 +202,9 @@ impl App {
                     Err(_) => break,
                 }
             }
+            // PTY closed (shell exited or master dropped) — tell the
+            // event loop so the panel can be torn down.
+            let _ = proxy.send_event(CustomEvent::PanelExited(panel_id));
         });
 
         let emulator = create_emulator(cols, rows, SCROLLBACK_LINES);
@@ -209,6 +238,88 @@ impl App {
         if let Some(panel) = self.panels.get_mut(&focused) {
             let _ = panel.writer.write_all(bytes);
             let _ = panel.writer.flush();
+        }
+    }
+
+    /// Split the focused panel and spawn a fresh shell into the new
+    /// pane. The new shell starts at the default 80×24 grid — the
+    /// per-panel resize commit will fit it to the actual bounds.
+    fn split_focused(&mut self, split: Split) {
+        let focused = self.tree.focus();
+        let Some(new_id) = self.tree.split(focused, split, 0.5) else {
+            return;
+        };
+        match self.spawn_panel(new_id, INITIAL_GRID_COLS, INITIAL_GRID_ROWS) {
+            Ok(state) => {
+                self.panels.insert(new_id, state);
+            }
+            Err(e) => {
+                eprintln!("term_grid: failed to spawn shell into new panel: {e}");
+                // Roll back the split so the tree stays consistent.
+                self.tree.close(new_id);
+            }
+        }
+    }
+
+    /// Close the focused panel and drop its PTY. Returns `true` if
+    /// the demo should exit (no panels remain).
+    fn close_focused(&mut self) -> bool {
+        let id = self.tree.focus();
+        self.panels.remove(&id);
+        self.tree.close(id);
+        self.tree.is_empty()
+    }
+
+    fn divider_under(&self, x: f32, y: f32) -> Option<Divider> {
+        self.tree.dividers().into_iter().find(|d| match d.split {
+            Split::Horizontal => {
+                x >= d.rect.x
+                    && x < d.rect.x + d.rect.w
+                    && (y - d.rect.y).abs() <= DIVIDER_HIT_TOLERANCE
+            }
+            Split::Vertical => {
+                y >= d.rect.y
+                    && y < d.rect.y + d.rect.h
+                    && (x - d.rect.x).abs() <= DIVIDER_HIT_TOLERANCE
+            }
+        })
+    }
+
+    fn on_mouse_press(&mut self) {
+        let Some((x, y)) = self.cursor else { return };
+        if let Some(d) = self.divider_under(x, y) {
+            self.drag = Some(DragState {
+                branch: d.id,
+                split: d.split,
+                bounds: d.bounds,
+            });
+            return;
+        }
+        if let Some(id) = self.tree.hit_test(x, y) {
+            if self.tree.set_focus(id) {
+                if let Some(w) = self.window.as_ref() {
+                    w.request_redraw();
+                }
+            }
+        }
+    }
+
+    fn on_mouse_release(&mut self) {
+        self.drag = None;
+    }
+
+    fn on_cursor_moved(&mut self, x: f32, y: f32) {
+        self.cursor = Some((x, y));
+        if let Some(drag) = self.drag {
+            let new_ratio = match drag.split {
+                Split::Horizontal => (y - drag.bounds.y) / drag.bounds.h,
+                Split::Vertical => (x - drag.bounds.x) / drag.bounds.w,
+            };
+            if self.tree.drag_divider(drag.branch, new_ratio) {
+                if let Some(w) = self.window.as_ref() {
+                    w.request_redraw();
+                }
+            }
         }
     }
 
@@ -259,6 +370,7 @@ impl App {
                 if let Some(cr) = build_cursor_rect(snapshot.cursor, panel_rect, sf, metrics) {
                     rects.push(cr);
                 }
+                rects.extend(focus_border(panel_rect));
             }
         }
 
@@ -328,14 +440,37 @@ impl ApplicationHandler<CustomEvent> for App {
                 self.modifiers = mods.state();
             }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
-                // Cmd/Super + Q quits before we forward anything to the
-                // PTY. Ctrl combos belong to the shell (Ctrl+C / Ctrl+D
-                // / ...), so we don't trap them here.
+                // Cmd/Super handles the demo's own shortcuts; Ctrl
+                // combos belong to the shell (Ctrl+C / Ctrl+D / ...).
                 if self.modifiers.super_key() {
                     if let Key::Character(c) = &event.logical_key {
-                        if c.eq_ignore_ascii_case("q") {
-                            event_loop.exit();
-                            return;
+                        let shift = self.modifiers.shift_key();
+                        match c.as_str() {
+                            "q" | "Q" => {
+                                event_loop.exit();
+                                return;
+                            }
+                            "d" | "D" => {
+                                let split = if shift {
+                                    Split::Horizontal
+                                } else {
+                                    Split::Vertical
+                                };
+                                self.split_focused(split);
+                                if let Some(w) = self.window.as_ref() {
+                                    w.request_redraw();
+                                }
+                                return;
+                            }
+                            "w" | "W" => {
+                                if self.close_focused() {
+                                    event_loop.exit();
+                                } else if let Some(w) = self.window.as_ref() {
+                                    w.request_redraw();
+                                }
+                                return;
+                            }
+                            _ => {}
                         }
                     }
                     // Other Cmd combos: don't forward (Cmd is an app
@@ -346,16 +481,37 @@ impl ApplicationHandler<CustomEvent> for App {
                     self.write_to_focused(&bytes);
                 }
             }
+            WindowEvent::CursorMoved { position, .. } => {
+                let PhysicalPosition { x, y } = position;
+                self.on_cursor_moved(x as f32 / self.scale_factor, y as f32 / self.scale_factor);
+            }
+            WindowEvent::MouseInput {
+                state,
+                button: MouseButton::Left,
+                ..
+            } => match state {
+                ElementState::Pressed => self.on_mouse_press(),
+                ElementState::Released => self.on_mouse_release(),
+            },
             WindowEvent::RedrawRequested => self.on_redraw(),
             _ => {}
         }
     }
 
-    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: CustomEvent) {
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: CustomEvent) {
         match event {
             CustomEvent::BytesArrived(id) => {
                 self.drain_panel(id);
                 if let Some(w) = self.window.as_ref() {
+                    w.request_redraw();
+                }
+            }
+            CustomEvent::PanelExited(id) => {
+                self.panels.remove(&id);
+                self.tree.close(id);
+                if self.tree.is_empty() {
+                    event_loop.exit();
+                } else if let Some(w) = self.window.as_ref() {
                     w.request_redraw();
                 }
             }
@@ -451,6 +607,32 @@ fn populate_panel(
             }
         }
     }
+}
+
+fn focus_border(rect: Rect) -> [RectInstance; 4] {
+    let b = FOCUS_BORDER;
+    [
+        RectInstance {
+            pos: [rect.x, rect.y],
+            size: [rect.w, b],
+            color: FOCUS_COLOR,
+        },
+        RectInstance {
+            pos: [rect.x, rect.y + rect.h - b],
+            size: [rect.w, b],
+            color: FOCUS_COLOR,
+        },
+        RectInstance {
+            pos: [rect.x, rect.y],
+            size: [b, rect.h],
+            color: FOCUS_COLOR,
+        },
+        RectInstance {
+            pos: [rect.x + rect.w - b, rect.y],
+            size: [b, rect.h],
+            color: FOCUS_COLOR,
+        },
+    ]
 }
 
 fn build_cursor_rect(
