@@ -416,6 +416,9 @@ impl App {
     /// Snap the focused panel's scroll to either the top (Cmd+Home) or
     /// the bottom (Cmd+End) of its scrollback. Cancels any in-flight
     /// momentum on that panel so the user's jump is not undone.
+    ///
+    /// Convention: `offset_y == 0` is at the BOTTOM (cursor visible);
+    /// `offset_y == max_offset` is at the TOP of the scrollback.
     fn jump_focused_scroll_to(&mut self, bottom: bool) {
         let target = self.tree.focus();
         if !self.panels.contains_key(&target) {
@@ -429,9 +432,9 @@ impl App {
         self.refresh_scroll_geometry(target);
         if let Some(panel) = self.panels.get_mut(&target) {
             panel.scroll.offset_y = if bottom {
-                panel.scroll.max_offset()
-            } else {
                 0.0
+            } else {
+                panel.scroll.max_offset()
             };
         }
     }
@@ -461,14 +464,17 @@ impl App {
     fn drain_panel(&mut self, id: PanelId) {
         // Follow mode: capture whether the panel was at the bottom of
         // its scrollback BEFORE applying new bytes. If so, re-pin to
-        // the new bottom afterward so the cursor stays visible while
-        // the shell prints. Users who explicitly scrolled up keep
-        // their position.
+        // the bottom afterward so the cursor stays visible while the
+        // shell prints. Users who explicitly scrolled up keep position.
+        //
+        // Our scroll convention (see populate_panel): `offset_y == 0`
+        // is at the BOTTOM (visible region with cursor); larger values
+        // mean we're looking further into scrollback.
         self.refresh_scroll_geometry(id);
         let was_at_bottom = self
             .panels
             .get(&id)
-            .map(|p| p.scroll.offset_y >= p.scroll.max_offset() - SCROLL_BOTTOM_EPSILON)
+            .map(|p| p.scroll.offset_y <= SCROLL_BOTTOM_EPSILON)
             .unwrap_or(true);
 
         let Some(panel) = self.panels.get_mut(&id) else {
@@ -489,7 +495,7 @@ impl App {
         if was_at_bottom {
             self.refresh_scroll_geometry(id);
             if let Some(panel) = self.panels.get_mut(&id) {
-                panel.scroll.offset_y = panel.scroll.max_offset();
+                panel.scroll.offset_y = 0.0;
             }
             // Cancel any in-flight momentum on this panel — the shell's
             // own output just shifted the viewport, so previous inertia
