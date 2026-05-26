@@ -41,7 +41,10 @@ use futures::future::{abortable, AbortHandle};
 use futures_timer::Delay;
 use glam::Vec2;
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
-use term_clipboard::{should_insert_text_on_paste, Clipboard, ClipboardContent};
+use term_clipboard::{
+    get_image_filepaths_from_paths, should_insert_text_on_paste, Clipboard, ClipboardContent,
+    ImageData, CLIPBOARD_IMAGE_MIME_TYPES,
+};
 use term_core::{
     create_emulator, AnsiPalette, CellFlags, CursorState, CursorStyle, MouseMode, RenderSnapshot,
     TermColor, TerminalEmulator,
@@ -564,22 +567,62 @@ impl App {
         ));
     }
 
-    /// Read the system clipboard and paste its plain text into the
-    /// focused panel's PTY. Wraps the bytes in
+    /// Read the system clipboard and paste it into the focused
+    /// panel's PTY. Mirrors Warp's `process_paste_event`
+    /// (`app/src/terminal/input.rs:10573`):
+    ///
+    ///   1. If `should_insert_text_on_paste(&content)` is true,
+    ///      include `content.plain_text` in the payload.
+    ///   2. Image filepaths in `content.paths` (filtered via
+    ///      `get_image_filepaths_from_paths`) follow next — Claude
+    ///      Code and other image-aware CLIs accept file paths as
+    ///      input.
+    ///   3. If `content.images` carries any pasteboard image data,
+    ///      pick the highest-priority MIME from
+    ///      `CLIPBOARD_IMAGE_MIME_TYPES`, save it to
+    ///      `$TMPDIR/term_grid_clipboard_<ts>.<ext>`, and append
+    ///      the path to the payload.
+    ///
+    /// Paths are shell-quoted (single-quote escape) so spaces in
+    /// names don't break tokenization in the shell.
+    ///
+    /// The final payload is normalised (CRLF → LF) and wrapped in
     /// `\x1b[200~` … `\x1b[201~` when the emulator has bracketed
     /// paste enabled.
     fn paste_into_focused(&mut self) {
         let content = self.clipboard.read();
-        if !should_insert_text_on_paste(&content) || content.plain_text.is_empty() {
+        let mut parts: Vec<String> = Vec::new();
+
+        if should_insert_text_on_paste(&content) && !content.plain_text.is_empty() {
+            parts.push(content.plain_text.clone());
+        }
+
+        if let Some(paths) = content.paths.as_deref() {
+            for path in get_image_filepaths_from_paths(paths) {
+                parts.push(shell_quote_path(&path));
+            }
+        }
+
+        if let Some(images) = content.images.as_deref() {
+            if let Some(best) = pick_best_image(images) {
+                if let Some(path) = save_image_to_temp(best) {
+                    parts.push(shell_quote_path(&path));
+                }
+            }
+        }
+
+        if parts.is_empty() {
             return;
         }
+        let payload = parts.join(" ");
+
         let id = self.tree.focus();
         let bracketed = self
             .panels
             .get(&id)
             .map(|p| p.emulator.bracketed_paste())
             .unwrap_or(false);
-        let bytes = encode_paste(&content.plain_text, bracketed);
+        let bytes = encode_paste(&payload, bracketed);
         if let Some(panel) = self.panels.get_mut(&id) {
             let _ = panel.writer.write_all(&bytes);
             let _ = panel.writer.flush();
@@ -1448,6 +1491,56 @@ fn make_clipboard() -> Box<dyn Clipboard> {
     {
         Box::new(term_clipboard::InMemoryClipboard::default())
     }
+}
+
+/// Pick the highest-priority image off the clipboard. Walks
+/// `CLIPBOARD_IMAGE_MIME_TYPES` and returns the first image
+/// whose MIME type matches. Returns `None` when the list contains
+/// no recognised MIME. Mirrors Warp's `handle_pasted_image_data`
+/// (`app/src/terminal/input.rs:10693`).
+fn pick_best_image(images: &[ImageData]) -> Option<&ImageData> {
+    CLIPBOARD_IMAGE_MIME_TYPES
+        .iter()
+        .find_map(|mime| images.iter().find(|img| img.mime_type == *mime))
+}
+
+/// Save a pasteboard image to a uniquely-named file inside the
+/// system temp directory and return the absolute path. `None` on
+/// unknown MIME types or I/O errors.
+///
+/// The terminal can't paste image bytes into a shell directly —
+/// shell stdin is a byte stream, not a multimodal channel. Writing
+/// to a temp file and pasting the path is how iTerm / Warp /
+/// other terminals bridge clipboard images into command-line
+/// tools (Claude Code reads image files this way).
+fn save_image_to_temp(image: &ImageData) -> Option<String> {
+    let ext = match image.mime_type.as_str() {
+        "image/png" => "png",
+        "image/jpeg" | "image/jpg" => "jpg",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        _ => return None,
+    };
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+    let mut path = std::env::temp_dir();
+    path.push(format!("term_grid_clipboard_{nanos}.{ext}"));
+    std::fs::write(&path, &image.data).ok()?;
+    Some(path.to_string_lossy().into_owned())
+}
+
+/// Single-quote-escape a file path for safe shell tokenization.
+/// `'` inside the path is escaped as `'\''` (POSIX-compatible —
+/// bash, zsh, sh, dash all accept it). Empty paths become empty
+/// strings (caller should filter those out).
+fn shell_quote_path(path: &str) -> String {
+    if path.is_empty() {
+        return String::new();
+    }
+    let escaped = path.replace('\'', "'\\''");
+    format!("'{}'", escaped)
 }
 
 /// Prepare clipboard text for write to a PTY: normalise line
