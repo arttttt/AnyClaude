@@ -34,21 +34,26 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::mpsc;
 use std::sync::Arc;
+use std::time::Instant;
 
 use cosmic_text::{FontSystem, SwashCache};
+use futures::future::{abortable, AbortHandle};
+use futures_timer::Delay;
+use glam::Vec2;
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use term_core::{
     create_emulator, AnsiPalette, CellFlags, CursorState, CursorStyle, RenderSnapshot, TermColor,
     TerminalEmulator,
 };
 use term_gpu::{
-    rasterize_glyph, FontFamily, GlyphAtlas, GlyphInstance, GpuRenderer, RectInstance, Style,
-    TextShapeCache, Weight,
+    decay_velocity, rasterize_glyph, FontFamily, GlyphAtlas, GlyphInstance, GpuRenderer,
+    RectInstance, ScrollState, ScrollVelocity, Style, TextShapeCache, Weight, GESTURE_END_TIMEOUT,
+    MOMENTUM_FRAME_INTERVAL, MOMENTUM_MIN_VELOCITY, MOMENTUM_THRESHOLD, NUM_PIXELS_PER_LINE,
 };
 use term_layout::{BranchId, Divider, PanelId, PanelTree, Rect, Split};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition};
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowAttributes, WindowId};
@@ -75,6 +80,11 @@ enum CustomEvent {
     BytesArrived(PanelId),
     /// A panel's PTY reader hit EOF — the shell exited.
     PanelExited(PanelId),
+    /// Wheel-mouse silence timeout elapsed for the currently scrolling
+    /// panel — start momentum if velocity is high enough.
+    GestureEnded(PanelId),
+    /// One frame of inertia decay for the scrolling panel.
+    MomentumTick(PanelId),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -100,6 +110,10 @@ struct PanelState {
     /// Last `(cols, rows)` the emulator + PTY were resized to. Lets
     /// `sync_panels_to_tree` skip work when nothing changed.
     grid_size: (usize, usize),
+    /// Pixel-precise scroll offset into the panel's scrollback. 0.0 =
+    /// bottom (cursor visible); larger values mean we're looking
+    /// further up into history.
+    scroll: ScrollState,
 }
 
 struct App {
@@ -116,6 +130,13 @@ struct App {
     modifiers: ModifiersState,
     cursor: Option<(f32, f32)>,
     drag: Option<DragState>,
+    /// Wheel events route here until either the gesture ends or a new
+    /// panel takes over. Momentum and gesture-end timers fire against
+    /// this id so a panel close / focus change cancels them cleanly.
+    scrolling_panel: Option<PanelId>,
+    scroll_velocity: Option<ScrollVelocity>,
+    momentum_abort: Option<AbortHandle>,
+    gesture_end_abort: Option<AbortHandle>,
     proxy: EventLoopProxy<CustomEvent>,
 }
 
@@ -135,6 +156,10 @@ impl App {
             modifiers: ModifiersState::empty(),
             cursor: None,
             drag: None,
+            scrolling_panel: None,
+            scroll_velocity: None,
+            momentum_abort: None,
+            gesture_end_abort: None,
             proxy,
         }
     }
@@ -226,6 +251,7 @@ impl App {
             writer,
             master: pair.master,
             grid_size: (cols, rows),
+            scroll: ScrollState::default(),
         })
     }
 
@@ -256,6 +282,151 @@ impl App {
                 pixel_height: 0,
             });
             panel.grid_size = (cols, rows);
+        }
+    }
+
+    /// Hit-test logical coordinates against the panel tree. `None` when
+    /// the position is between panels (on a divider).
+    fn panel_at(&self, x: f32, y: f32) -> Option<PanelId> {
+        self.tree
+            .panels()
+            .into_iter()
+            .find(|(_, rect)| {
+                x >= rect.x
+                    && x < rect.x + rect.w
+                    && y >= rect.y
+                    && y < rect.y + rect.h
+            })
+            .map(|(id, _)| id)
+    }
+
+    fn cancel_momentum(&mut self) {
+        if let Some(h) = self.momentum_abort.take() {
+            h.abort();
+        }
+    }
+
+    fn cancel_gesture_end(&mut self) {
+        if let Some(h) = self.gesture_end_abort.take() {
+            h.abort();
+        }
+    }
+
+    /// Refresh `ScrollState` totals for a panel from its current emulator
+    /// snapshot and bounds. Called before applying any scroll delta to
+    /// make sure clamping uses up-to-date geometry.
+    fn refresh_scroll_geometry(&mut self, id: PanelId) {
+        let Some(rect) = self.tree.panels().into_iter().find_map(
+            |(pid, r)| if pid == id { Some(r) } else { None },
+        ) else {
+            return;
+        };
+        let metrics = self.cell_metrics();
+        let cell_h_logical = metrics.height_physical / self.scale_factor;
+        let Some(panel) = self.panels.get_mut(&id) else {
+            return;
+        };
+        let snap = panel.emulator.snapshot();
+        panel.scroll.total_size_px = snap.rows.len() as f32 * cell_h_logical;
+        panel.scroll.visible_px = rect.h;
+        let max = panel.scroll.max_offset();
+        if panel.scroll.offset_y > max {
+            panel.scroll.offset_y = max;
+        }
+    }
+
+    /// Apply a wheel delta to the panel under the cursor. Trackpad
+    /// `TouchPhase::Ended` kicks momentum immediately; for non-precise
+    /// wheels (mice) a silence timeout falls back to the same path.
+    /// Mirrors `scroll_demo::App::on_wheel` per-panel.
+    fn on_wheel(&mut self, dy: f32, phase: TouchPhase, precise: bool) {
+        let Some((x, y)) = self.cursor else {
+            return;
+        };
+        let Some(target) = self.panel_at(x, y) else {
+            return;
+        };
+        // A new wheel event interrupts any in-flight momentum and pending kickoff.
+        self.cancel_momentum();
+        self.cancel_gesture_end();
+
+        // Switching panels mid-flight invalidates the previous velocity sample.
+        if self.scrolling_panel != Some(target) {
+            self.scroll_velocity = None;
+        }
+        self.scrolling_panel = Some(target);
+
+        self.refresh_scroll_geometry(target);
+        if let Some(panel) = self.panels.get_mut(&target) {
+            panel.scroll.scroll_by(dy);
+        }
+        self.scroll_velocity = Some(ScrollVelocity::record(
+            self.scroll_velocity,
+            Vec2::new(0.0, dy),
+            Instant::now(),
+        ));
+
+        match phase {
+            TouchPhase::Ended => {
+                self.on_gesture_end();
+            }
+            TouchPhase::Cancelled => {
+                self.scroll_velocity = None;
+            }
+            TouchPhase::Started | TouchPhase::Moved => {
+                if !precise {
+                    self.gesture_end_abort = Some(schedule_once(
+                        self.proxy.clone(),
+                        GESTURE_END_TIMEOUT,
+                        CustomEvent::GestureEnded(target),
+                    ));
+                }
+            }
+        }
+
+        if let Some(w) = self.window.as_ref() {
+            w.request_redraw();
+        }
+    }
+
+    fn on_gesture_end(&mut self) {
+        let Some(target) = self.scrolling_panel else { return };
+        let Some(v) = self.scroll_velocity else { return };
+        let speed = v.velocity.length();
+        if speed < MOMENTUM_THRESHOLD {
+            self.scroll_velocity = None;
+            return;
+        }
+        self.scroll_velocity = Some(ScrollVelocity {
+            velocity: v.clamped_for_momentum(),
+            last_update: Instant::now(),
+        });
+        self.momentum_abort = Some(schedule_momentum_loop(
+            self.proxy.clone(),
+            MOMENTUM_FRAME_INTERVAL,
+            target,
+        ));
+    }
+
+    fn on_momentum_tick(&mut self) {
+        let Some(target) = self.scrolling_panel else { return };
+        let Some(v) = self.scroll_velocity.as_mut() else { return };
+        let now = Instant::now();
+        let elapsed = now.duration_since(v.last_update).as_secs_f32();
+        v.last_update = now;
+        v.velocity = decay_velocity(v.velocity, elapsed);
+        if v.velocity.length() < MOMENTUM_MIN_VELOCITY {
+            self.cancel_momentum();
+            self.scroll_velocity = None;
+            return;
+        }
+        let delta = v.velocity * elapsed;
+        self.refresh_scroll_geometry(target);
+        if let Some(panel) = self.panels.get_mut(&target) {
+            panel.scroll.scroll_by(delta.y);
+        }
+        if let Some(w) = self.window.as_ref() {
+            w.request_redraw();
         }
     }
 
@@ -567,6 +738,13 @@ impl ApplicationHandler<CustomEvent> for App {
                 ElementState::Pressed => self.on_mouse_press(),
                 ElementState::Released => self.on_mouse_release(),
             },
+            WindowEvent::MouseWheel { delta, phase, .. } => {
+                let (precise, dy) = match delta {
+                    MouseScrollDelta::PixelDelta(p) => (true, p.y as f32),
+                    MouseScrollDelta::LineDelta(_, v) => (false, v * NUM_PIXELS_PER_LINE),
+                };
+                self.on_wheel(dy, phase, precise);
+            }
             WindowEvent::RedrawRequested => self.on_redraw(),
             _ => {}
         }
@@ -581,6 +759,12 @@ impl ApplicationHandler<CustomEvent> for App {
                 }
             }
             CustomEvent::PanelExited(id) => {
+                if self.scrolling_panel == Some(id) {
+                    self.cancel_momentum();
+                    self.cancel_gesture_end();
+                    self.scrolling_panel = None;
+                    self.scroll_velocity = None;
+                }
                 self.panels.remove(&id);
                 self.tree.close(id);
                 if self.tree.is_empty() {
@@ -594,8 +778,56 @@ impl ApplicationHandler<CustomEvent> for App {
                     }
                 }
             }
+            CustomEvent::GestureEnded(id) => {
+                if self.scrolling_panel == Some(id) {
+                    self.on_gesture_end();
+                }
+            }
+            CustomEvent::MomentumTick(id) => {
+                if self.scrolling_panel == Some(id) {
+                    self.on_momentum_tick();
+                }
+            }
         }
     }
+}
+
+/// Spawn a one-shot abortable timer that sends `event` after `delay`.
+/// Mirrors `scroll_demo::schedule_once`.
+fn schedule_once(
+    proxy: EventLoopProxy<CustomEvent>,
+    delay: std::time::Duration,
+    event: CustomEvent,
+) -> AbortHandle {
+    let (fut, abort) = abortable(async move {
+        Delay::new(delay).await;
+        let _ = proxy.send_event(event);
+    });
+    std::thread::spawn(move || {
+        let _ = futures::executor::block_on(fut);
+    });
+    abort
+}
+
+/// Spawn an abortable loop that sends `MomentumTick(panel_id)` every
+/// `interval` until aborted or the receiver is gone.
+fn schedule_momentum_loop(
+    proxy: EventLoopProxy<CustomEvent>,
+    interval: std::time::Duration,
+    panel: PanelId,
+) -> AbortHandle {
+    let (fut, abort) = abortable(async move {
+        loop {
+            Delay::new(interval).await;
+            if proxy.send_event(CustomEvent::MomentumTick(panel)).is_err() {
+                break;
+            }
+        }
+    });
+    std::thread::spawn(move || {
+        let _ = futures::executor::block_on(fut);
+    });
+    abort
 }
 
 #[allow(clippy::too_many_arguments)]
