@@ -166,6 +166,37 @@ fn autowrap_carries_into_next_row() {
 }
 
 #[test]
+fn autowrap_marks_wrapline_on_overflowed_row() {
+    // The last cell of a row whose content continues on the next row
+    // must carry CellFlags::WRAPLINE. The continuation row, when not
+    // itself overflowed, must not.
+    let mut em = VtEmulator::new(5, 3, 0);
+    em.process(b"helloworld");
+    let snap = em.snapshot();
+    assert!(
+        snap.rows[0].cells[4].flags.wrap_line(),
+        "row 0 last cell must carry WRAPLINE after overflow"
+    );
+    assert!(
+        !snap.rows[1].cells[4].flags.wrap_line(),
+        "row 1 did not overflow further — WRAPLINE must stay clear"
+    );
+}
+
+#[test]
+fn hard_break_does_not_set_wrapline() {
+    // CR/LF is a hard line break: the row being left must not be
+    // marked WRAPLINE even if it ends at the right edge.
+    let mut em = VtEmulator::new(5, 2, 0);
+    em.process(b"hello\r\nworld");
+    let snap = em.snapshot();
+    assert!(
+        !snap.rows[0].cells[4].flags.wrap_line(),
+        "hard linebreak must not set WRAPLINE"
+    );
+}
+
+#[test]
 fn focus_reporting_emits_on_demand() {
     let mut em = VtEmulator::new(10, 1, 0);
     // Without DEC 1004, no output.

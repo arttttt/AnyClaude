@@ -307,6 +307,12 @@ impl Grid {
     /// by 1 (callers handle wide-char spacing separately).
     pub fn print(&mut self, c: char) {
         if self.auto_wrap && self.cursor_col >= self.cols {
+            let cols = self.cols;
+            if cols > 0 {
+                self.row_mut(self.cursor_row).cells[cols - 1]
+                    .flags
+                    .set(CellFlags::WRAPLINE);
+            }
             self.cursor_col = 0;
             self.linefeed();
         }
