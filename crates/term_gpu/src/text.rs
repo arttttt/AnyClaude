@@ -39,8 +39,8 @@
 use std::collections::HashMap;
 
 use cosmic_text::{
-    Attrs, Buffer, CacheKey, Family, FontSystem, LayoutGlyph, Metrics, Shaping, Style, SwashCache,
-    SwashContent, Weight,
+    fontdb, Attrs, Buffer, CacheKey, Family, FontSystem, LayoutGlyph, Metrics, Shaping, Style,
+    SwashCache, SwashContent, Weight,
 };
 
 /// Primary font family preference for a `TextShapeCache`. Maps onto
@@ -68,6 +68,46 @@ impl FontFamily {
             FontFamily::Named(name) => Family::Name(name.as_str()),
         }
     }
+}
+
+/// Single-codepoint glyph resolved via direct cmap lookup, bypassing
+/// cosmic-text's shaper. Mirrors Warp's `glyph_for_char` hot path: caller
+/// gets enough state to construct a `CacheKey` and place the glyph at a
+/// known origin without paying for `String` allocation, BiDi analysis, or
+/// `ShapeBuffer` reuse.
+///
+/// `baseline_y_physical` is the offset from the cell's top edge to the
+/// glyph's baseline, in physical pixels at the requested
+/// `font_size * scale_factor`. Add it to the cell's top-left physical Y
+/// to get the position to pass to `CacheKey::new`.
+#[derive(Debug, Clone, Copy)]
+pub struct CharGlyph {
+    pub font_id: fontdb::ID,
+    pub glyph_id: u16,
+    pub baseline_y_physical: f32,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct FaceKey {
+    weight: Weight,
+    style: Style,
+}
+
+#[derive(Clone, Copy)]
+struct FaceInfo {
+    font_id: fontdb::ID,
+    ascent_em: f32,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct CharGlyphKey {
+    ch: char,
+    font_id: fontdb::ID,
+}
+
+struct CachedCharGlyph {
+    glyph_id: Option<u16>,
+    last_used_frame: u32,
 }
 
 use crate::atlas::{GlyphFormat, RasterizedGlyph};
@@ -112,15 +152,27 @@ struct CachedShape {
     last_used_frame: u32,
 }
 
-/// Caches shaped text by `(text, font_size, scale_factor, wrap_width)`.
-/// Re-shape is cheap (~µs per call in cosmic-text) but adds up at hundreds
-/// of labels per frame; the cache turns those into HashMap hits.
+/// Caches shaped text in two tiers:
 ///
-/// Entries are evicted by frame counter — call `end_frame()` once per
+/// 1. **Char fast-path** (`shape_char`): single-codepoint cells (the 99%
+///    case for terminal grids) resolve directly through `ttf_parser`'s
+///    `cmap`, bypassing cosmic-text's `Buffer`. Key is `(char, font_id)`,
+///    no `String` allocation, no BiDi/shaping cost. Mirrors Warp's
+///    `CellGlyphCache.glyph_cache: HashMap<(char, FontId), …>`.
+///
+/// 2. **String slow-path** (`shape`): combining clusters, ligatures, mixed
+///    scripts. Goes through full cosmic-text shaping with a `String` cache
+///    key — the unavoidable cost when shaping is actually needed. Mirrors
+///    Warp's `string_cache: HashMap<(String, FontId), …>`.
+///
+/// Both tiers are evicted by frame counter — call `end_frame()` once per
 /// rendered frame so entries unused for `SHAPE_CACHE_MAX_UNUSED_FRAMES`
-/// drop out. Same pattern as `GlyphAtlas`.
+/// drop out. Primary face lookups (`FaceKey → FaceInfo`) are kept for the
+/// lifetime of the cache (handful of entries, no growth concern).
 pub struct TextShapeCache {
     entries: HashMap<ShapeKey, CachedShape>,
+    char_entries: HashMap<CharGlyphKey, CachedCharGlyph>,
+    face_cache: HashMap<FaceKey, Option<FaceInfo>>,
     frame: u32,
     family: FontFamily,
 }
@@ -140,6 +192,8 @@ impl TextShapeCache {
     pub fn with_family(family: FontFamily) -> Self {
         Self {
             entries: HashMap::new(),
+            char_entries: HashMap::new(),
+            face_cache: HashMap::new(),
             frame: 0,
             family,
         }
@@ -192,14 +246,113 @@ impl TextShapeCache {
         &entry.text
     }
 
+    /// Fast-path for single-codepoint cells: resolve `ch` to a glyph via
+    /// the primary font face's `cmap` table directly, with no shaping.
+    /// Returns `None` when the resolved face has no glyph for `ch` —
+    /// callers should fall back to [`Self::shape`] (which engages
+    /// cosmic-text's font fallback) or emit a missing-glyph indicator.
+    ///
+    /// `weight` and `style` select among faces in the primary family
+    /// (e.g. bold/italic variants). The chosen face is cached per
+    /// `(weight, style)` pair for the lifetime of the cache.
+    ///
+    /// Returned `baseline_y_physical` is the ascent of the primary face
+    /// at the requested physical font size — add it to the cell's
+    /// top-edge physical Y to get the baseline coordinate to pass into
+    /// [`cosmic_text::CacheKey::new`].
+    ///
+    /// Whitespace characters (space, tab) ARE resolved if present in the
+    /// font — most fonts include a zero-extent glyph for `U+0020` that
+    /// rasterizes to a zero-pixel image. Callers that already know the
+    /// cell is blank should skip this call entirely (the existing
+    /// `is_blank` gate at the renderer covers this).
+    pub fn shape_char(
+        &mut self,
+        font_system: &mut FontSystem,
+        ch: char,
+        font_size: f32,
+        scale_factor: f32,
+        weight: Weight,
+        style: Style,
+    ) -> Option<CharGlyph> {
+        let face_info = self.resolve_face(font_system, weight, style)?;
+        let key = CharGlyphKey { ch, font_id: face_info.font_id };
+        let frame = self.frame;
+        let entry = self.char_entries.entry(key).or_insert_with(|| {
+            let glyph_id = font_system
+                .get_font(face_info.font_id)
+                .and_then(|font| font.rustybuzz().glyph_index(ch).map(|g| g.0));
+            CachedCharGlyph {
+                glyph_id,
+                last_used_frame: frame,
+            }
+        });
+        entry.last_used_frame = frame;
+        let glyph_id = entry.glyph_id?;
+        let font_size_physical = font_size * scale_factor;
+        Some(CharGlyph {
+            font_id: face_info.font_id,
+            glyph_id,
+            baseline_y_physical: face_info.ascent_em * font_size_physical,
+        })
+    }
+
+    fn resolve_face(
+        &mut self,
+        font_system: &mut FontSystem,
+        weight: Weight,
+        style: Style,
+    ) -> Option<FaceInfo> {
+        let key = FaceKey { weight, style };
+        if let Some(cached) = self.face_cache.get(&key) {
+            return *cached;
+        }
+        let info = resolve_primary_face(font_system, &self.family, weight, style);
+        self.face_cache.insert(key, info);
+        info
+    }
+
     /// Advance the frame counter and evict entries that have not been
     /// requested in the last `SHAPE_CACHE_MAX_UNUSED_FRAMES` frames.
+    /// Evicts both string and char caches. Face cache is kept for the
+    /// lifetime of the cache — there are at most a handful of entries
+    /// (one per `(weight, style)`), so unbounded growth is not a concern.
     pub fn end_frame(&mut self) {
         self.frame = self.frame.wrapping_add(1);
         let now = self.frame;
         self.entries
             .retain(|_, c| now.wrapping_sub(c.last_used_frame) <= SHAPE_CACHE_MAX_UNUSED_FRAMES);
+        self.char_entries
+            .retain(|_, c| now.wrapping_sub(c.last_used_frame) <= SHAPE_CACHE_MAX_UNUSED_FRAMES);
     }
+}
+
+/// Query the primary font face for the given `(family, weight, style)`
+/// via `fontdb`. Reads `ascender / units_per_em` from the face's
+/// `ttf_parser` view so callers can compute baseline offsets without a
+/// shape pass.
+fn resolve_primary_face(
+    font_system: &mut FontSystem,
+    family: &FontFamily,
+    weight: Weight,
+    style: Style,
+) -> Option<FaceInfo> {
+    let cosmic_family = family.as_cosmic();
+    let query = fontdb::Query {
+        families: &[cosmic_family],
+        weight,
+        stretch: fontdb::Stretch::Normal,
+        style,
+    };
+    let id = font_system.db().query(&query)?;
+    let font = font_system.get_font(id)?;
+    let face = font.rustybuzz();
+    let upem = face.units_per_em() as f32;
+    if upem <= 0.0 {
+        return None;
+    }
+    let ascent_em = face.ascender() as f32 / upem;
+    Some(FaceInfo { font_id: id, ascent_em })
 }
 
 fn shape_text_inline(

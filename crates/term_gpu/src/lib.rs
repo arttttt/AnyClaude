@@ -19,7 +19,7 @@ pub use scroll::{
     decay_velocity, ScrollState, ScrollVelocity, GESTURE_END_TIMEOUT, MOMENTUM_FRAME_INTERVAL,
     MOMENTUM_MIN_VELOCITY, MOMENTUM_THRESHOLD, NUM_PIXELS_PER_LINE,
 };
-pub use text::{rasterize_glyph, FontFamily, ShapedLine, ShapedText, TextShapeCache};
+pub use text::{rasterize_glyph, CharGlyph, FontFamily, ShapedLine, ShapedText, TextShapeCache};
 
 /// Re-exported cosmic-text font attribute types. Consumers shape with
 /// these via `TextShapeCache::shape` rather than importing cosmic-text
