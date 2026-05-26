@@ -419,6 +419,103 @@ Caught the violation in commit 4 (parser) before it landed.
 - **DCS / SOS / PM / APC eaten without dispatch.** Out of scope but
   must traverse them so they don't corrupt input.
 
+## Mini-integration (term_core × term_gpu, May 2026)
+
+End-to-end pipe: stdin → `VtEmulator` → `RenderSnapshot` → per-cell
+shaped glyphs → wgpu surface.
+
+- **6 commits**: 1 bootstrap + 1 shape + 1 bg/cursor + 2 `term_core`
+  fixes + 1 resize wiring.
+- **Per-cell shaping**, not per-run. Per-run rode the shaper's
+  natural advances and blurred whenever `cell_width × scale_factor`
+  was fractional.
+- **`cell_width_physical = round(advance_of_'M').max(1.0)`**, integer
+  physical pixels. From Warp's `grid_size_util.rs`.
+- **`cell_height_physical = round(font_size × 1.3 × scale_factor)`**.
+- **Glyph X = `col × cell_width_physical`**. Shaper advances are
+  discarded. Mirrors Warp's `paint_line` even in the ligature path.
+- **Baseline Y snapped**: `round(origin_y_physical + line.line_y)`
+  before `glyph.physical()` so each row hits `SubpixelBin::Y = Zero`.
+- **DPI bug**: removed `self.scale_factor = renderer.scale_factor()`
+  in commit 1 as YAGNI; commit 2 added the consumer; field stayed
+  at `1.0` until restored — shape calls ran at logical-pixel size,
+  GPU sampler stretched ×2 on Retina, text read as blurry.
+- **Cursor styles**: Block (full cell rect), Underline (bottom 2
+  px), Beam (left 2 px). Semi-transparent white (alpha 0.55) so the
+  glyph under a block cursor remains legible.
+- **INVERSE**: swap `(fg, bg)` per cell. `BOLD`/`ITALIC`/
+  `UNDERLINE`/`STRIKE` not yet visually rendered.
+
+## `Grid::resize` bug + UX call (May 2026)
+
+```rust
+// Buggy: visible_start() derives from rows.len() & old visible_rows
+while self.rows.len() < self.visible_start() + rows {
+    self.rows.push(Row::new(cols));
+}
+// Each push grows rows.len() by 1; visible_start() grows by 1 too;
+// condition stays true → infinite loop when rows > visible_rows.
+```
+
+Fix: snapshot the bound before the loop.
+
+```rust
+let scrollback = self.scrollback_len();
+let target = scrollback + rows;
+while self.rows.len() < target { self.rows.push(Row::new(cols)); }
+```
+
+User-driven semantic call:
+
+> "у меня варп настроен так, что контент внутри него ресайзится,
+> но не двигается вверх, вниз или куда либо еще"
+
+So `Grid::resize` ships top-anchored (truncate-bottom on shrink,
+pad-bottom on grow, cursor clamp), not alacritty-style
+(scroll-into-scrollback). Two-line difference in `resize`,
+documented in [[gpu-terminal-architecture]].
+
+## Phase 4 — term_layout numbers
+
+- **6 commits**: bootstrap, split+resize, close, hit_test,
+  dividers+drag, set_focus+demo.
+- **~250 LoC** in `crates/term_layout/src/lib.rs` (no further
+  modules — single-file crate).
+- **28 integration tests** across `basic` (3) + `split` (5) +
+  `close` (5) + `resize` (4) + `hit_test` (6) + `drag_divider` (7)
+  test files.
+- **0 external dependencies.** Recursive `Box<Node>`, plain `f32`
+  rectangles.
+- **2 id namespaces**: `PanelId` (leaves) and `BranchId`
+  (dividers). Separate counters in `PanelTree`.
+- **Ratio clamp**: `MIN_RATIO = 0.05`, `MAX_RATIO = 0.95`.
+- **Demo**: `crates/term_gpu/examples/layout_demo.rs`. Cmd+D /
+  Cmd+Shift+D / Cmd+W shortcuts. Click-to-focus. Mouse drag with
+  6 px hit tolerance for divider grab. Focus border 2 px,
+  semi-transparent white (alpha 0.45).
+
+## Branch state at end of Phase 4
+
+47 commits on `feat/gpu-terminal`. Three crates:
+
+| Crate | LoC (src) | Tests | Deps |
+|---|---|---|---|
+| `term_core` | ~2000 | 22 | 0 |
+| `term_gpu` | ~1300 | — (visual demos) | wgpu, winit, cosmic-text, futures, futures-timer, glam, pollster |
+| `term_layout` | ~250 | 28 | 0 |
+
+Three visual demos all running at 120 fps on Retina:
+
+- `scroll_demo` — pixel-scroll with Warp momentum.
+- `render_term` — `cat session.log | render_term` shows a real
+  terminal grid rendered through cosmic-text.
+- `layout_demo` — split / close / drag panels with Cmd-key
+  shortcuts.
+
+Phase 5 (integration into `anyclaude`) is pending and blocked on a
+UX call (panels ↔ Claude Code sessions, tab semantics, header
+chrome).
+
 ## License attribution snippet
 
 For files containing code ported from Warp:

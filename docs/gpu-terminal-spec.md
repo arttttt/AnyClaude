@@ -2185,11 +2185,21 @@ End of frame: call `atlas.end_frame()` so unused glyphs age toward eviction (§5
 
 ### 6.1 Structure
 
+Recursive `Box<Node>` BSP — no arena, no `SlotMap`, zero external
+dependencies. Two stable id namespaces (`PanelId` for leaves,
+`BranchId` for dividers) so a mouse drag can hold a handle across
+operations without worrying about reuse. Ratios clamp to
+`[MIN_RATIO, MAX_RATIO] = [0.05, 0.95]` so no panel ever ends up
+zero-sized.
+
 ```rust
 // lib.rs
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PanelId(pub u64);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct BranchId(pub u64);
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Rect { pub x: f32, pub y: f32, pub w: f32, pub h: f32 }
@@ -2197,26 +2207,68 @@ pub struct Rect { pub x: f32, pub y: f32, pub w: f32, pub h: f32 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Split { Horizontal, Vertical }
 
-pub enum Node {
-    Leaf { id: PanelId, bounds: Rect },
-    Branch { split: Split, ratio: f32, bounds: Rect, left: Box<Node>, right: Box<Node> },
+pub const MIN_RATIO: f32 = 0.05;
+pub const MAX_RATIO: f32 = 0.95;
+
+/// Returned by `dividers()`. `rect` is the 1-px-thin line for drawing,
+/// `bounds` is the parent branch's rectangle (used by drag handlers to
+/// translate a cursor position into a new ratio).
+#[derive(Debug, Clone, Copy)]
+pub struct Divider {
+    pub id: BranchId,
+    pub split: Split,
+    pub rect: Rect,
+    pub bounds: Rect,
 }
 
-pub struct PanelTree {
-    root: Option<Node>,
-    next_id: u64,
-    pub focus: PanelId,
-}
+// `Node` is private — callers interact only via `PanelTree`, `PanelId`,
+// and `BranchId`.
+
+pub struct PanelTree { /* root, id counters, focus */ }
 
 impl PanelTree {
-    pub fn new(w: f32, h: f32) -> Self { ... }
-    pub fn split(&mut self, target: PanelId, split: Split, ratio: f32) -> PanelId { ... }
-    pub fn close(&mut self, target: PanelId) { ... }
-    pub fn resize(&mut self, w: f32, h: f32) { ... }
-    pub fn hit_test(&self, x: f32, y: f32) -> Option<PanelId> { ... }
-    pub fn panels(&self) -> Vec<(PanelId, Rect)> { ... }
+    pub fn new(w: f32, h: f32) -> Self;
+    pub fn focus(&self) -> PanelId;
+    pub fn set_focus(&mut self, id: PanelId) -> bool;
+    pub fn is_empty(&self) -> bool;
+    pub fn panels(&self) -> Vec<(PanelId, Rect)>;
+    pub fn dividers(&self) -> Vec<Divider>;
+
+    pub fn split(&mut self, target: PanelId, split: Split, ratio: f32) -> Option<PanelId>;
+    pub fn close(&mut self, target: PanelId);
+    pub fn resize(&mut self, w: f32, h: f32);
+    pub fn drag_divider(&mut self, id: BranchId, new_ratio: f32) -> bool;
+    pub fn hit_test(&self, x: f32, y: f32) -> Option<PanelId>;
 }
 ```
+
+### 6.2 Semantics
+
+- **Top-anchored on resize.** `resize(w, h)` walks the tree top-down,
+  redividing each `Branch`'s new bounds by its stored ratio. Splits
+  keep their proportions; no content scrolls in response to window
+  size changes.
+- **Sibling promotion on close.** `close(target)` collapses the
+  `Branch` containing `target` — the surviving sibling subtree
+  inherits the Branch's bounds, reflowed via the same
+  `recompute_bounds` helper used by `resize`. Closing the only panel
+  empties the tree; the calling code reacts to `is_empty()`.
+- **Focus moves to the new split on `split`** and to the
+  depth-first first remaining leaf when the focused panel is closed.
+  `set_focus(id)` lets click handlers re-focus arbitrarily.
+- **Half-open hit-test edges.** `hit_test` treats panel rectangles as
+  `[x, x+w) × [y, y+h)` so an exact-divider-pixel hit doesn't claim
+  membership in two panels.
+
+### 6.3 Status
+
+Phase 4 complete (May 2026). 28 integration tests in
+`crates/term_layout/tests/{basic,split,close,resize,hit_test,drag_divider}.rs`.
+Visual demo at `crates/term_gpu/examples/layout_demo.rs` — Cmd+D /
+Cmd+Shift+D / Cmd+W keyboard shortcuts, click-to-focus, drag-to-resize
+dividers. term_layout is wired as a `dev-dependency` of `term_gpu`;
+the library itself stays unaware of layout (matching how `term_core`
+relates to `term_gpu`'s `render_term`).
 
 ---
 
@@ -2257,33 +2309,64 @@ Everything in `src/proxy/`, `src/config/`, `src/metrics/`, `src/ipc/`, `src/shim
 
 ## 8. Roadmap
 
-### Phase 1 — term_core (2 weeks)
+### Phase 1 — term_core ✅ done (May 2026)
 **Files:** `crates/term_core/src/{lib,parser,color,attrs,grid,emulator}.rs`
-**Deliverable:** VT parser handles real Claude Code output.
-**Tests:** Capture live Claude Code output and replay it through the parser.
+**Delivered:** Hand-rolled Paul Williams VT parser (0 deps, ~770 LoC),
+alacritty-style fixed-cell grid, `VtEmulator` wiring parser→grid.
+22 integration tests; `examples/dump.rs` for visual smoke testing.
 
-### Phase 2 — term_gpu base (2 weeks)
-**Files:** `crates/term_gpu/src/{lib,renderer,surface,pipeline,instances,shaders/}.rs`
-**Deliverable:** A wgpu window rendering coloured text.
+### Phase 2 — term_gpu base ✅ done (folded into Phase 3 / 3.5)
+**Files:** `crates/term_gpu/src/{lib,renderer,pipeline,instances,shaders/}.rs`
+**Delivered:** wgpu 24 + winit 0.30 stack, dual `rect`/`text` pipelines,
+instanced quads, shared uniform bind group.
 
-### Phase 3 — term_gpu text (2 weeks)
-**Files:** `crates/term_gpu/src/{atlas,text,color}.rs`
-**Deliverable:** Variable-width text via cosmic-text, RGBA8 glyph atlas with subpixel positioning (§5.6) and frame-counter eviction (§5.4).
+### Phase 3 — term_gpu text ✅ done (May 2026)
+**Files:** `crates/term_gpu/src/{atlas,text}.rs`
+**Delivered:** Variable-width text via cosmic-text, RGBA8 glyph atlas
+with Shelf-Next-Fit packer and frame-counter eviction
+(§5.4). Subpixel positioning via cosmic-text's built-in `SubpixelBin`
+(§5.6) — discovered during implementation, simpler than Warp's
+hand-rolled 3-step. `TextShapeCache` with `font_size + scale_factor +
+wrap_width` keying, frame eviction at 60.
 
-### Phase 3.5 — Smooth scroll integration (1 week)
-**Files:** `crates/term_gpu/src/scroll.rs`, plus uniform additions to `text.wgsl` and `prim.wgsl`.
-**Deliverable:** Pixel-based scroll with momentum that feels like Warp. See [docs/design/gpu-terminal-scroll.md](design/gpu-terminal-scroll.md) for the full spec (constants, gesture-end detection, `EventLoopProxy<CustomEvent::MomentumTick>`).
-**Acceptance:** Trackpad swipe-then-release decays smoothly over ~1.5 s on macOS, Linux, and Windows.
+### Phase 3.5 — Smooth scroll integration ✅ done (May 2026)
+**Files:** `crates/term_gpu/src/scroll.rs`, uniform additions to
+`text.wgsl` and `prim.wgsl`.
+**Delivered:** All seven Warp momentum constants, `EventLoopProxy<
+CustomEvent::MomentumTick>` pump via `futures-timer`. `TouchPhase::Ended`
+for trackpad gesture end (fixes scroll-fling collision); silence
+timeout for wheel mice.
 
-### Phase 4 — term_layout (1 week)
-**Files:** `crates/term_layout/src/lib.rs`
-**Deliverable:** BSP panels with split/close/resize.
+### Phase 4 — term_layout ✅ done (May 2026)
+**Files:** `crates/term_layout/src/lib.rs`, tests in `crates/term_layout/tests/`,
+demo in `crates/term_gpu/examples/layout_demo.rs`.
+**Delivered:** BSP `PanelTree` with `split` / `close` / `resize` /
+`hit_test` / `dividers` / `drag_divider` / `set_focus`. Top-anchored
+resize, sibling promotion on close, ratio clamp `[0.05, 0.95]`,
+separate `PanelId` / `BranchId` namespaces. 28 integration tests,
+visual demo with keyboard shortcuts and mouse drag.
 
-### Phase 5 — Integration (2 weeks)
-**Files:** `src/ui/runtime.rs`, `src/pty/emulator/mod.rs`, `src/pty/session.rs`, `src/pty/handle.rs`
-**Deliverable:** AnyClaude runs on the GPU terminal; Claude Code renders correctly.
+### Mini-integration — term_core × term_gpu ✅ done (May 2026)
+**Files:** `crates/term_gpu/examples/render_term.rs`.
+**Delivered:** End-to-end pipe — stdin → `VtEmulator` → snapshot →
+per-cell shaped glyphs at `(col × cell_width_physical, row ×
+cell_height_physical)`. Integer physical cell metrics (Warp parity:
+`round(advance('M'))`). Cursor (Block/Underline/Bar), background
+rects, INVERSE swap. Top-anchored grid resize. Documented in
+[docs/articles/warp-gpu-terminal/](articles/warp-gpu-terminal/).
 
-### Phase 6 — Polish (1 week)
-**Deliverable:** Selection, clipboard, scrollback navigation, font fallback, performance tuning, drop-shadow shader for overlays (§3.4).
+### Phase 5 — Integration (2 weeks) ⬜ pending
+**Files:** `src/ui/runtime.rs`, `src/pty/emulator/mod.rs`,
+`src/pty/session.rs`, `src/pty/handle.rs`.
+**Deliverable:** AnyClaude runs on the GPU terminal; Claude Code
+renders correctly. **Blocker:** UX decisions — panels↔sessions
+mapping, tab semantics, header/footer chrome.
 
-**Total: ~11 weeks** (was 10; +1 for Phase 3.5).
+### Phase 6 — Polish (1 week) ⬜ pending
+**Deliverable:** Selection (drag-to-select cells, clipboard), font
+fallback configuration, BOLD/ITALIC/UNDERLINE/STRIKE visual
+rendering, direct codepoint→glyph_id lookup (avoid per-cell shape
+allocation), scrollback navigation in render_term, drop-shadow
+shader for overlays (§3.4).
+
+**Progress: ~7 weeks done of ~11 planned.**

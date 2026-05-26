@@ -385,3 +385,132 @@ Good rule to print on a wall: **build the real thing each phase.**
 
 Everything else (selection, scrollback navigation, drop-shadow on
 overlays) is genuine polish — features Warp also defers until later.
+
+## 13. Mini-integration — surprises when crates meet
+
+After `term_core` and `term_gpu` worked in isolation we plumbed them
+through a new example, expecting the visual quality from the scroll
+prototype to carry over. It didn't, on first try. Four debugging
+rounds, two `term_core` bugs, and a UX call later, three findings
+that belong in the article:
+
+### Per-cell snap isn't enough — ignore advances entirely
+
+Per-run shaping put `Hello world` through cosmic-text once, snapped
+the run origin to an integer pixel, and let glyphs ride the shaper's
+natural advances. On Retina with `cell_width ≈ 8.4 px`, each letter
+landed on a different `SubpixelBin` (Zero through Three), each
+rasterised at a different fractional offset, the GPU sampler blended
+neighbouring atlas pixels — and the whole row read as soft.
+
+We tried per-cell snap on cell origin: better, not crisp. Y-snap on
+baseline: marginally better. Real fix came from a second research
+agent pass against Warp's `paint_line`:
+
+```rust
+// app/src/terminal/grid_renderer.rs:1491
+fn paint_line(line: &Line, baseline: Vector2F, cell_width: f32, ...) {
+    for run in &line.runs {
+        for glyph in &run.glyphs {
+            let glyph_x = character_index_to_cell_map[glyph.index] as f32
+                          * cell_width;
+            let glyph_origin = baseline + vec2f(glyph_x, 0.);
+            scene.draw_glyph(glyph_origin, glyph.id, ...);
+        }
+    }
+}
+```
+
+Warp **ignores `LayoutGlyph.x`**. Every glyph lands at
+`col_index × cell_width`, where `cell_width = round(advance_M)` is
+integer physical pixels (from `grid_size_util.rs`). Shaper output
+is just for choosing the right glyph image — the shaper has no say
+on positioning. Adopting this killed our remaining alignment drift.
+
+### The blur was DPI, not subpixel
+
+Three rounds of subpixel fixes made things marginally better but
+never crisp. Real cause was a YAGNI regression in bootstrap commit:
+
+```rust
+// What I had in commit 1, with no consumer in that commit:
+// self.scale_factor = renderer.scale_factor();
+
+// What I removed it to. Field defaulted to 1.0. By commit 2 the
+// shape calls used self.scale_factor, but the field hadn't been
+// updated — glyphs rasterised at logical-pixel size, sampler
+// bilinearly stretched them ×2 to Retina.
+```
+
+The framebuffer is in physical pixels, the shape calls have to
+match. A single field, two-line restore, instantly crisp. The
+lesson is in [[feedback-solid-dry-kiss-yagni]]: YAGNI doesn't
+apply to fields whose downstream consumers exist in the *next*
+commit — verify the lack of consumer before deletion.
+
+### Top-anchored resize because the user said so
+
+Standard terminal behaviour (alacritty/xterm/Warp default) on
+shrink: scroll top rows into scrollback, cursor stays at bottom.
+On grow: pull rows back. We implemented this initially. User push:
+
+> "у меня варп настроен так, что контент внутри него ресайзится,
+> но не двигается вверх, вниз или куда либо еще"
+
+So their actual Warp setup pins content top, doesn't scroll on
+resize. The default is configurable. We rewrote `Grid::resize`:
+
+```rust
+let target = self.scrollback_len() + rows;
+if self.rows.len() < target {
+    while self.rows.len() < target { self.rows.push(Row::new(cols)); }
+} else if self.rows.len() > target {
+    self.rows.truncate(target);  // drop bottom rows; lost forever
+}
+self.cols = cols;
+self.visible_rows = rows;
+self.scroll_bottom = rows.saturating_sub(1);
+if self.cursor_row >= rows { self.cursor_row = rows.saturating_sub(1); }
+```
+
+Trade-off the user accepted: shrinking past existing content loses
+that content (it's not pushed into scrollback). Test in
+`tests/emulator_smoke.rs::resize_keeps_top_content_anchored_through_shrink_and_grow`
+asserts the contract.
+
+## 14. Phase 4 — BSP layout: the small data-structure crate
+
+`term_layout` is ~250 LoC of recursive `Box<Node>` BSP, zero
+external dependencies. Most of the work was deciding what NOT to
+add:
+
+- **No `slotmap` / arena.** Recursive `Box<Node>` ownership is
+  simple and the tree never grows past a few dozen nodes.
+- **No `parent` pointers.** Trees are walked from the root each
+  operation; the constant factor is irrelevant at this size.
+- **No persistent layout (a la React).** Mutation is in-place.
+- **No external focus management.** `set_focus(id) -> bool` and
+  done. Navigation by direction (Cmd-Alt-Arrow) is a Phase 5
+  concern — not the data structure's job.
+
+The atomic-commit grouping was the one design call worth talking
+about. `split` and `resize` shipped in a single commit because the
+fields they share (`Branch.{split, ratio, bounds}`) need both
+operations to be load-bearing — splitting them would have meant
+writing the fields with `split` and reading them with `resize`,
+across two commits, with `#[allow(dead_code)]` in between. The
+project's "no scaffolding without a consumer" rule
+([[feedback-solid-dry-kiss-yagni]]) made the call: combine into one
+"tree becomes mutable" commit.
+
+Two id namespaces — `PanelId` for leaves, `BranchId` for dividers —
+keep semantically different handles separate. A mouse drag holds a
+`BranchId` from press to release without caring about panels being
+renumbered; a content payload (term emulator) holds a `PanelId`
+without caring about dividers shifting.
+
+The end-of-Phase-4 demo (`crates/term_gpu/examples/layout_demo.rs`)
+renders panels as coloured rects with a slim semi-transparent
+focus border. Cmd+D / Cmd+Shift+D / Cmd+W keyboard shortcuts;
+mouse click to focus; mouse drag to resize dividers. Visual smoke
+test for the whole crate; runs at 120 fps on Retina.

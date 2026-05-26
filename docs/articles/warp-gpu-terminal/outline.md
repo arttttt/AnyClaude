@@ -199,6 +199,89 @@ The implementation: 8 atomic commits. Highlights:
   grid plus cursor/title/cwd state out. Useful for replaying real
   Claude Code captures.
 
+## Act 10 — Wiring it up: term_core × term_gpu
+
+With both crates working in isolation, the next question was
+whether they actually fit together. A new example
+(`crates/term_gpu/examples/render_term.rs`) pipes raw ANSI bytes
+from stdin through `VtEmulator` into the GPU window. The interesting
+part isn't the plumbing — it's what surfaced when real `term_core`
+output hit the GPU stack:
+
+1. **The blur was DPI, not subpixel.** First user feedback was
+   "тексты слегка размыты". We tried pixel-snapping cell origins,
+   then per-cell shaping, then Y-snapping the baseline — each fix
+   *slightly* better, never crisp. Real cause: a YAGNI regression
+   from commit 1. I'd removed `self.scale_factor =
+   renderer.scale_factor()` because nothing in *that* commit consumed
+   it. By commit 2 the shape calls used `self.scale_factor` (still
+   `1.0`) while the framebuffer was Retina — glyphs rasterised at
+   logical-pixel size and the GPU sampler bilinearly stretched them
+   ×2. Single field restore made the text crisp.
+
+2. **Warp doesn't use shaper advances for positioning.** A second
+   delegated-agent research pass against Warp's actual
+   `render_cell_glyph` / `paint_line` revealed: even when shaping is
+   engaged (ligatures, combining marks), Warp **discards the shaper's
+   advances** and places each glyph at `col × cell_width`. The
+   `cell_width` is `round(advance_of('m')).max(1)` — integer
+   physical pixels. Adopting this pattern fixed our remaining
+   alignment drift. Lesson: a per-cell snap on cell origin is not
+   enough if the shaper itself returns fractional advances; you have
+   to **ignore the advances**.
+
+3. **`Grid::resize` infinite-looped on first window open.** The loop
+   bound `self.visible_start() + rows` depended on `rows.len() -
+   self.visible_rows` (still old) and grew in lock-step with each
+   push. Classic "loop invariant mutated by loop body" bug.
+
+4. **Top-anchored resize is non-default but user-chosen.**
+   Standard terminal behaviour (alacritty / xterm) scrolls top rows
+   into scrollback on shrink and pulls them back on grow. The user
+   explicitly wanted "контент resizes но не двигается куда-либо"
+   (their Warp config). Re-wrote `Grid::resize` as truncate-bottom
+   on shrink + pad-bottom on grow + cursor clamp, leaving the
+   alacritty-style algorithm as a possible future flag.
+
+## Act 11 — Phase 4: BSP panels
+
+`term_layout` is the smallest of the three crates by far —
+~250 LoC of recursive `Box<Node>` BSP. The interesting design
+calls were small and crisp:
+
+1. **Two separate id namespaces.** `PanelId` for leaves, `BranchId`
+   for dividers. A mouse drag holds a `BranchId` from press to
+   release without worrying about pruning operations renumbering
+   panels. Sharing one namespace would have conflated two
+   semantically different handles.
+
+2. **Atomic-commit grouping by "consumer makes scaffolding
+   load-bearing".** `split` and `resize` shipped in the same commit
+   because `resize` is the consumer that makes `Branch.{split,
+   ratio, bounds}` load-bearing; splitting them across commits would
+   have required `#[allow(dead_code)]` which violates the project's
+   no-scaffolding-without-a-consumer rule. Lesson: commit boundaries
+   aren't "one function per commit" — they're "one coherent
+   capability per commit".
+
+3. **Top-anchored resize again.** Same reflex as `Grid::resize`:
+   walk the tree, redivide each branch by its stored ratio. No
+   content scrolls in response to a window resize.
+
+4. **Recursive consume helpers for tree mutation.**
+   `close_node(Node) -> Option<Node>` takes ownership, walks
+   recursively, returns the new subtree shape. The destructure-and-
+   match-on-children pattern makes the four cases (both kept,
+   promote left, promote right, both gone) explicit instead of
+   spread across mutable references.
+
+5. **Demo lives in the renderer crate, not the data crate.** The
+   visual `layout_demo` needs `term_gpu`; putting it in
+   `term_layout/examples/` would force a dep cycle. We kept the
+   pattern from `render_term`: data crate stays dep-free, demo
+   downstream pulls it in as a dev-dep. Three crates, six
+   compilation units, zero cycles.
+
 ## Outro — Takeaways
 
 1. **Read the source.** Warp's MIT crates contain answers to questions
@@ -238,6 +321,39 @@ The implementation: 8 atomic commits. Highlights:
     times we found something the spec missed (subpixel via
     cosmic-text, Cell vs TextRun grid). Cheap to ask, expensive to
     rewrite.
+14. **Ignore shaper advances for cell positioning.** Even when you
+    use a shaper (you need to, for ligatures and combiners),
+    don't let it dictate where glyphs land. Place each glyph at
+    `col × cell_width` (integer physical px); the shaper's job is
+    to pick the right glyph image, not its X coordinate. This is
+    Warp's hot path and the reason their text aligns cleanly across
+    rows; ours blurred until we adopted it.
+15. **YAGNI doesn't extend to fields with non-obvious downstream
+    consumers.** Removing `self.scale_factor = renderer.scale_factor()`
+    seemed safe in commit 1 (nothing read it). Commit 2 added a
+    consumer; the field was already gone; the regression cost two
+    rounds of misdirected debugging. When a field looks unused,
+    grep for its writers first — if it's the bridge between two
+    subsystems, leave it.
+16. **Loop bounds derived from mutable state will hang.** Our
+    `Grid::resize` looped `while self.rows.len() <
+    self.visible_start() + rows` — and `visible_start()` derived
+    from `rows.len()` too. Each push extended the bound. Snapshot
+    your loop targets into `let` bindings before the loop body
+    starts.
+17. **Top-anchored vs alacritty-style resize is a UX call, not a
+    technical one.** Both work; both have tests. Pick the one your
+    users actually want — for us it was "контент не двигается".
+18. **Atomic commit grouping is by capability, not by function.**
+    Splitting `split` and `resize` across commits would have meant
+    `#[allow(dead_code)]` on `Branch.{split, ratio, bounds}`;
+    grouping them gave one cohesive "tree becomes mutable" commit.
+    "One logical change per commit" wins over "one function per
+    commit".
+19. **The data crate stays dep-free; demos live downstream.** Both
+    `term_core` and `term_layout` have zero deps and visual demos
+    in `term_gpu/examples/`. Three crates, zero cycles, three
+    end-to-end demos — `scroll_demo`, `render_term`, `layout_demo`.
 
 ## Possible follow-up articles
 
@@ -245,3 +361,4 @@ The implementation: 8 atomic commits. Highlights:
 - "Why we chose `Vec<Row>` over `sum_tree` for a terminal grid"
 - "BSP panels for terminal UI: lessons from tmux"
 - "Integration day: wiring term_core into anyclaude"
+- "Top-anchored vs alacritty: two terminal resize semantics"

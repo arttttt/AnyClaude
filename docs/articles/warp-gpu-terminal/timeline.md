@@ -164,24 +164,114 @@ green at the end:
 | `dd60a29` | `test(term_core): integration tests for parser and emulator` — 39 tests in `crates/term_core/tests/` (parser_smoke 20 + emulator_smoke 19). All green. Caught and fixed the "tests in `src/`" policy violation along the way |
 | `bbf6ea5` | `feat(term_core): add dump example for visual smoke testing` — `examples/dump.rs`: stdin → grid snapshot with ASCII frame + cursor/title/cwd/responses. `COLOR=1` re-emits SGR so the dump itself shows in colour |
 
-## 9. Branch state at end of Phase 1
+## 9. Mini-integration — term_core × term_gpu (6 commits + 2 term_core fixes)
 
-34 commits on `feat/gpu-terminal`:
+After both crates compiled in isolation, we wired them through a new
+example to prove they actually fit together. Four planned commits
+turned into six once two `term_core` bugs surfaced.
 
-- 5 doc/research commits (rendering research, scroll design, spec
-  updates, articles, VT parser research)
-- 1 docs translation cleanup
-- 1 docs subpixel decision
-- 2 Cargo.lock chores
-- 6 Phase 3.5 features (smooth scroll prototype)
-- 1 fix (TouchPhase trackpad gesture end)
-- 6 Phase 3 features (text rendering)
-- 4 Phase 3 finishing (DPI, shape cache, culling, font fallback)
-- 1 fix (WGSL alignment)
-- 1 docs spec rewrite (term_core)
-- 6 Phase 1 features + 1 test commit + 1 example (term_core)
+User-facing requirement was specific: "Warp scrolls smoothly and
+reflows panels nicely; tmux feels rough." The mini-integration's
+job was to confirm that the GPU rendering quality holds when fed by
+real VT bytes through real `term_core` snapshots.
 
-`term_core` compiles with zero external dependencies; 39 integration
-tests green. `term_gpu` runs the scroll demo at 120 fps on Retina
-with text, momentum, emoji, sub-pixel motion. Both crates clippy
-clean.
+| Commit | Adds |
+|---|---|
+| `6e5a13c` | `feat(term_gpu): bootstrap render_term example with stdin pipe` — `term_core` as a dev-dep of `term_gpu`; reader thread; signal-via-`EventLoopProxy`; first render is a clear-colour pass |
+| `5fe2f74` | `feat(term_gpu): render cell grid as per-cell shaped glyphs` — per-cell shaping, integer `cell_width = round(advance_M_phys)`, glyph X = `col × cell_width` (Warp parity, advances ignored), Y-snap on baseline, DPI propagation from `renderer.scale_factor()` |
+| `67597a6` | `feat(term_gpu): render cell backgrounds, cursor, and INVERSE flag` — bg rects, cursor (Block/Underline/Bar), INVERSE swap |
+| `8451fc2` | `fix(term_core): terminate Grid::resize when rows > visible_rows` — caught when `fit_grid_to_window` first called `resize(120, 33)`; previous loop bound `visible_start() + rows` recomputed `visible_start()` from mutated state on each push and never terminated |
+| `ff7ae68` | `fix(term_core): make Grid::resize top-anchored` — user explicitly wanted "контент не двигается" (matches their Warp config); rewrote resize as truncate-bottom-on-shrink + pad-bottom-on-grow + cursor clamp; earlier attempts (preserve cursor absolute row, pull-from-scrollback) all failed visually |
+| `bca9192` | `feat(term_gpu): propagate window resize into the emulator` — lazy `fit_grid_to_window` on the redraw path with a `grid_size` cache so a winit drag burst coalesces into one emulator resize per frame |
+
+Two non-obvious bugs from this set deserve a callout in the article:
+
+1. **The blur was DPI, not subpixel.** First user report after
+   commit 2: "тексты слегка размыты". Three rounds of fixes
+   (pixel-snap origin, then per-cell shaping, then Y-snap) made it
+   *slightly* better but not crisp. The actual cause was a YAGNI
+   regression in commit 1: I'd removed `self.scale_factor = renderer.scale_factor()` from `resumed()`
+   because nothing in that commit consumed it. By commit 2 the
+   shape calls used `self.scale_factor` (still `1.0`) while the
+   framebuffer was Retina — glyphs got rasterised at logical pixel
+   size and the GPU sampler bilinearly stretched them ×2. Restoring
+   the field made the text crisp instantly. **Lesson** ([[feedback-solid-dry-kiss-yagni]]):
+   YAGNI doesn't extend to fields with non-obvious downstream
+   consumers — verify there's truly no consumer before deletion.
+
+2. **Grid::resize hung on first window open.** `fit_grid_to_window`
+   called `emulator.resize(120, 33)` (window 1920×1200 / cell 16×36).
+   App froze for ~6 seconds, then OS killed it. Debug `eprintln`s
+   showed control never returning from `fit_grid_to_window`. Looking
+   at the loop:
+
+   ```rust
+   while self.rows.len() < self.visible_start() + rows {
+       self.rows.push(Row::new(cols));
+   }
+   ```
+
+   `visible_start()` returns `self.rows.len() - self.visible_rows`.
+   Each push grows `rows.len()` by 1; `visible_start()` therefore
+   grows by 1 too; condition stays true forever. Fix is to snapshot
+   the loop bound: `let target = scrollback + rows;` before the
+   loop. Classic "loop invariant mutated by loop body" — caught now
+   by `tests/emulator_smoke.rs::resize_grows_grid_to_taller_visible_region`.
+
+3. **Top-anchored is non-default but user-chosen.** A delegated agent
+   research pass against Warp's actual `grid_storage/resize.rs` found
+   the standard alacritty-style algorithm: shrink scrolls top rows
+   into scrollback to keep the cursor anchored to the bottom; grow
+   pulls them back. The user explicitly opted out:
+   > "у меня варп настроен так, что контент внутри него ресайзится,
+   > но не двигается вверх, вниз или куда либо еще"
+
+   So `Grid::resize` ships with truncate-bottom semantics (content
+   pinned to top, lost when shrunk past) instead of the alacritty
+   default. Future work could expose this as a flag.
+
+## 10. Phase 4 — term_layout (6 commits)
+
+Last of the three core crates. Pure data structure — `Box<Node>` BSP
+tree producing rectangles, consumers wire those into renderers,
+input handlers, whatever. The data structure is well-trodden, but
+hitting all of Warp's capabilities (split / close / resize / hit
+test / drag dividers) and keeping commits atomic took some thought.
+
+| Commit | Adds |
+|---|---|
+| `a7e8262` | `feat(term_layout): bootstrap crate with PanelTree primitives` — `PanelId`, `Rect`, `Split`, internal `Node`, `PanelTree::new` / `panels` / `focus` / `is_empty`. Zero deps. Workspace member added. |
+| `48c3ecd` | `feat(term_layout): implement split and proportional resize` — these ship together because `resize` is the consumer that makes `Branch.{split,ratio,bounds}` load-bearing; splitting them would have required `#[allow(dead_code)]` which violates the project's no-scaffolding-without-a-consumer rule |
+| `09d2ccc` | `feat(term_layout): implement PanelTree::close` — consume-recursive helper, sibling promoted via `recompute_bounds`, focus follows |
+| `333bf31` | `feat(term_layout): implement PanelTree::hit_test` — half-open right/bottom edges so an exact divider pixel doesn't hit two panels |
+| `721add7` | `feat(term_layout): implement dividers and drag_divider` — `BranchId` namespace separate from `PanelId` for stable drag handles; `Divider { id, split, rect }` returned for drawing/hit-test |
+| `e24dc52` | `feat(term_layout): add set_focus + visual layout_demo example` — `set_focus(id) -> bool`; `Divider.bounds` added (the demo's drag handler needs parent bounds to compute new ratio); demo at `crates/term_gpu/examples/layout_demo.rs` with Cmd-key shortcuts, click-to-focus, mouse-drag divider |
+
+Demo runs at 120 fps on Retina; window resize / split / close
+animations are instant (no PTY in the loop). 28 integration tests
+across six test files in `crates/term_layout/tests/`.
+
+## 11. Branch state at end of Phase 4
+
+47 commits on `feat/gpu-terminal` total. Three crates compile clippy
+clean:
+
+| Crate | LoC (src) | Tests | Deps |
+|---|---|---|---|
+| `term_core` | ~2000 | 22 | 0 |
+| `term_gpu` | ~1300 | — (visual demos) | wgpu, winit, cosmic-text, futures, futures-timer, glam, pollster |
+| `term_layout` | ~250 | 28 | 0 |
+
+Three visual demos:
+
+- `scroll_demo` — 120 fps pixel-scroll with Warp momentum
+- `render_term` — `cat session.log | render_term` shows a real
+  terminal grid rendered through cosmic-text
+- `layout_demo` — split / close / drag panels with Cmd-key
+  shortcuts
+
+The full vertical stack works end-to-end. Phase 5 (integration into
+the AnyClaude CLI) is the remaining work — but it requires a
+non-trivial UX call (how panels map to Claude Code sessions, tab
+semantics, header/footer chrome) which the user has chosen to
+defer.
