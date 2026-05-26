@@ -20,11 +20,11 @@ use term_clipboard::{
 use term_core::{create_emulator, AnsiPalette, MouseMode, TerminalEmulator};
 use term_gpu::{
     build_cursor_rect, decay_velocity, encode_key, encode_paste, expand_line, expand_word,
-    measure_cell_metrics, populate_panel, push_label, push_selection_rects, selection_to_text,
-    shell_quote_path, CellMetrics, CellPoint, FontFamily, FontSystem, GlyphAtlas, GlyphInstance,
-    GpuRenderer, PanelRect, RectInstance, ScrollState, ScrollVelocity, Selection, Style,
-    SwashCache, TextShapeCache, Weight, GESTURE_END_TIMEOUT, MOMENTUM_FRAME_INTERVAL,
-    MOMENTUM_MIN_VELOCITY, MOMENTUM_THRESHOLD, NUM_PIXELS_PER_LINE,
+    measure_cell_metrics, measure_label_width, populate_panel, push_label, push_selection_rects,
+    selection_to_text, shell_quote_path, CellMetrics, CellPoint, FontFamily, FontSystem,
+    GlyphAtlas, GlyphInstance, GpuRenderer, PanelRect, RectInstance, ScrollState, ScrollVelocity,
+    Selection, Style, SwashCache, TextShapeCache, Weight, GESTURE_END_TIMEOUT,
+    MOMENTUM_FRAME_INTERVAL, MOMENTUM_MIN_VELOCITY, MOMENTUM_THRESHOLD, NUM_PIXELS_PER_LINE,
 };
 use uuid::Uuid;
 use winit::application::ApplicationHandler;
@@ -59,6 +59,19 @@ const MULTI_CLICK_THRESHOLD_MS: u128 = 400;
 /// Top chrome reserved for the header — backend / Reqs / Uptime /
 /// Session etc. live here. Terminal area starts immediately below.
 const HEADER_HEIGHT_LOGICAL: f32 = 24.0;
+
+/// Bottom chrome reserved for the footer — hotkey hints + version.
+/// Terminal area ends immediately above.
+const FOOTER_HEIGHT_LOGICAL: f32 = 22.0;
+
+/// Footer hint text — all the app-level shortcuts the GPU UI knows
+/// about. Some land in later Phase 5 commits (Cmd+B switch / Cmd+H
+/// history / Cmd+E settings / Cmd+R restart all in C7-C10); Cmd+Q
+/// and Cmd+C / Cmd+V already work as of C3.
+const FOOTER_HINTS: &str =
+    " Cmd+B: Switch │ Cmd+H: History │ Cmd+E: Settings │ Cmd+R: Restart │ Cmd+Q: Quit";
+
+const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Font size for header chrome text (variable-width SansSerif), in
 /// logical pixels. Smaller than the terminal font so the header
@@ -230,7 +243,7 @@ impl GpuApp {
         let sf = self.scale_factor.max(0.0001);
         let w_logical = size.width as f32 / sf;
         let h_logical = size.height as f32 / sf;
-        let h = (h_logical - HEADER_HEIGHT_LOGICAL).max(0.0);
+        let h = (h_logical - HEADER_HEIGHT_LOGICAL - FOOTER_HEIGHT_LOGICAL).max(0.0);
         PanelRect::new(0.0, HEADER_HEIGHT_LOGICAL, w_logical, h)
     }
 
@@ -713,6 +726,20 @@ impl GpuApp {
             sf,
         );
 
+        let window_size = window.inner_size();
+        let window_w_logical = window_size.width as f32 / sf;
+        let window_h_logical = window_size.height as f32 / sf;
+        draw_footer(
+            renderer.atlas_mut(),
+            &mut self.font_system,
+            &mut self.swash_cache,
+            &mut self.ui_shape_cache,
+            &mut glyphs,
+            window_w_logical,
+            window_h_logical,
+            sf,
+        );
+
         window.pre_present_notify();
         renderer.render(&rects, &glyphs, 0.0);
         self.shape_cache.end_frame();
@@ -820,6 +847,67 @@ fn draw_header(
         session_color,
     );
     Some((session_start_x, session_end_x))
+}
+
+/// Draw the bottom footer chrome: hotkey hints at the left edge,
+/// version string right-aligned. Free function for the same reason
+/// `draw_header` is — keeps the `&mut renderer` borrow viable in
+/// the caller.
+#[allow(clippy::too_many_arguments)]
+fn draw_footer(
+    atlas: &mut GlyphAtlas,
+    font_system: &mut FontSystem,
+    swash_cache: &mut SwashCache,
+    ui_shape_cache: &mut TextShapeCache,
+    glyphs: &mut Vec<GlyphInstance>,
+    window_w_logical: f32,
+    window_h_logical: f32,
+    sf: f32,
+) {
+    let baseline_y = window_h_logical - FOOTER_HEIGHT_LOGICAL * 0.3;
+
+    push_label(
+        font_system,
+        swash_cache,
+        atlas,
+        ui_shape_cache,
+        glyphs,
+        FOOTER_HINTS,
+        0.0,
+        baseline_y,
+        CHROME_FONT_SIZE,
+        sf,
+        Weight::NORMAL,
+        Style::Normal,
+        CHROME_TEXT_COLOR,
+    );
+
+    let version_text = format!("v{APP_VERSION} ");
+    let version_w = measure_label_width(
+        font_system,
+        ui_shape_cache,
+        &version_text,
+        CHROME_FONT_SIZE,
+        sf,
+        Weight::NORMAL,
+        Style::Normal,
+    );
+    let version_x = (window_w_logical - version_w).max(0.0);
+    push_label(
+        font_system,
+        swash_cache,
+        atlas,
+        ui_shape_cache,
+        glyphs,
+        &version_text,
+        version_x,
+        baseline_y,
+        CHROME_FONT_SIZE,
+        sf,
+        Weight::NORMAL,
+        Style::Normal,
+        CHROME_TEXT_COLOR,
+    );
 }
 
 impl ApplicationHandler<UserEvent> for GpuApp {
