@@ -20,12 +20,13 @@ use term_clipboard::{
 use term_core::{create_emulator, AnsiPalette, MouseMode, TerminalEmulator};
 use term_gpu::{
     build_cursor_rect, decay_velocity, encode_key, encode_paste, expand_line, expand_word,
-    measure_cell_metrics, populate_panel, push_selection_rects, selection_to_text,
-    shell_quote_path, CellMetrics, CellPoint, FontFamily, FontSystem, GlyphInstance, GpuRenderer,
-    PanelRect, RectInstance, ScrollState, ScrollVelocity, Selection, SwashCache, TextShapeCache,
-    GESTURE_END_TIMEOUT, MOMENTUM_FRAME_INTERVAL, MOMENTUM_MIN_VELOCITY, MOMENTUM_THRESHOLD,
-    NUM_PIXELS_PER_LINE,
+    measure_cell_metrics, populate_panel, push_label, push_selection_rects, selection_to_text,
+    shell_quote_path, CellMetrics, CellPoint, FontFamily, FontSystem, GlyphAtlas, GlyphInstance,
+    GpuRenderer, PanelRect, RectInstance, ScrollState, ScrollVelocity, Selection, Style,
+    SwashCache, TextShapeCache, Weight, GESTURE_END_TIMEOUT, MOMENTUM_FRAME_INTERVAL,
+    MOMENTUM_MIN_VELOCITY, MOMENTUM_THRESHOLD, NUM_PIXELS_PER_LINE,
 };
+use uuid::Uuid;
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition};
 use winit::event::{
@@ -54,6 +55,25 @@ const SCROLL_BOTTOM_EPSILON: f32 = 0.5;
 /// cell for them to count as a double / triple click. macOS's system
 /// default is ~500 ms; 400 ms is a comfortable middle ground.
 const MULTI_CLICK_THRESHOLD_MS: u128 = 400;
+
+/// Top chrome reserved for the header — backend / Reqs / Uptime /
+/// Session etc. live here. Terminal area starts immediately below.
+const HEADER_HEIGHT_LOGICAL: f32 = 24.0;
+
+/// Font size for header chrome text (variable-width SansSerif), in
+/// logical pixels. Smaller than the terminal font so the header
+/// stays unobtrusive.
+const CHROME_FONT_SIZE: f32 = 12.0;
+
+/// How long the "Session ID copied!" flash stays visible after a
+/// successful copy click.
+const SESSION_COPY_FLASH: Duration = Duration::from_millis(1500);
+
+/// Dim foreground for chrome labels.
+const CHROME_TEXT_COLOR: [f32; 4] = [0.55, 0.55, 0.55, 1.0];
+/// Highlight color for the "Session ID copied!" flash. Same green
+/// the legacy ratatui chrome uses for STATUS_OK.
+const CHROME_FLASH_COLOR: [f32; 4] = [0.4, 0.85, 0.4, 1.0];
 
 /// User event delivered to the winit loop. Drives redraws in response
 /// to PTY output and scroll momentum without polling.
@@ -98,6 +118,10 @@ struct GpuApp {
 
     palette: AnsiPalette,
     cell_metrics: Option<CellMetrics>,
+    /// Variable-width text cache for chrome (header / footer / popups).
+    /// Separate from `shape_cache` because cache instances are family-
+    /// scoped — terminal cells are Monospace, chrome is SansSerif.
+    ui_shape_cache: TextShapeCache,
 
     // Lazily initialised in `resumed`: spawning the shell needs to know
     // the window's pixel size, which we don't have until then.
@@ -122,6 +146,21 @@ struct GpuApp {
     last_click: Option<LastClick>,
 
     clipboard: Box<dyn Clipboard>,
+
+    /// Session UUID. Generated at startup; shown in the header.
+    /// Click on the "Session: …" text copies the full UUID to the
+    /// clipboard with a green flash.
+    session_id: String,
+    /// `Instant` at process start. The header's "Uptime: <n>s" is
+    /// derived from this.
+    start_time: Instant,
+    /// While `Some(deadline)`, the header renders "Session ID copied!"
+    /// in the flash color instead of the dim grey session UUID.
+    session_copied_until: Option<Instant>,
+    /// X range of the session click hot-zone (logical pixels) in the
+    /// header. Updated every redraw so the click handler can hit-test
+    /// without recomputing the layout.
+    session_click_zone: Option<(f32, f32)>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -141,6 +180,7 @@ impl GpuApp {
             font_system: FontSystem::new(),
             swash_cache: SwashCache::new(),
             shape_cache: TextShapeCache::with_family(FontFamily::Monospace),
+            ui_shape_cache: TextShapeCache::with_family(FontFamily::SansSerif),
             palette: AnsiPalette::default_dark(),
             cell_metrics: None,
             pty: None,
@@ -156,6 +196,10 @@ impl GpuApp {
             selection: None,
             last_click: None,
             clipboard: make_clipboard(),
+            session_id: Uuid::new_v4().to_string(),
+            start_time: Instant::now(),
+            session_copied_until: None,
+            session_click_zone: None,
         }
     }
 
@@ -174,20 +218,32 @@ impl GpuApp {
         metrics
     }
 
-    /// Compute the grid size (cols × rows) that fits inside the
-    /// window's logical bounds at the current cell metrics. Both
-    /// dimensions are clamped to at least 1 — a sub-cell window is
-    /// degenerate but should never panic.
-    fn fit_grid(&mut self) -> (usize, usize) {
-        let metrics = self.cell_metrics();
+    /// The terminal area sits below the header chrome. Returns the
+    /// rect (logical pixels, top-left origin) callers should pass to
+    /// `populate_panel` / `build_cursor_rect` and use as the basis
+    /// for mouse hit-testing.
+    fn terminal_panel_rect(&self) -> PanelRect {
         let Some(window) = self.window.as_ref() else {
-            return self.grid_size;
+            return PanelRect::new(0.0, HEADER_HEIGHT_LOGICAL, 0.0, 0.0);
         };
         let size = window.inner_size();
         let sf = self.scale_factor.max(0.0001);
-        let cols = ((size.width as f32 / metrics.width_physical).floor() as usize).max(1);
-        let rows = ((size.height as f32 / metrics.height_physical).floor() as usize).max(1);
-        let _ = sf;
+        let w_logical = size.width as f32 / sf;
+        let h_logical = size.height as f32 / sf;
+        let h = (h_logical - HEADER_HEIGHT_LOGICAL).max(0.0);
+        PanelRect::new(0.0, HEADER_HEIGHT_LOGICAL, w_logical, h)
+    }
+
+    /// Compute the grid size (cols × rows) that fits inside the
+    /// terminal panel rect at the current cell metrics. Both
+    /// dimensions are clamped to at least 1 — a sub-cell terminal
+    /// area is degenerate but should never panic.
+    fn fit_grid(&mut self) -> (usize, usize) {
+        let metrics = self.cell_metrics();
+        let panel = self.terminal_panel_rect();
+        let sf = self.scale_factor.max(0.0001);
+        let cols = ((panel.w * sf / metrics.width_physical).floor() as usize).max(1);
+        let rows = ((panel.h * sf / metrics.height_physical).floor() as usize).max(1);
         (cols, rows)
     }
 
@@ -326,6 +382,18 @@ impl GpuApp {
         ));
     }
 
+    /// Copy the session UUID to the clipboard and trigger the
+    /// header's "Session ID copied!" flash. Used by header click and
+    /// the keyboard shortcut path (potentially later).
+    fn copy_session_id(&mut self) {
+        self.clipboard
+            .write(ClipboardContent::plain_text(self.session_id.clone()));
+        self.session_copied_until = Some(Instant::now() + SESSION_COPY_FLASH);
+        if let Some(w) = self.window.as_ref() {
+            w.request_redraw();
+        }
+    }
+
     /// Copy the current selection to the system clipboard. Mirrors
     /// term_grid: `selection_to_text` against the current emulator
     /// snapshot → `ClipboardContent::plain_text`. Empty selections are
@@ -410,6 +478,7 @@ impl GpuApp {
     ///   row_idx       = (row_y_logical + baseline_offset - scroll_offset) / cell_h
     fn cell_at(&mut self, x: f32, y: f32) -> Option<CellPoint> {
         let metrics = self.cell_metrics();
+        let panel = self.terminal_panel_rect();
         let emu = self.emulator.as_ref()?;
         let sf = self.scale_factor.max(0.0001);
         let cell_w_logical = metrics.width_physical / sf;
@@ -417,8 +486,10 @@ impl GpuApp {
         if cell_w_logical <= 0.0 || cell_h_logical <= 0.0 {
             return None;
         }
-        let local_x = x.max(0.0);
-        let local_y = y.max(0.0);
+        // Mouse coords are window-relative; translate into the
+        // terminal area so the row math matches `populate_panel`.
+        let local_x = (x - panel.x).max(0.0);
+        let local_y = (y - panel.y).max(0.0);
         let snap = emu.snapshot();
         let total_rows = snap.rows.len();
         let visible_rows = snap.visible_rows;
@@ -448,6 +519,17 @@ impl GpuApp {
 
     fn on_mouse_press(&mut self) {
         let Some((x, y)) = self.cursor_pos else { return };
+        // Header click — copy session id to clipboard and flash the
+        // label. Takes priority over selection so a header click
+        // never lands inside the terminal area's coords.
+        if y < HEADER_HEIGHT_LOGICAL {
+            if let Some((sx, ex)) = self.session_click_zone {
+                if x >= sx && x < ex {
+                    self.copy_session_id();
+                }
+            }
+            return;
+        }
         // Apps in mouse-reporting mode (vim / htop / fzf) own the drag —
         // selection mustn't shadow them.
         let owns_mouse = self
@@ -555,9 +637,11 @@ impl GpuApp {
         }
     }
 
-    /// Render one frame: clear, populate cells, push cursor, present.
+    /// Render one frame: clear, populate cells, push cursor, draw
+    /// header chrome, present.
     fn redraw(&mut self) {
         let metrics = self.cell_metrics();
+        let panel = self.terminal_panel_rect();
         let Some(renderer) = self.renderer.as_mut() else {
             return;
         };
@@ -567,9 +651,7 @@ impl GpuApp {
         let Some(emulator) = self.emulator.as_ref() else {
             return;
         };
-        let size = window.inner_size();
         let sf = self.scale_factor.max(0.0001);
-        let panel = PanelRect::new(0.0, 0.0, size.width as f32 / sf, size.height as f32 / sf);
 
         let snapshot = emulator.snapshot();
         let scroll_offset_y = self.scroll.offset_y;
@@ -612,10 +694,132 @@ impl GpuApp {
             rects.push(cursor_rect);
         }
 
+        // Expire the session-copied flash if its deadline passed so
+        // future frames skip the active-color branch in draw_header.
+        if let Some(deadline) = self.session_copied_until {
+            if Instant::now() >= deadline {
+                self.session_copied_until = None;
+            }
+        }
+        self.session_click_zone = draw_header(
+            renderer.atlas_mut(),
+            &mut self.font_system,
+            &mut self.swash_cache,
+            &mut self.ui_shape_cache,
+            &mut glyphs,
+            &self.session_id,
+            self.start_time,
+            self.session_copied_until.is_some(),
+            sf,
+        );
+
         window.pre_present_notify();
         renderer.render(&rects, &glyphs, 0.0);
         self.shape_cache.end_frame();
+        self.ui_shape_cache.end_frame();
     }
+}
+
+/// Draw the top header chrome: dim grey labels for backend / sub /
+/// team / Reqs / Uptime / Session, separated by " │ ". The Session
+/// label is the click-to-copy hot-zone; the returned `(start_x, end_x)`
+/// goes into `GpuApp::session_click_zone` for the mouse handler.
+///
+/// Free function (not method) so the caller can hold a `&mut renderer`
+/// borrow across the call — `&mut self` here would collide.
+#[allow(clippy::too_many_arguments)]
+fn draw_header(
+    atlas: &mut GlyphAtlas,
+    font_system: &mut FontSystem,
+    swash_cache: &mut SwashCache,
+    ui_shape_cache: &mut TextShapeCache,
+    glyphs: &mut Vec<GlyphInstance>,
+    session_id: &str,
+    start_time: Instant,
+    session_copied_active: bool,
+    sf: f32,
+) -> Option<(f32, f32)> {
+    // Backend names: the proxy isn't running in the GPU UI yet —
+    // C10 cutover wires real status. Until then, "unknown" is the
+    // same placeholder Header::widget shows when status is None in
+    // the legacy chrome.
+    let backend = "unknown";
+    let sub = "unknown";
+    let team = "unknown";
+    let reqs: u64 = 0;
+    let uptime_s = start_time.elapsed().as_secs();
+
+    let sep = " │ ";
+    let baseline_y = HEADER_HEIGHT_LOGICAL * 0.7;
+    let mut x = 8.0;
+
+    let segments: [String; 5] = [
+        format!("backend: {backend}"),
+        format!("sub: {sub}"),
+        format!("team: {team}"),
+        format!("Reqs: {reqs}"),
+        format!("Uptime: {uptime_s}s"),
+    ];
+    for seg in &segments {
+        x = push_label(
+            font_system,
+            swash_cache,
+            atlas,
+            ui_shape_cache,
+            glyphs,
+            seg,
+            x,
+            baseline_y,
+            CHROME_FONT_SIZE,
+            sf,
+            Weight::NORMAL,
+            Style::Normal,
+            CHROME_TEXT_COLOR,
+        );
+        x = push_label(
+            font_system,
+            swash_cache,
+            atlas,
+            ui_shape_cache,
+            glyphs,
+            sep,
+            x,
+            baseline_y,
+            CHROME_FONT_SIZE,
+            sf,
+            Weight::NORMAL,
+            Style::Normal,
+            CHROME_TEXT_COLOR,
+        );
+    }
+
+    let session_text = if session_copied_active {
+        "Session ID copied!".to_string()
+    } else {
+        format!("Session: {session_id}")
+    };
+    let session_color = if session_copied_active {
+        CHROME_FLASH_COLOR
+    } else {
+        CHROME_TEXT_COLOR
+    };
+    let session_start_x = x;
+    let session_end_x = push_label(
+        font_system,
+        swash_cache,
+        atlas,
+        ui_shape_cache,
+        glyphs,
+        &session_text,
+        x,
+        baseline_y,
+        CHROME_FONT_SIZE,
+        sf,
+        Weight::NORMAL,
+        Style::Normal,
+        session_color,
+    );
+    Some((session_start_x, session_end_x))
 }
 
 impl ApplicationHandler<UserEvent> for GpuApp {

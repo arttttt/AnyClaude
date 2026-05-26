@@ -8,6 +8,7 @@
 pub mod atlas;
 pub mod input;
 pub mod instances;
+pub mod label;
 pub mod panel_render;
 pub mod paste;
 pub mod pipeline;
@@ -19,6 +20,7 @@ pub mod text;
 pub use atlas::{GlyphAtlas, GlyphFormat, PlacedGlyph, RasterizedGlyph, ShelfPacker};
 pub use input::encode_key;
 pub use instances::{GlyphInstance, RectInstance, Uniforms};
+pub use label::{measure_label_width, push_label};
 pub use panel_render::{
     build_cursor_rect, measure_cell_metrics, populate_panel, CellMetrics, PanelRect,
     CURSOR_COLOR, CURSOR_STROKE_PHYSICAL, DEFAULT_FG,
