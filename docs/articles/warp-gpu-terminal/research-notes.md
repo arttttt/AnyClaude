@@ -655,3 +655,130 @@ Same pattern as `term_core` and `term_layout`: external systems
 (processes, in this case) live in the demo's dev-dependencies, not
 in `term_gpu`'s runtime dependencies. Three crates, zero cycles,
 four end-to-end demos.
+
+## 16. SGR visual flags (term_gpu, Phase 6 partial)
+
+Emulator was emitting `CellFlags::{BOLD, ITALIC, UNDERLINE,
+DOUBLE_UNDERLINE, STRIKE, FAINT, HIDDEN}` since Phase 1; the
+renderer ignored them all. Four atomic commits closed the gap
+(`79da3d7`, `3b704e9`, `835d680`, `675c92d`), ~200 LoC plus docs.
+
+### Bold/italic via cosmic-text face switching
+
+The minimum viable change is at the shape cache:
+
+```rust
+pub fn shape(
+    &mut self,
+    font_system: &mut FontSystem,
+    text: &str,
+    font_size: f32,
+    scale_factor: f32,
+    wrap_width: Option<f32>,
+    weight: Weight,    // new
+    style: Style,      // new
+) -> &ShapedText { ... }
+```
+
+Internally:
+
+```rust
+let attrs = Attrs::new()
+    .family(family.as_cosmic())
+    .weight(weight)
+    .style(style);
+```
+
+`Weight` and `Style` get re-exported from `term_gpu`, so the
+demos `use term_gpu::{Weight, Style}` instead of pulling
+cosmic-text into their dep tree. `populate_panel` derives them
+from `cell.flags`:
+
+```rust
+let weight = if cell.flags.bold() { Weight::BOLD } else { Weight::NORMAL };
+let style  = if cell.flags.italic() { Style::Italic } else { Style::Normal };
+```
+
+`cosmic_text::CacheKey` already contains `weight` and `style`, so
+the atlas caches bold-`h` and regular-`h` as distinct glyph
+images naturally — no extra cache-key plumbing required.
+
+### Decorations are rects, not glyph variants
+
+Underline / double-underline / strike land in the rect pass at
+fixed cell-height fractions, color = effective fg:
+
+```rust
+if cell.flags.underline() {
+    rects.push(RectInstance {
+        pos: [pos_x_logical, pos_y_logical + cell_h_logical * 0.78],
+        size: [cell_w_logical, 1.0],
+        color,
+    });
+}
+```
+
+Vertical positions:
+
+| Decoration | y fraction of cell height | thickness (logical px) |
+|---|---|---|
+| Underline | 0.78 | 1.0 |
+| Double underline (upper) | 0.72 | 0.8 |
+| Double underline (lower) | 0.84 | 0.8 |
+| Strike | 0.42 | 1.0 |
+
+These are calibrated for a 1.3 line-height ratio and SF Pro
+metrics. If we adopt a more compact line-height in the future or
+switch font families, the positions may need re-tuning; treat
+them as constants that come with the font choice, not as
+universals.
+
+### FAINT and HIDDEN
+
+```rust
+if cell.flags.faint() {
+    color[3] *= 0.5;
+}
+let push_glyph = !cell.flags.hidden() && !is_blank;
+if push_glyph { /* shape + push */ }
+// decoration rects still emit regardless of hidden
+```
+
+Faint is alpha attenuation only — no separate "faint color" curve.
+Hidden suppresses the glyph push but keeps bg and decorations
+(matches xterm/iTerm/Warp). Trying to make HIDDEN a full
+"cell doesn't exist" toggle would break cursor positioning and
+selection later, so we explicitly stop at "glyph suppressed".
+
+### The blank-cell short-circuit needs a decoration check
+
+Original code:
+
+```rust
+let is_blank = cell.c == ' ' || cell.c == '\0';
+if is_blank && fg_eff == TermColor::Default {
+    continue;
+}
+```
+
+An underlined blank space would skip its underline. New version
+gates on decoration flags too:
+
+```rust
+let has_decoration = cell.flags.underline()
+    || cell.flags.double_underline()
+    || cell.flags.strike();
+if is_blank && fg_eff == TermColor::Default && !has_decoration {
+    continue;
+}
+```
+
+### Why `term_grid` and `render_term` carry duplicated SGR logic
+
+Two consumers, ~50 LoC each. Extracting into a shared helper buys
+one location to edit instead of two; we'd pay with: a new public
+API surface on `term_gpu`, signature decisions about what to pass
+in (palette? font system? scale factor?), and a less self-contained
+example. YAGNI says wait for a third consumer. When `anyclaude`
+itself starts rendering through `term_gpu` (Phase 5), that's the
+third consumer and the natural extraction point.

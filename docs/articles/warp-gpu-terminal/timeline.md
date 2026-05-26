@@ -385,3 +385,46 @@ Three lessons stuck:
 preserves content cleanly. Phase 6 remaining: SGR visual flags,
 selection, clipboard, scrollback navigation, font fallback,
 performance pass.
+
+## 16. SGR visual flags (4 commits)
+
+Phase 6 continued. Emulator was already setting the `CellFlags`
+bits for BOLD / ITALIC / UNDERLINE / DOUBLE_UNDERLINE / STRIKE /
+FAINT / HIDDEN; the renderer hardcoded `Weight::NORMAL` and ignored
+all decoration flags. Four atomic commits closed the gap.
+
+| # | Commit | Files | Why |
+|---|---|---|---|
+| 58 | `79da3d7` | `crates/term_gpu/src/text.rs`, `lib.rs` + 3 callsites | `TextShapeCache::shape` gains `(Weight, Style)`. Re-exports them from `term_gpu` so consumers don't depend on cosmic-text. All callsites pass `Weight::NORMAL` + `Style::Normal` — no behavior change. |
+| 59 | `3b704e9` | `crates/term_gpu/examples/term_grid.rs` | `populate_panel` derives `Weight`/`Style` from `cell.flags.bold()/italic()`. Cosmic-text resolves bold/italic faces from the system font database. |
+| 60 | `835d680` | `crates/term_gpu/examples/term_grid.rs` | UNDERLINE / DOUBLE_UNDERLINE / STRIKE as `RectInstance`s at cell-height fractions (0.78 / 0.72-0.84 / 0.42). FAINT multiplies fg alpha by 0.5. HIDDEN suppresses glyph but keeps bg + decorations. Blank-cell short-circuit gates on decoration flags too. |
+| 61 | `675c92d` | `crates/term_gpu/examples/render_term.rs` | Same SGR logic ported into `render_term`. Two consumers; DRY threshold not reached so we accept the duplication (YAGNI). |
+
+Two findings worth recording:
+
+1. **Bold/italic via face switching, not synthesis.** Cosmic-text's
+   `Attrs::weight(Weight::BOLD)` and `style(Style::Italic)` route
+   through fontdb to system faces (SF Pro Bold / Italic on macOS).
+   We don't synthesize bold by stroking glyphs or fake italic via
+   shader skew — the system font database supplies real faces, and
+   cosmic-text's CacheKey already includes weight/style so the
+   atlas caches them as distinct glyphs naturally.
+
+2. **Decorations live in the rect pass, not the glyph pass.** A
+   bold underlined fg-cyan `'h'` is one glyph image and one
+   underline rect, not a baked underline rasterized into the glyph.
+   This keeps the atlas small (no underline-variant cache key) and
+   the lines crisp at any DPI. Same logic for strike and
+   double-underline. The decoration color is the cell's effective
+   fg (already faint-attenuated if FAINT), so palette and INVERSE
+   flow through naturally.
+
+## 17. Branch state at end of SGR flags
+
+61 commits on `feat/gpu-terminal`. All four demos render full SGR:
+bold, italic, underline, double-underline, strike, faint, hidden.
+Verification was light-touch (no clipboard yet → hard to paste
+SGR test strings) so the SGR visual tuning may need a follow-up
+once an interactive smoke pass is possible. Phase 6 remaining
+(no fixed order): selection, clipboard, scrollback in `term_grid`,
+font fallback, performance pass.

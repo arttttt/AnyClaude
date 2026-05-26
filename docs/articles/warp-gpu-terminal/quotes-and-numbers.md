@@ -608,6 +608,55 @@ zero clippy warnings outside of pre-existing.
 | `term_gpu` | 0 (visual demos only) | 4 examples |
 | `term_layout` | 28 | BSP shape + drag |
 
+## SGR visual flags (Phase 6 partial, May 2026)
+
+Four atomic commits (`79da3d7`, `3b704e9`, `835d680`, `675c92d`),
+~200 LoC plus docs. Emulator already emitted `CellFlags` bits;
+renderer caught up.
+
+| Component | Lines |
+|---|---|
+| `TextShapeCache::shape` weight+style param | ~25 |
+| `term_gpu::lib.rs` re-exports of `Weight`/`Style` | 4 |
+| `populate_panel` SGR plumbing in `term_grid` | ~60 |
+| Same in `render_term` | ~60 |
+| Callsite updates (3) | ~20 |
+
+**Decoration line positions** (fractions of cell height, 1.3 line-height
+ratio, SF Pro metrics):
+
+| Decoration | y fraction | thickness (logical px) |
+|---|---|---|
+| Underline | 0.78 | 1.0 |
+| Double underline (upper) | 0.72 | 0.8 |
+| Double underline (lower) | 0.84 | 0.8 |
+| Strike | 0.42 | 1.0 |
+
+**Weight / Style mapping**:
+
+| `cell.flags` bit | cosmic-text |
+|---|---|
+| `BOLD` | `Weight::BOLD` |
+| `ITALIC` | `Style::Italic` |
+
+**FAINT** = `color[3] *= 0.5` applied AFTER palette resolution and
+BEFORE decoration rects.
+
+**HIDDEN** = skip glyph push, keep bg + decoration rects.
+
+## Branch state at end of SGR
+
+61 commits on `feat/gpu-terminal`. All four demos render full SGR
+spec: BOLD, ITALIC, UNDERLINE, DOUBLE_UNDERLINE, STRIKE, FAINT,
+HIDDEN. Tests counts unchanged (term_gpu has no unit tests by
+project policy; verification is visual).
+
+| Crate | Tests | Notable |
+|---|---|---|
+| `term_core` | 56 | reflow done |
+| `term_gpu` | 0 (visual demos only) | 4 examples, full SGR |
+| `term_layout` | 28 | BSP shape + drag |
+
 ## License attribution snippet
 
 For files containing code ported from Warp:

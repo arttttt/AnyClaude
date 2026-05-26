@@ -2405,17 +2405,42 @@ behavior.
 renders correctly. **Blocker:** UX decisions — panels↔sessions
 mapping, tab semantics, header/footer chrome.
 
+### SGR visual flags ✅ done (May 2026)
+**Files:** `crates/term_gpu/src/text.rs`, `crates/term_gpu/src/lib.rs`,
+`crates/term_gpu/examples/term_grid.rs`,
+`crates/term_gpu/examples/render_term.rs`.
+**Delivered:** Bold, italic, underline, double-underline, strike,
+faint, and hidden render in both `term_grid` and `render_term`.
+The emulator was already setting the matching `CellFlags` bits;
+this phase plumbed them through the renderer:
+
+1. `TextShapeCache::shape` accepts `Weight` and `Style`, both
+   re-exported from `term_gpu`. Bold and italic resolve to distinct
+   cosmic-text faces (SF Pro Bold / Italic on macOS).
+2. Underline / double-underline / strike are `RectInstance`s in
+   the rect pass at fixed cell-height fractions
+   (0.78 / 0.72-0.84 / 0.42). Color = effective fg.
+3. Faint multiplies fg alpha by 0.5. Hidden suppresses the glyph
+   push but keeps bg + decoration rects (xterm/iTerm behavior).
+4. Blank cells with decoration flags bypass the
+   "nothing-to-render" short-circuit so an underlined space still
+   draws its underline.
+
+`term_grid` and `render_term` carry copy-pasted SGR logic — DRY
+threshold not reached at two consumers (YAGNI). Eventual extraction
+when a third consumer arrives.
+
 ### Phase 6 — Polish (1 week, partial) ⏳ in progress
 **Delivered:**
-- Reflow on column shrink/grow in `term_core::Grid::resize` — see
-  "Reflow on column resize" entry above.
+- Reflow on column shrink/grow — see "Reflow on column resize" entry.
+- SGR visual flags — see "SGR visual flags" entry.
 
-**Remaining:**
-- Selection (drag-to-select cells, clipboard).
-- Font fallback configuration.
-- BOLD / ITALIC / UNDERLINE / STRIKE visual rendering.
-- Direct codepoint→glyph_id lookup (avoid per-cell shape allocation).
+**Remaining (no fixed order):**
+- Selection (drag-to-select cells).
+- Clipboard (paste in particular — copy follows once selection lands).
 - Scrollback navigation in `term_grid` (port momentum from `scroll_demo`).
+- Direct codepoint→glyph_id lookup (avoid per-cell shape allocation).
+- Font fallback configuration.
 - Drop-shadow shader for overlays (§3.4).
 
 **Progress: ~7 weeks done of ~11 planned.**

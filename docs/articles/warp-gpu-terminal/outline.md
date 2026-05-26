@@ -356,6 +356,40 @@ unchanged. Drag-divider release no longer leaves history
 fragments. 12 integration tests in `tests/reflow.rs` pin the
 behavior.
 
+## Act 14 — SGR visual flags
+
+The emulator had been parsing `CellFlags::{BOLD, ITALIC, UNDERLINE,
+DOUBLE_UNDERLINE, STRIKE, FAINT, HIDDEN}` from day one of
+`term_core`. The renderer ignored all of them — every cell shaped
+with `Weight::NORMAL`, no decoration lines anywhere. Four atomic
+commits closed the gap.
+
+Two architectural calls worth flagging:
+
+1. **Bold and italic come from system font faces, not synthesis.**
+   `Attrs::weight(Weight::BOLD)` and `style(Style::Italic)` route
+   through cosmic-text's fontdb to actual SF Pro Bold / Italic on
+   macOS. No glyph stroking, no shader skew. The atlas caches them
+   as distinct images because `cosmic-text::CacheKey` already
+   includes weight/style — free deduplication.
+
+2. **Decorations are rects, not glyph variants.** Underline,
+   double-underline, and strike are `RectInstance`s in the rect
+   pass at fixed vertical fractions of cell height (0.78 / 0.72-0.84
+   / 0.42). Color = effective fg (already attenuated by FAINT if
+   set). This keeps the atlas small (one glyph image per
+   weight/style/codepoint, not per decoration combo) and the lines
+   crisp at any DPI.
+
+Faint = alpha × 0.5. Hidden = skip glyph push, keep bg and
+decorations (matches xterm/iTerm). Blank cells with any decoration
+bypass the "nothing to render" short-circuit so an underlined
+space still draws its underline.
+
+Sin: `term_grid` and `render_term` ended up with copy-pasted SGR
+logic. Two consumers = below the DRY threshold; extraction waits
+for a third (YAGNI).
+
 ## Outro — Takeaways
 
 1. **Read the source.** Warp's MIT crates contain answers to questions
@@ -469,6 +503,21 @@ behavior.
     scrollback. Discovered when a `"helloworld"` round-trip
     through shrink+grow disappeared into the scrollback that
     didn't exist before the resize.
+26. **Bold/italic via font faces, not synthesis.** Cosmic-text's
+    `Attrs::weight/style` route through fontdb to actual system
+    faces; `CacheKey` includes them so the atlas caches bold and
+    regular as distinct glyphs naturally. Stroking glyphs or
+    skewing in the shader to fake the look would have been
+    weeks of work for a worse result.
+27. **Text decorations belong in the rect pass.** Underline,
+    strike, double-underline are thin `RectInstance`s at fixed
+    fractions of cell height — not baked into the glyph image. One
+    glyph in the atlas per weight/style/codepoint, regardless of
+    decoration combos. Crisp lines at any DPI as a bonus.
+28. **Below-DRY-threshold duplication is fine.** `term_grid` and
+    `render_term` carry identical SGR plumbing. Extracting it
+    when there are only two consumers buys nothing; YAGNI says
+    wait for the third.
 
 ## Possible follow-up articles
 
