@@ -36,7 +36,7 @@ use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
 use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
 use winit::window::{Window, WindowAttributes, WindowId};
 
-use crate::config::Config;
+use crate::config::{save_claude_settings, ClaudeSettingsManager, Config, SettingId};
 use crate::ui::gpu::pty::ShellPty;
 
 const INITIAL_W: f32 = 1200.0;
@@ -130,19 +130,27 @@ enum UserEvent {
 /// anyclaude bootstrap (proxy + IPC + shim + claude command) lands at
 /// C10.
 pub fn run(_backend_override: Option<String>, _claude_args: Vec<String>) -> std::io::Result<()> {
-    // Pull the configured backend list so the Cmd+B popup has names
-    // to display. The popup's selection is a stub until C10 wires the
-    // proxy — failing to load config here just means the popup shows
-    // an empty list (same outcome as a config with zero backends).
-    let backend_names: Vec<String> = Config::load()
-        .map(|c| c.backends.iter().map(|b| b.display_name.clone()).collect())
-        .unwrap_or_default();
+    // Pull the configured backend list + claude-settings values so
+    // the Cmd+B and Cmd+E popups have real data. Backend selection is
+    // a stub until C10 wires the proxy; settings (Cmd+E Enter) saves
+    // back to disk for real, taking effect on the next claude spawn.
+    let (backend_names, settings_manager) = {
+        let cfg = Config::load().unwrap_or_default();
+        let mut sm = ClaudeSettingsManager::new();
+        sm.load_from_toml(&cfg.claude_settings);
+        let names = cfg
+            .backends
+            .iter()
+            .map(|b| b.display_name.clone())
+            .collect();
+        (names, sm)
+    };
 
     let event_loop = EventLoop::<UserEvent>::with_user_event()
         .build()
         .map_err(|e| std::io::Error::other(e.to_string()))?;
     let proxy = event_loop.create_proxy();
-    let mut app = GpuApp::new(proxy, backend_names);
+    let mut app = GpuApp::new(proxy, backend_names, settings_manager);
     event_loop
         .run_app(&mut app)
         .map_err(|e| std::io::Error::other(e.to_string()))?;
@@ -212,6 +220,10 @@ struct GpuApp {
     /// startup. The Cmd+B popup walks this list. Empty when config is
     /// missing or has no backends.
     backend_names: Vec<String>,
+    /// Settings registry + current values. Persisted to disk on Cmd+E
+    /// popup confirm (Enter). Loaded from Config at startup so the
+    /// popup reflects the user's last choice.
+    settings_manager: ClaudeSettingsManager,
     /// Currently-open popup overlay, if any. While `Some`, popup
     /// intercepts keyboard / mouse and selection / hotkey forwarding
     /// is suppressed.
@@ -220,11 +232,11 @@ struct GpuApp {
 
 /// All popup variants are owned by this enum so the field-presence
 /// check (`Option<Popup>::is_some`) is enough to gate input routing.
-/// Settings variant lands in C9.
 #[derive(Debug, Clone)]
 enum Popup {
     BackendSwitch(BackendSwitchPopup),
     History(HistoryPopup),
+    Settings(SettingsPopup),
 }
 
 #[derive(Debug, Clone)]
@@ -241,6 +253,22 @@ struct HistoryPopup {
     selected: usize,
 }
 
+#[derive(Debug, Clone)]
+struct SettingsPopup {
+    /// Mutable popup-local copy of each setting's current value.
+    /// Toggles edit this list; Enter applies it back to the manager
+    /// and saves to disk. Esc discards.
+    items: Vec<SettingItem>,
+    selected: usize,
+}
+
+#[derive(Debug, Clone)]
+struct SettingItem {
+    id: SettingId,
+    label: String,
+    value: bool,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct LastClick {
     time: Instant,
@@ -249,7 +277,11 @@ struct LastClick {
 }
 
 impl GpuApp {
-    fn new(proxy: EventLoopProxy<UserEvent>, backend_names: Vec<String>) -> Self {
+    fn new(
+        proxy: EventLoopProxy<UserEvent>,
+        backend_names: Vec<String>,
+        settings_manager: ClaudeSettingsManager,
+    ) -> Self {
         Self {
             proxy,
             window: None,
@@ -279,6 +311,7 @@ impl GpuApp {
             session_copied_until: None,
             session_click_zone: None,
             backend_names,
+            settings_manager,
             popup: None,
         }
     }
@@ -489,6 +522,60 @@ impl GpuApp {
         }
     }
 
+    /// Open or close the Cmd+E settings popup. Items snapshot the
+    /// current `settings_manager` values; Space toggles the focused
+    /// row; Enter applies the changes (writes back to disk via
+    /// `save_claude_settings`) and closes; Esc discards the in-popup
+    /// edits.
+    fn toggle_settings_popup(&mut self) {
+        if matches!(self.popup, Some(Popup::Settings(_))) {
+            self.close_popup();
+            return;
+        }
+        let items: Vec<SettingItem> = self
+            .settings_manager
+            .registry()
+            .iter()
+            .map(|def| SettingItem {
+                id: def.id,
+                label: def.label.to_string(),
+                value: self.settings_manager.get(def.id),
+            })
+            .collect();
+        if items.is_empty() {
+            return;
+        }
+        self.popup = Some(Popup::Settings(SettingsPopup {
+            items,
+            selected: 0,
+        }));
+        if let Some(w) = self.window.as_ref() {
+            w.request_redraw();
+        }
+    }
+
+    /// Apply the settings popup's edits to the manager and persist to
+    /// disk. Errors from the save (e.g. missing config dir) are
+    /// printed but don't crash — the in-memory manager already
+    /// reflects the new values for the rest of the session.
+    fn apply_settings_and_save(&mut self) {
+        let Some(Popup::Settings(ref state)) = self.popup else {
+            return;
+        };
+        for item in &state.items {
+            self.settings_manager.set(item.id, item.value);
+        }
+        let snapshot = self
+            .settings_manager
+            .snapshot_values()
+            .into_iter()
+            .map(|(id, v)| (id.as_str().to_string(), v))
+            .collect();
+        if let Err(e) = save_claude_settings(&Config::config_path(), &snapshot) {
+            eprintln!("anyclaude: failed to save settings: {e}");
+        }
+    }
+
     /// Open or close the Cmd+H history popup. History entries come
     /// from the proxy's switch log when wired (C10); for now the list
     /// is empty and the popup renders an "(no history yet)"
@@ -513,9 +600,10 @@ impl GpuApp {
     /// read-only — Enter just closes. Other keys are swallowed so the
     /// shell underneath sees nothing while the popup is open.
     fn handle_popup_key(&mut self, event: &winit::event::KeyEvent) {
-        let (items_len, is_actionable) = match self.popup {
-            Some(Popup::BackendSwitch(ref s)) => (s.items.len(), true),
-            Some(Popup::History(ref s)) => (s.items.len(), false),
+        let items_len = match self.popup {
+            Some(Popup::BackendSwitch(ref s)) => s.items.len(),
+            Some(Popup::History(ref s)) => s.items.len(),
+            Some(Popup::Settings(ref s)) => s.items.len(),
             None => return,
         };
         if items_len == 0 {
@@ -526,6 +614,7 @@ impl GpuApp {
         let selected = match self.popup {
             Some(Popup::BackendSwitch(ref s)) => s.selected,
             Some(Popup::History(ref s)) => s.selected,
+            Some(Popup::Settings(ref s)) => s.selected,
             None => return,
         };
         let new_selected = match event.physical_key {
@@ -535,12 +624,30 @@ impl GpuApp {
                 selected - 1
             }),
             PhysicalKey::Code(KeyCode::ArrowDown) => Some((selected + 1) % items_len),
-            PhysicalKey::Code(KeyCode::Enter) => {
-                if is_actionable {
-                    if let Some(Popup::BackendSwitch(ref s)) = self.popup {
-                        let chosen = s.items[s.selected].clone();
-                        eprintln!("anyclaude: [stub] would switch backend to: {chosen}");
+            PhysicalKey::Code(KeyCode::Space) => {
+                if let Some(Popup::Settings(ref mut s)) = self.popup {
+                    if let Some(item) = s.items.get_mut(s.selected) {
+                        item.value = !item.value;
                     }
+                    if let Some(w) = self.window.as_ref() {
+                        w.request_redraw();
+                    }
+                }
+                return;
+            }
+            PhysicalKey::Code(KeyCode::Enter) => {
+                match self.popup {
+                    Some(Popup::BackendSwitch(ref s)) => {
+                        // Stub: C7-C9 don't have the proxy wired yet.
+                        let chosen = s.items[s.selected].clone();
+                        eprintln!(
+                            "anyclaude: [stub] would switch backend to: {chosen}"
+                        );
+                    }
+                    Some(Popup::Settings(_)) => {
+                        self.apply_settings_and_save();
+                    }
+                    _ => {}
                 }
                 self.close_popup();
                 return;
@@ -550,6 +657,7 @@ impl GpuApp {
         match self.popup {
             Some(Popup::BackendSwitch(ref mut s)) => s.selected = new_selected.unwrap(),
             Some(Popup::History(ref mut s)) => s.selected = new_selected.unwrap(),
+            Some(Popup::Settings(ref mut s)) => s.selected = new_selected.unwrap(),
             None => {}
         }
         if let Some(w) = self.window.as_ref() {
@@ -1247,6 +1355,7 @@ impl ApplicationHandler<UserEvent> for GpuApp {
                             KeyCode::KeyV => self.paste_into_pty(),
                             KeyCode::KeyB => self.toggle_backend_switch_popup(),
                             KeyCode::KeyH => self.toggle_history_popup(),
+                            KeyCode::KeyE => self.toggle_settings_popup(),
                             KeyCode::KeyQ => event_loop.exit(),
                             _ => {}
                         }
@@ -1362,6 +1471,35 @@ fn draw_popup(
             window_h,
             sf,
         ),
+        Popup::Settings(state) => {
+            // Format each item as "[x] Label" or "[ ] Label" and let
+            // draw_string_list_popup do the rendering — the checkbox
+            // is just a glyph prefix, no separate state column needed.
+            let formatted: Vec<String> = state
+                .items
+                .iter()
+                .map(|i| {
+                    let mark = if i.value { "[x]" } else { "[ ]" };
+                    format!("{mark}  {}", i.label)
+                })
+                .collect();
+            draw_string_list_popup(
+                "Settings  ·  Space toggle · Enter save · Esc cancel",
+                &formatted,
+                state.selected,
+                None,
+                atlas,
+                font_system,
+                swash_cache,
+                ui_shape_cache,
+                shadows,
+                rects,
+                glyphs,
+                window_w,
+                window_h,
+                sf,
+            );
+        }
     }
 }
 
