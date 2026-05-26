@@ -220,14 +220,23 @@ struct GpuApp {
 
 /// All popup variants are owned by this enum so the field-presence
 /// check (`Option<Popup>::is_some`) is enough to gate input routing.
-/// History and Settings variants land in C8 and C9.
+/// Settings variant lands in C9.
 #[derive(Debug, Clone)]
 enum Popup {
     BackendSwitch(BackendSwitchPopup),
+    History(HistoryPopup),
 }
 
 #[derive(Debug, Clone)]
 struct BackendSwitchPopup {
+    items: Vec<String>,
+    selected: usize,
+}
+
+#[derive(Debug, Clone)]
+struct HistoryPopup {
+    /// Formatted entry rows ("timestamp · from → to"). Empty when no
+    /// switches have occurred yet (or until the proxy is wired in C10).
     items: Vec<String>,
     selected: usize,
 }
@@ -480,39 +489,68 @@ impl GpuApp {
         }
     }
 
-    /// Route a keyboard event to the open popup. Up/Down move the
-    /// selection; Enter triggers the popup's action (currently a stub
-    /// that just closes — C10 wires real backend-switch). Other keys
-    /// are swallowed so the shell underneath sees nothing while the
-    /// popup is open.
-    fn handle_popup_key(&mut self, event: &winit::event::KeyEvent) {
-        let Some(Popup::BackendSwitch(ref mut state)) = self.popup else {
-            return;
-        };
-        let len = state.items.len();
-        if len == 0 {
+    /// Open or close the Cmd+H history popup. History entries come
+    /// from the proxy's switch log when wired (C10); for now the list
+    /// is empty and the popup renders an "(no history yet)"
+    /// placeholder.
+    fn toggle_history_popup(&mut self) {
+        if matches!(self.popup, Some(Popup::History(_))) {
+            self.close_popup();
             return;
         }
-        match event.physical_key {
-            PhysicalKey::Code(KeyCode::ArrowUp) => {
-                state.selected = if state.selected == 0 {
-                    len - 1
-                } else {
-                    state.selected - 1
-                };
-            }
-            PhysicalKey::Code(KeyCode::ArrowDown) => {
-                state.selected = (state.selected + 1) % len;
-            }
+        self.popup = Some(Popup::History(HistoryPopup {
+            items: Vec::new(),
+            selected: 0,
+        }));
+        if let Some(w) = self.window.as_ref() {
+            w.request_redraw();
+        }
+    }
+
+    /// Route a keyboard event to the open popup. Up/Down move the
+    /// selection; Enter triggers the popup's action (currently a stub
+    /// for backend-switch — C10 wires the real call). History is
+    /// read-only — Enter just closes. Other keys are swallowed so the
+    /// shell underneath sees nothing while the popup is open.
+    fn handle_popup_key(&mut self, event: &winit::event::KeyEvent) {
+        let (items_len, is_actionable) = match self.popup {
+            Some(Popup::BackendSwitch(ref s)) => (s.items.len(), true),
+            Some(Popup::History(ref s)) => (s.items.len(), false),
+            None => return,
+        };
+        if items_len == 0 {
+            // No items to navigate; Enter is also no-op. Esc is
+            // handled at the call site.
+            return;
+        }
+        let selected = match self.popup {
+            Some(Popup::BackendSwitch(ref s)) => s.selected,
+            Some(Popup::History(ref s)) => s.selected,
+            None => return,
+        };
+        let new_selected = match event.physical_key {
+            PhysicalKey::Code(KeyCode::ArrowUp) => Some(if selected == 0 {
+                items_len - 1
+            } else {
+                selected - 1
+            }),
+            PhysicalKey::Code(KeyCode::ArrowDown) => Some((selected + 1) % items_len),
             PhysicalKey::Code(KeyCode::Enter) => {
-                // C7 stub: print the chosen backend and close. C10
-                // cutover replaces this with the real switch call.
-                let chosen = state.items[state.selected].clone();
-                eprintln!("anyclaude: [stub] would switch backend to: {chosen}");
+                if is_actionable {
+                    if let Some(Popup::BackendSwitch(ref s)) = self.popup {
+                        let chosen = s.items[s.selected].clone();
+                        eprintln!("anyclaude: [stub] would switch backend to: {chosen}");
+                    }
+                }
                 self.close_popup();
                 return;
             }
             _ => return,
+        };
+        match self.popup {
+            Some(Popup::BackendSwitch(ref mut s)) => s.selected = new_selected.unwrap(),
+            Some(Popup::History(ref mut s)) => s.selected = new_selected.unwrap(),
+            None => {}
         }
         if let Some(w) = self.window.as_ref() {
             w.request_redraw();
@@ -1208,6 +1246,7 @@ impl ApplicationHandler<UserEvent> for GpuApp {
                             KeyCode::KeyC => self.copy_selection(),
                             KeyCode::KeyV => self.paste_into_pty(),
                             KeyCode::KeyB => self.toggle_backend_switch_popup(),
+                            KeyCode::KeyH => self.toggle_history_popup(),
                             KeyCode::KeyQ => event_loop.exit(),
                             _ => {}
                         }
@@ -1274,12 +1313,8 @@ fn schedule_momentum_loop(proxy: EventLoopProxy<UserEvent>, interval: Duration) 
     abort
 }
 
-/// Render the open popup (background, shadow, items, selection
-/// highlight) into the overlay buffers. The popup is centred
-/// horizontally and pinned slightly above vertical centre so it
-/// sits where the eye naturally lands. Items use the chrome's
-/// SansSerif cache; selection highlight is a rounded-rect-style
-/// background under the chosen row.
+/// Dispatch to the variant-specific draw routine. The popup is owned
+/// by `GpuApp::popup`; this is the read-only render path.
 #[allow(clippy::too_many_arguments)]
 fn draw_popup(
     popup: &Popup,
@@ -1294,12 +1329,67 @@ fn draw_popup(
     window_h: f32,
     sf: f32,
 ) {
-    let Popup::BackendSwitch(state) = popup;
-    let items = &state.items;
-    let title = "Switch Backend";
+    match popup {
+        Popup::BackendSwitch(state) => draw_string_list_popup(
+            "Switch Backend",
+            &state.items,
+            state.selected,
+            None,
+            atlas,
+            font_system,
+            swash_cache,
+            ui_shape_cache,
+            shadows,
+            rects,
+            glyphs,
+            window_w,
+            window_h,
+            sf,
+        ),
+        Popup::History(state) => draw_string_list_popup(
+            "History",
+            &state.items,
+            state.selected,
+            Some("(no history yet)"),
+            atlas,
+            font_system,
+            swash_cache,
+            ui_shape_cache,
+            shadows,
+            rects,
+            glyphs,
+            window_w,
+            window_h,
+            sf,
+        ),
+    }
+}
 
-    // Width: max of title / item widths plus padding, clamped to a
-    // sane minimum so a short list doesn't render as a thin sliver.
+/// Render a centered popup whose body is a list of strings with one
+/// row visually selected. Used by both the backend-switch popup
+/// (actionable selection) and the history popup (read-only browse).
+/// When `items` is empty and an `empty_placeholder` is supplied, the
+/// placeholder renders in dim grey instead of an item list.
+#[allow(clippy::too_many_arguments)]
+fn draw_string_list_popup(
+    title: &str,
+    items: &[String],
+    selected: usize,
+    empty_placeholder: Option<&str>,
+    atlas: &mut GlyphAtlas,
+    font_system: &mut FontSystem,
+    swash_cache: &mut SwashCache,
+    ui_shape_cache: &mut TextShapeCache,
+    shadows: &mut Vec<term_gpu::ShadowInstance>,
+    rects: &mut Vec<RectInstance>,
+    glyphs: &mut Vec<GlyphInstance>,
+    window_w: f32,
+    window_h: f32,
+    sf: f32,
+) {
+    // Width: max of title / item / placeholder widths plus padding,
+    // clamped to a sane minimum so a short list doesn't render as a
+    // thin sliver.
     let title_w = measure_label_width(
         font_system,
         ui_shape_cache,
@@ -1324,16 +1414,118 @@ fn draw_popup(
             content_w = w;
         }
     }
+    if items.is_empty() {
+        if let Some(p) = empty_placeholder {
+            let w = measure_label_width(
+                font_system,
+                ui_shape_cache,
+                p,
+                POPUP_FONT_SIZE,
+                sf,
+                Weight::NORMAL,
+                Style::Italic,
+            );
+            if w > content_w {
+                content_w = w;
+            }
+        }
+    }
     let width = (content_w + POPUP_PADDING * 2.0).max(POPUP_MIN_WIDTH);
+    let body_rows = if items.is_empty() { 1.0 } else { items.len() as f32 };
     let height = POPUP_PADDING * 2.0
-        + POPUP_LINE_HEIGHT // title row
-        + POPUP_LINE_HEIGHT * 0.5 // gap
-        + (items.len() as f32) * POPUP_LINE_HEIGHT;
+        + POPUP_LINE_HEIGHT          // title row
+        + POPUP_LINE_HEIGHT * 0.5    // gap
+        + body_rows * POPUP_LINE_HEIGHT;
 
     let x = ((window_w - width) * 0.5).max(0.0);
     let y = ((window_h - height) * 0.4).max(0.0);
 
-    // Drop shadow first — under the popup background.
+    draw_popup_chrome(x, y, width, height, shadows, rects);
+
+    let content_x = x + POPUP_PADDING;
+    let mut cursor_y = y + POPUP_PADDING + POPUP_LINE_HEIGHT * 0.75;
+    push_label(
+        font_system,
+        swash_cache,
+        atlas,
+        ui_shape_cache,
+        glyphs,
+        title,
+        content_x,
+        cursor_y,
+        POPUP_FONT_SIZE,
+        sf,
+        Weight::BOLD,
+        Style::Normal,
+        CHROME_TEXT_COLOR,
+    );
+    cursor_y += POPUP_LINE_HEIGHT;
+    cursor_y += POPUP_LINE_HEIGHT * 0.5;
+    let item_top_y = cursor_y - POPUP_LINE_HEIGHT * 0.75;
+
+    if items.is_empty() {
+        if let Some(p) = empty_placeholder {
+            push_label(
+                font_system,
+                swash_cache,
+                atlas,
+                ui_shape_cache,
+                glyphs,
+                p,
+                content_x,
+                cursor_y,
+                POPUP_FONT_SIZE,
+                sf,
+                Weight::NORMAL,
+                Style::Italic,
+                CHROME_TEXT_COLOR,
+            );
+        }
+        return;
+    }
+
+    let highlight_y = item_top_y + (selected as f32) * POPUP_LINE_HEIGHT;
+    rects.push(RectInstance {
+        pos: [x + 1.0, highlight_y],
+        size: [width - 2.0, POPUP_LINE_HEIGHT],
+        color: POPUP_HIGHLIGHT_COLOR,
+    });
+
+    for (idx, item) in items.iter().enumerate() {
+        let color = if idx == selected {
+            DEFAULT_FG_FOR_POPUP_SELECTED
+        } else {
+            CHROME_TEXT_COLOR
+        };
+        push_label(
+            font_system,
+            swash_cache,
+            atlas,
+            ui_shape_cache,
+            glyphs,
+            item,
+            content_x,
+            cursor_y,
+            POPUP_FONT_SIZE,
+            sf,
+            Weight::NORMAL,
+            Style::Normal,
+            color,
+        );
+        cursor_y += POPUP_LINE_HEIGHT;
+    }
+}
+
+/// Push the shadow + background + 1px-border frame for any popup
+/// rectangle.
+fn draw_popup_chrome(
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    shadows: &mut Vec<term_gpu::ShadowInstance>,
+    rects: &mut Vec<RectInstance>,
+) {
     shadows.push(term_gpu::ShadowInstance {
         pos: [x, y],
         size: [width, height],
@@ -1342,8 +1534,6 @@ fn draw_popup(
         offset: [0.0, POPUP_SHADOW_OFFSET_Y],
         color: POPUP_SHADOW_COLOR,
     });
-
-    // Popup background + 1px border ring.
     rects.push(RectInstance {
         pos: [x, y],
         size: [width, height],
@@ -1369,61 +1559,6 @@ fn draw_popup(
         size: [1.0, height],
         color: POPUP_BORDER_COLOR,
     });
-
-    let content_x = x + POPUP_PADDING;
-    let mut cursor_y = y + POPUP_PADDING + POPUP_LINE_HEIGHT * 0.75;
-    // Title.
-    push_label(
-        font_system,
-        swash_cache,
-        atlas,
-        ui_shape_cache,
-        glyphs,
-        title,
-        content_x,
-        cursor_y,
-        POPUP_FONT_SIZE,
-        sf,
-        Weight::BOLD,
-        Style::Normal,
-        CHROME_TEXT_COLOR,
-    );
-    cursor_y += POPUP_LINE_HEIGHT;
-    // Gap before items.
-    cursor_y += POPUP_LINE_HEIGHT * 0.5;
-    let item_top_y = cursor_y - POPUP_LINE_HEIGHT * 0.75;
-
-    // Selection highlight bar under the chosen row.
-    let highlight_y = item_top_y + (state.selected as f32) * POPUP_LINE_HEIGHT;
-    rects.push(RectInstance {
-        pos: [x + 1.0, highlight_y],
-        size: [width - 2.0, POPUP_LINE_HEIGHT],
-        color: POPUP_HIGHLIGHT_COLOR,
-    });
-
-    for (idx, item) in items.iter().enumerate() {
-        let color = if idx == state.selected {
-            DEFAULT_FG_FOR_POPUP_SELECTED
-        } else {
-            CHROME_TEXT_COLOR
-        };
-        push_label(
-            font_system,
-            swash_cache,
-            atlas,
-            ui_shape_cache,
-            glyphs,
-            item,
-            content_x,
-            cursor_y,
-            POPUP_FONT_SIZE,
-            sf,
-            Weight::NORMAL,
-            Style::Normal,
-            color,
-        );
-        cursor_y += POPUP_LINE_HEIGHT;
-    }
 }
 
 /// Brighter foreground for the selected popup item to contrast with
