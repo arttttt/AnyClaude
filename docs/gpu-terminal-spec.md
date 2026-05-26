@@ -2467,16 +2467,51 @@ default state is "at the cursor", and natural-scrolling positive
 wheel deltas increase `offset_y` to reveal scrollback — no manual
 sign inversion needed. See the comment block in `populate_panel`.
 
+### Selection in term_grid ✅ done (May 2026)
+**Files:** `crates/term_gpu/examples/term_grid.rs`.
+**Delivered:** Drag-to-select cells inside a panel, double-click
+selects a word, triple-click selects a row, `Esc` clears.
+
+1. `Selection { anchor, cursor }` lives on `PanelState`. Both
+   ends are `CellPoint { row, col }` where `row` is the absolute
+   index into `RenderSnapshot::rows` — so selection survives
+   user scroll without coordinate translation.
+2. `App.dragging_selection: Option<PanelId>` routes CursorMoved
+   updates to the panel that got mouse-down.
+3. Mouse-mode gate: selection only starts when
+   `emulator.mouse_mode() == MouseMode::None` — Vim / htop / fzf
+   own the drag in mouse-reporting mode.
+4. Multi-click detection: consecutive presses within 400 ms at
+   the same cell increment a count. 1 → linear, 2 → word, 3 →
+   row. Word expansion uses Warp's `DEFAULT_WORD_BOUNDARY_CHARS`
+   list verbatim (`crates/warpui_core/src/text/words.rs`).
+5. Lifecycle (Warp's
+   `app/src/terminal/model/selection.rs:1-6` intent):
+   - Cleared on PTY bytes (text changed) — except for the panel
+     actively being dragged.
+   - Cleared on `Grid::resize` (column / row change reflow).
+   - Cleared on Esc (still forwarded to PTY so Vim's "leave
+     insert mode" works).
+   - Cleared on a no-drag click (empty selection on release).
+   - Preserved across user scroll (absolute row indices).
+6. Render: one `RectInstance` per selected cell row in
+   `push_selection_rects`, color
+   `rgba(118, 167, 250, 0.4)` — Warp's `text_selection_color`.
+   Linear (row-wrapping) selection only; block (rect) mode
+   deferred.
+
+Copy / paste are clipboard work (next deliverable).
+
 ### Phase 6 — Polish (1 week, partial) ⏳ in progress
 **Delivered:**
 - Reflow on column shrink/grow — see "Reflow on column resize" entry.
 - SGR visual flags — see "SGR visual flags" entry.
 - Scrollback navigation in `term_grid` — see "Scrollback in
   term_grid" entry.
+- Text selection in `term_grid` — see "Selection in term_grid" entry.
 
 **Remaining (no fixed order):**
-- Selection (drag-to-select cells).
-- Clipboard (paste in particular — copy follows once selection lands).
+- Clipboard (copy selected text on Cmd+C; paste on Cmd+V).
 - Direct codepoint→glyph_id lookup (avoid per-cell shape allocation).
 - Font fallback configuration.
 - Drop-shadow shader for overlays (§3.4).

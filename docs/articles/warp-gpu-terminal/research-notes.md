@@ -925,3 +925,143 @@ was designed around, not a law for downstream callers. The fix
 when something feels wrong isn't necessarily "align to the
 library" — it's "make every part of the downstream code
 consistent with itself".
+
+## 18. Selection in `term_grid` (Phase 6 partial)
+
+Three commits (`773d37b`, `6598d7f`, `d82418f`). Drag-to-select,
+double-click word, triple-click row, Esc clears. No copy yet —
+that's clipboard's job, next deliverable.
+
+### Data model
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CellPoint { row: usize, col: usize }  // absolute into RenderSnapshot::rows
+
+#[derive(Debug, Clone, Copy)]
+struct Selection { anchor: CellPoint, cursor: CellPoint }
+
+struct PanelState {
+    /* ... */
+    selection: Option<Selection>,
+}
+
+struct App {
+    /* ... */
+    dragging_selection: Option<PanelId>,
+    last_click: Option<LastClick>,  // for double/triple click detection
+}
+```
+
+`row` is the absolute index into `RenderSnapshot::rows`
+(scrollback + visible). Selection coordinates survive user scroll
+without translation; the renderer's baseline + scroll-offset math
+handles the visual projection.
+
+### Lifecycle
+
+Warp's `app/src/terminal/model/selection.rs:1-6` doc-comment
+defines the rules:
+
+> A selection should start when the mouse is clicked, finalized
+> when the button is released, cleared when text is
+> added/removed/scrolled on the screen, and cleared if the user
+> clicks off.
+
+Our implementation:
+
+| Trigger | Action |
+|---|---|
+| Mouse-press inside a panel, `mouse_mode == None` | Start (linear / word / row depending on click count) |
+| CursorMoved while dragging | Update `selection.cursor` |
+| Mouse-release with `selection.is_empty()` | Clear |
+| `drain_panel` (PTY bytes) | Clear unless this panel is mid-drag |
+| `sync_panels_to_tree` with grid change | Clear (reflow shuffles rows) |
+| Esc keypress | Clear (still forward to PTY) |
+| User scroll (wheel, momentum, Cmd+Home/End) | KEEP (viewport-only change) |
+
+The "mid-drag exception" inside `drain_panel` is the only
+deviation from Warp's strict rule — without it a bursty shell
+would kill in-progress gestures the moment a byte arrives.
+
+### Mouse-mode gate
+
+```rust
+let owns_mouse = self.panels
+    .get(&id)
+    .map(|p| p.emulator.mouse_mode() != MouseMode::None)
+    .unwrap_or(false);
+if !owns_mouse {
+    /* start selection */
+}
+```
+
+When Vim / htop / fzf / mc are in mouse-reporting mode, their
+drag goes through the PTY. Without the gate we'd shadow in-app
+gestures (e.g. Vim's visual-block mode, htop's row click).
+
+### Multi-click detection
+
+```rust
+const MULTI_CLICK_THRESHOLD_MS: u128 = 400;
+
+fn bump_click_count(&mut self, panel: PanelId, point: CellPoint) -> u32 {
+    let now = Instant::now();
+    let new_count = match self.last_click {
+        Some(lc)
+            if lc.panel == panel
+                && lc.point == point
+                && now.duration_since(lc.time).as_millis() <= MULTI_CLICK_THRESHOLD_MS =>
+        {
+            if lc.count >= 3 { 1 } else { lc.count + 1 }
+        }
+        _ => 1,
+    };
+    self.last_click = Some(LastClick { time: now, panel, point, count: new_count });
+    new_count
+}
+```
+
+Threshold at 400 ms (macOS default is ~500); count wraps from 3
+back to 1 so the fourth consecutive click starts a fresh linear
+selection.
+
+### Word expansion
+
+Word boundary characters lifted verbatim from Warp's
+`crates/warpui_core/src/text/words.rs::DEFAULT_WORD_BOUNDARY_CHARS`
+— 33 punctuation chars plus whitespace. `expand_word` walks
+left and right from the clicked cell while the boundary-class
+matches:
+
+```rust
+let center_is_boundary = is_word_boundary(cells[point.col].c);
+let mut start_col = point.col;
+while start_col > 0 && is_word_boundary(cells[start_col - 1].c) == center_is_boundary {
+    start_col -= 1;
+}
+let mut end_col = point.col;
+while end_col + 1 < cells.len()
+    && is_word_boundary(cells[end_col + 1].c) == center_is_boundary
+{
+    end_col += 1;
+}
+(CellPoint { row: point.row, col: start_col },
+ CellPoint { row: point.row, col: end_col + 1 })
+```
+
+The "boundary class" approach (instead of "only word chars
+extend") means clicking on a `;` selects the run of `;`s — same
+behavior as Warp.
+
+### Render
+
+`push_selection_rects` emits one `RectInstance` per cell row of
+the selection, color `[118/255, 167/255, 250/255, 0.4]` (Warp's
+`text_selection_color`). Same baseline + scroll-offset math as
+`populate_panel` so the highlight scrolls with content. Linear
+(row-wrapping) selection only — block mode deferred.
+
+The rect pass runs before glyphs (renderer architecture: all
+rects, then all glyphs), so glyphs render on top of the
+highlight and stay readable through the 0.4 alpha.

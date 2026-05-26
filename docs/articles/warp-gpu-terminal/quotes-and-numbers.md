@@ -709,6 +709,62 @@ performance pass.
 | `term_gpu` | 0 (visual demos only) | 4 examples, full SGR, scrollback |
 | `term_layout` | 28 | BSP shape + drag |
 
+## Selection in `term_grid` (Phase 6 partial, May 2026)
+
+Three commits, ~400 LoC plus docs.
+
+| Commit | Files | Lines |
+|---|---|---|
+| `773d37b` (selection + drag + render) | `term_grid.rs` | ~248 |
+| `6598d7f` (Esc clear) | `term_grid.rs` | ~13 |
+| `d82418f` (double/triple click) | `term_grid.rs` | ~153 |
+
+**Color** (Warp's `text_selection_color`):
+
+| Channel | Value |
+|---|---|
+| R | 118/255 ≈ 0.463 |
+| G | 167/255 ≈ 0.655 |
+| B | 250/255 ≈ 0.980 |
+| A | 0.4 |
+
+**Multi-click threshold**: 400 ms at the same cell + same panel.
+Counter wraps 1 → 2 → 3 → 1.
+
+**Word boundary characters** (lifted from
+`crates/warpui_core/src/text/words.rs::DEFAULT_WORD_BOUNDARY_CHARS`):
+
+```
+` ~ ! @ # $ % ^ & * ( ) - = + [ { ] }
+\ | ; : ' " , . < > / ? « »
+```
+
+Whitespace also counts as a boundary.
+
+**Selection clear triggers**:
+
+| Trigger | Cleared? |
+|---|---|
+| PTY bytes arrive | Yes (unless mid-drag in that panel) |
+| `Grid::resize` (cols or rows change) | Yes |
+| Esc keypress | Yes (Esc also forwarded to PTY) |
+| Mouse-release on no-drag click | Yes |
+| User scroll (wheel, momentum, Cmd+Home/End) | No |
+| Click off the selection (focus another panel) | Starts a new empty selection in target panel |
+
+## Branch state at end of selection
+
+73 commits on `feat/gpu-terminal`. Selection works for drag,
+double-click word, triple-click row. Copy is still missing
+(clipboard is the next deliverable). Phase 6 remaining:
+clipboard, font fallback, performance pass.
+
+| Crate | Tests | Notable |
+|---|---|---|
+| `term_core` | 56 | reflow done, snapshot exposes full buffer |
+| `term_gpu` | 0 (visual demos only) | 4 examples, full SGR, scrollback, selection |
+| `term_layout` | 28 | BSP shape + drag |
+
 ## License attribution snippet
 
 For files containing code ported from Warp:

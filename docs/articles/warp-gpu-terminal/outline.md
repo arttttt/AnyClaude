@@ -452,6 +452,42 @@ The fix is to make every part of the downstream code consistent
 with itself, not with the docs. The convention is now recorded as
 a comment block in `populate_panel`.
 
+## Act 17 — Selection
+
+The next user-visible Phase 6 item after scrollback. Drag to
+select cells, double-click for word, triple-click for row, Esc
+clears. Copy doesn't ship in this act — clipboard is the next
+work.
+
+Three architectural calls worth flagging:
+
+1. **Absolute row indices in `CellPoint`.** Selection coords
+   point into `RenderSnapshot::rows` directly (scrollback +
+   visible). User scrolls → highlight stays on its content; the
+   renderer's baseline + scroll-offset math handles the
+   projection. Visible-relative coords would shift the highlight
+   on every scroll event.
+
+2. **Clear on text change, keep on viewport change.** Warp's
+   `app/src/terminal/model/selection.rs:1-6` doc-comment is
+   explicit: "cleared when text is added/removed/scrolled". Our
+   `drain_panel` clears after applying PTY bytes — except when
+   the user is mid-drag in that panel (we'd kill an in-progress
+   gesture). `sync_panels_to_tree` clears on column / row resize
+   because reflow shuffles rows. User scroll leaves the
+   selection alone.
+
+3. **Mouse-mode gate.** Selection only starts when
+   `emulator.mouse_mode() == MouseMode::None`. When Vim / htop /
+   fzf set ButtonEvent or SGR mouse modes, their drag goes
+   through the PTY instead. Without this gate we'd shadow in-app
+   gestures.
+
+Word / line selection (commit 72) is a straight port of Warp's
+`DEFAULT_WORD_BOUNDARY_CHARS` list — same 33 punctuation chars
+plus whitespace. Double-click walks left and right from the
+clicked cell while the boundary-class matches.
+
 ## Outro — Takeaways
 
 1. **Read the source.** Warp's MIT crates contain answers to questions
@@ -598,6 +634,21 @@ a comment block in `populate_panel`.
     The fix wasn't to change the convention — it was to make
     every comparison in `term_grid` consistent with its own
     chosen convention.
+32. **Absolute coords let selections survive viewport changes.**
+    Selection points reference rows by their index in
+    `RenderSnapshot::rows`, not by their visible position.
+    Scroll moves the viewport; row indices don't move; the
+    highlight stays on its content. The same reasoning applies
+    to any cell-pointing feature (search highlight, link
+    target) — store by absolute index, project to viewport at
+    render time.
+33. **Carve out the in-progress gesture from auto-clears.**
+    Warp's selection rule is "clear on text change". Strict
+    application would kill an in-progress drag the moment the
+    shell prints. The right fix is a one-line carveout:
+    `if dragging_selection != Some(id)` skip the clear. Same
+    pattern applies to any "auto-something" rule that runs while
+    a user gesture is live.
 
 ## Possible follow-up articles
 

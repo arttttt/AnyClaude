@@ -488,3 +488,51 @@ real terminal — long shell output (`man bash`, `seq 1 1000`,
 feel, and follow mode keeps the cursor visible while the shell
 prints. Phase 6 remaining: selection, clipboard, font fallback,
 performance pass.
+
+## 20. Selection (3 commits)
+
+Drag-to-select, double-click word, triple-click line, Esc clears.
+No copy yet — that's clipboard's job. Coordinates absolute (row
+index into `RenderSnapshot::rows`) so the highlight stays on its
+content as the user scrolls.
+
+| # | Commit | Files | Why |
+|---|---|---|---|
+| 70 | `773d37b` | `term_grid.rs` | `CellPoint`, `Selection` types on `PanelState`. `cell_at_panel` hit-test. Mouse-press / cursor-moved / release handlers. Clearing on PTY bytes (with mid-drag exception) + on column-resize. `push_selection_rects` for the highlight overlay. |
+| 71 | `6598d7f` | `term_grid.rs` | `Esc` clears focused panel's selection (still forwarded to the PTY). |
+| 72 | `d82418f` | `term_grid.rs` | Double-click → word, triple-click → row. Word boundary chars verbatim from Warp's `DEFAULT_WORD_BOUNDARY_CHARS`. |
+
+Three lessons:
+
+1. **Absolute row indices, not visible-relative.** Selection
+   coordinates point into `RenderSnapshot::rows` directly. When
+   the user scrolls the viewport, the indices don't move — the
+   render-side baseline + scroll-offset math handles the
+   projection. The alternative (visible-relative) would shift
+   the highlight on every scroll event, which is wrong.
+
+2. **Clear on text change, keep on viewport change.** Warp's
+   `selection.rs` doc-comment names it explicitly: "cleared when
+   text is added/removed/scrolled". Our `drain_panel` clears the
+   selection after applying PTY bytes — with one carveout: the
+   panel currently being dragged keeps its selection so a burst
+   of shell output doesn't kill an in-progress gesture.
+   `sync_panels_to_tree` also clears on a column or row change
+   because reflow shuffles rows. User scroll, by contrast, leaves
+   the selection alone.
+
+3. **Mouse-mode gate.** Selection only starts when the emulator's
+   `mouse_mode()` is `MouseMode::None`. When Vim / htop / fzf /
+   mc are in mouse-reporting mode, their drag goes through the
+   PTY instead. Without this gate we'd shadow in-app gestures
+   and break selection inside Vim, scroll inside htop, etc.
+
+## 21. Branch state at end of selection
+
+73 commits on `feat/gpu-terminal`. `term_grid` now supports
+drag-to-select with translucent blue highlights matching Warp's
+color. Double-click selects words via Warp's
+`DEFAULT_WORD_BOUNDARY_CHARS` list, triple-click selects rows.
+Without clipboard yet the selection can't be copied out — that's
+the next deliverable. Phase 6 remaining: clipboard, font fallback,
+performance pass.
