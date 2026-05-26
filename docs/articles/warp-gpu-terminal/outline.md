@@ -282,6 +282,40 @@ calls were small and crisp:
    downstream pulls it in as a dev-dep. Three crates, six
    compilation units, zero cycles.
 
+## Act 12 — `term_grid`: real shells in panels
+
+The combined demo. Each leaf of the `PanelTree` owns a real
+`portable-pty` shell. Reader thread per panel, `EventLoopProxy`
+signalling, `encode_key` translating winit's logical-key events into
+ANSI byte sequences. `Cmd+D` / `Cmd+Shift+D` / `Cmd+W` mutate the
+tree and spawn / kill PTYs accordingly. Mouse drag resizes both the
+panel and (eventually) the shell.
+
+The "eventually" is the interesting bit:
+
+1. **First version** called `sync_panels_to_tree` on every
+   `CursorMoved`. zsh's "re-render the prompt on SIGWINCH" combined
+   with our destructive `Grid::resize` (`row.resize(new_cols)` drops
+   tail cells) gave a left panel filled with partial prompts
+   stacked from drag history. Lesson: continuous gestures need a
+   debounce; the destructive side-effect should fire on release,
+   not on motion.
+
+2. **Even with debounce**, the PanelTree's bounds shrink immediately
+   on drag but the emulator stays at its pre-drag dimensions until
+   release. Without render-side culling, glyphs from the larger
+   grid spilled into the neighbouring panel. Lesson: when visual
+   bounds can lag behind logical bounds, cull at the render step —
+   the lag is a normal transient state, not a bug.
+
+3. **Reflow is not free.** Tmux and alacritty wrap long lines on
+   column shrink with a continuation marker, then unwrap on grow.
+   Our `Grid::resize` doesn't — shrinking past a row's filled width
+   truncates the tail forever, and re-growing pads with blanks. We
+   ship the destructive version with the limitation documented,
+   and pushed reflow into Phase 6 with a pointer to alacritty's
+   reference implementation.
+
 ## Outro — Takeaways
 
 1. **Read the source.** Warp's MIT crates contain answers to questions
@@ -352,8 +386,29 @@ calls were small and crisp:
     commit".
 19. **The data crate stays dep-free; demos live downstream.** Both
     `term_core` and `term_layout` have zero deps and visual demos
-    in `term_gpu/examples/`. Three crates, zero cycles, three
-    end-to-end demos — `scroll_demo`, `render_term`, `layout_demo`.
+    in `term_gpu/examples/`. Three crates, zero cycles, four
+    end-to-end demos — `scroll_demo`, `render_term`, `layout_demo`,
+    `term_grid`.
+20. **Continuous-gesture mutations need a debounce, especially with
+    side effects.** A divider drag fires `CursorMoved` dozens of
+    times per second. If each event calls `pty.resize` and
+    `emulator.resize`, the shell sees SIGWINCH spam, re-renders the
+    prompt every frame, and (with our destructive `Grid::resize`)
+    you get history fragments stacked all the way down the panel.
+    Keep the gesture's visual update on motion; defer the
+    destructive side effect to release.
+21. **When two layers can disagree, cull at the renderer.** The
+    PanelTree's bounds and the emulator's `(cols, rows)` are
+    deliberately out of sync during a drag — tree updates on motion,
+    emulator updates on release. The renderer culls cells past the
+    panel's bounds so the lag is invisible. Architecturally this is
+    just "the renderer trusts no one"; pragmatically it removes a
+    whole class of "data hasn't propagated yet" rendering glitches.
+22. **`Cmd` is for app shortcuts; `Ctrl` is for the shell.** Demo
+    shortcuts (split / close / quit) sit on `Cmd`; every `Ctrl`
+    combo flows through `encode_key` to the PTY. No conflicts
+    with the shell's signal handling (Ctrl+C, Ctrl+Z) or readline
+    (Ctrl+A, Ctrl+E, Ctrl+R, …).
 
 ## Possible follow-up articles
 

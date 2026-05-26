@@ -516,6 +516,49 @@ Phase 5 (integration into `anyclaude`) is pending and blocked on a
 UX call (panels ↔ Claude Code sessions, tab semantics, header
 chrome).
 
+## term_grid demo (multi-panel PTY, May 2026)
+
+End-to-end terminal: every leaf in `PanelTree` owns a real
+`portable-pty` shell.
+
+- **5 commits**: bootstrap, keyboard, multi-panel, per-panel
+  resize, docs (reflow added to Phase 6 roadmap).
+- **~700 LoC** in `crates/term_gpu/examples/term_grid.rs`.
+- **Dev-dep added**: `portable-pty = "0.9"` (same pattern as the
+  other examples).
+- **Reader thread** per panel: blocking `read()` loop, ships chunks
+  via `mpsc::channel`, signals winit with
+  `EventLoopProxy::send_event(CustomEvent::BytesArrived(id))`. On
+  EOF sends `PanelExited(id)` and dies.
+- **`encode_key`** covers: printable text, `Ctrl + letter →`
+  0x01..0x1A, `Alt + key →` ESC-prefix, named keys (Enter `\r`,
+  Tab, Backspace `\x7f`, Escape, Space, Arrow{Up,Down,Left,Right},
+  Home, End, Delete, PageUp, PageDown).
+- **Cmd shortcuts**: Cmd+D (vsplit), Cmd+Shift+D (hsplit), Cmd+W
+  (close, exits demo if last panel), Cmd+Q (exit). All other Cmd
+  combos are swallowed (not forwarded to PTY).
+- **Drag sync deferred to `on_mouse_release`**: avoids SIGWINCH
+  spam and zsh re-prompt accumulation during continuous drag.
+- **Render-side culling**: `populate_panel` and `build_cursor_rect`
+  skip glyphs/cursors whose origin lies outside the panel's logical
+  bounds — necessary because the PanelTree's rect updates on drag
+  motion but the emulator's `(cols, rows)` only updates on release.
+- **Known limitation**: `Grid::resize` is destructive on column
+  shrink — alacritty-style reflow is now an explicit Phase 6
+  deliverable.
+
+## Branch state at end of term_grid
+
+53 commits on `feat/gpu-terminal`. Three crates + four end-to-end
+demos. All clippy clean, all term_core / term_layout tests passing.
+
+| Demo | What it proves |
+|---|---|
+| `scroll_demo` | Pixel-scroll + momentum (Phase 3.5) |
+| `render_term` | term_core × term_gpu single-panel pipe |
+| `layout_demo` | term_layout BSP shape + drag |
+| `term_grid` | All three crates + per-panel PTY shells |
+
 ## License attribution snippet
 
 For files containing code ported from Warp:

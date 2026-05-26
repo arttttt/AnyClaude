@@ -514,3 +514,93 @@ renders panels as coloured rects with a slim semi-transparent
 focus border. Cmd+D / Cmd+Shift+D / Cmd+W keyboard shortcuts;
 mouse click to focus; mouse drag to resize dividers. Visual smoke
 test for the whole crate; runs at 120 fps on Retina.
+
+## 15. term_grid — first real terminal
+
+Combined demo. Each leaf in the `PanelTree` owns a real
+`portable-pty` shell. Reader thread per panel, keyboard input
+encoded to ANSI bytes and written to the focused PTY,
+divider drag resizes both layout and shells. The findings:
+
+### SIGWINCH spam needs a debounce
+
+First version: `sync_panels_to_tree` ran on every `CursorMoved`.
+During a drag winit fires the event dozens of times per second.
+zsh re-renders its prompt on every SIGWINCH — combined with our
+destructive column-shrink (`row.resize(new_cols)` drops cells past
+`new_cols`), the left panel filled with partial prompts stacked
+from drag history:
+
+```
+artem
+artem
+artem
+@Arte
+ms-Ma
+cBook
+artem
+…
+```
+
+Fix: defer the sync to `on_mouse_release`. Tree mutates on motion
+(visual immediate); shell receives one SIGWINCH at the end. This
+applies to any continuous gesture with a destructive side effect —
+keep the visual update on motion, defer the destructive part to
+release.
+
+### Tree bounds and emulator bounds are deliberately out of sync
+
+After the debounce fix, a new problem: the PanelTree shrinks
+immediately during a drag, but the emulator (still at its pre-drag
+dimensions, awaiting the deferred sync) keeps rendering its full
+grid. The (now-larger) glyph grid spilled into the neighbouring
+panel. Fix: cull at the renderer.
+
+```rust
+let panel_max_x_phys = panel_rect.w * sf;
+let panel_max_y_phys = panel_rect.h * sf;
+for (row_idx, row) in snapshot.rows.iter().enumerate() {
+    let row_y_phys = row_idx as f32 * metrics.height_physical;
+    if row_y_phys >= panel_max_y_phys { break; }
+    for (col_idx, cell) in row.cells.iter().enumerate() {
+        let col_x_phys = col_idx as f32 * metrics.width_physical;
+        if col_x_phys >= panel_max_x_phys { break; }
+        // …emit cell glyph + bg rect…
+    }
+}
+```
+
+Same idea for `build_cursor_rect`: return `None` when the cursor's
+cell origin falls outside `panel_rect`. Architecturally this is
+just "the renderer trusts no one"; pragmatically it removes a whole
+class of "data hasn't propagated yet" rendering glitches when two
+layers update on different cadences.
+
+### Cmd is for the app; Ctrl is for the shell
+
+`encode_key` maps `Ctrl + letter` to the corresponding ASCII
+control byte (Ctrl+C → 0x03, Ctrl+D → 0x04, …) and ships it to the
+PTY. `Alt + key` gets ESC-prefixed for Meta. `Cmd` combos are
+intercepted by the demo (Cmd+Q exits, Cmd+D splits, Cmd+W closes)
+and never reach the shell — which means there's no conflict with
+the shell's own use of `Ctrl`-combos for signal handling and
+readline shortcuts.
+
+### Reflow is non-trivial; reflow lands in Phase 6
+
+The destructive column-shrink in `Grid::resize` means dragging a
+panel narrow truncates the tail of every row forever, and dragging
+back wide pads with blanks instead of restoring the lost content.
+Real terminals (tmux, alacritty) handle this with reflow: long
+lines wrap on shrink with a per-row continuation flag, and unwrap
+back on grow. Alacritty's `grid_storage/resize.rs::shrink_cols`
+and `grow_cols` are ~130 LoC and need a per-row wrap flag we don't
+have yet on `Row`. We accept the destructive behaviour for the
+demo, document the limitation, and pushed reflow into Phase 6.
+
+### `portable-pty` as a dev-dependency
+
+Same pattern as `term_core` and `term_layout`: external systems
+(processes, in this case) live in the demo's dev-dependencies, not
+in `term_gpu`'s runtime dependencies. Three crates, zero cycles,
+four end-to-end demos.

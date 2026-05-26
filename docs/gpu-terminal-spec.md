@@ -2355,6 +2355,24 @@ cell_height_physical)`. Integer physical cell metrics (Warp parity:
 rects, INVERSE swap. Top-anchored grid resize. Documented in
 [docs/articles/warp-gpu-terminal/](articles/warp-gpu-terminal/).
 
+### term_grid — multi-panel PTY demo ✅ done (May 2026)
+**Files:** `crates/term_gpu/examples/term_grid.rs`.
+**Delivered:** First end-to-end virtual terminal. Every leaf in
+`PanelTree` owns a real `portable-pty` shell. Reader thread per
+panel via `EventLoopProxy<CustomEvent::BytesArrived(PanelId)>`;
+keyboard input encoded to ANSI bytes (printable text, `Ctrl+letter`
+control codes, `Alt+key` ESC-prefix, named keys with their
+canonical CSI sequences); emulator DA/DSR responses flow back to
+the PTY. Cmd+D / Cmd+Shift+D / Cmd+W shortcuts (Cmd is the app
+modifier, Ctrl belongs to the shell). Mouse click focus,
+drag-divider with sync deferred to `on_mouse_release` (avoids
+SIGWINCH spam). Render-side culling so glyphs/cursor don't spill
+past the panel during a drag. Per-panel `grid_size` cache guards
+against redundant resizes. `PanelExited(PanelId)` event triggers
+panel + PTY teardown; closing the last panel exits the demo.
+Known limitation: `Grid::resize` is destructive on column shrink
+(reflow → Phase 6).
+
 ### Phase 5 — Integration (2 weeks) ⬜ pending
 **Files:** `src/ui/runtime.rs`, `src/pty/emulator/mod.rs`,
 `src/pty/session.rs`, `src/pty/handle.rs`.

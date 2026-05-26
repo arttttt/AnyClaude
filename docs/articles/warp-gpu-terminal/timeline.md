@@ -275,3 +275,69 @@ the AnyClaude CLI) is the remaining work — but it requires a
 non-trivial UX call (how panels map to Claude Code sessions, tab
 semantics, header/footer chrome) which the user has chosen to
 defer.
+
+## 12. term_grid — the first real terminal (5 commits)
+
+Combined demo: every leaf in the `PanelTree` owns a real shell
+PTY. `portable-pty` spawns `$SHELL`, a reader thread per panel
+pumps bytes through `EventLoopProxy<CustomEvent::BytesArrived(id)>`,
+keyboard input is encoded to ANSI bytes and written to the focused
+PTY, and divider drags resize both the visual layout and the
+underlying shells.
+
+| Commit | Adds |
+|---|---|
+| `30dc67b` | `feat(term_gpu): bootstrap term_grid example with a single PTY shell` — portable-pty as a dev-dep, single panel, reader thread, shell prompt appears on first frame |
+| `b1f6955` | `feat(term_gpu): route keyboard input to the focused PTY in term_grid` — `encode_key` covers printable text, named keys (Enter/Tab/arrows/Home/End/Delete/PageUp/Down), `Ctrl + letter` ASCII control codes, `Alt + key` ESC-prefix Meta; emulator responses (DA/DSR) flow back to the PTY |
+| `fd70cbf` | `feat(term_gpu): multi-panel term_grid with split/close/focus/drag` — Cmd+D / Cmd+Shift+D / Cmd+W shortcuts, click-to-focus, drag-divider, slim focus border, `PanelExited(id)` event for shell-exit cleanup, exit-when-last-panel-closes |
+| `e2a83ee` | `feat(term_gpu): propagate per-panel resize to emulator + PTY` — `sync_panels_to_tree` with `grid_size` cache; deferred until `on_mouse_release` for drags; render-side culling so glyphs/cursor don't spill past the panel during drag |
+| `eb31fc4` | `docs(spec): list reflow in Phase 6 roadmap` — surfaced by user testing: shrinking columns truncates content forever, growing back shows blanks. Adds alacritty-style reflow as a concrete Phase 6 deliverable. |
+
+Three lessons that belong in the article:
+
+1. **SIGWINCH spam during drag.** First version called
+   `sync_panels_to_tree` on every `CursorMoved`. Continuous drag fired
+   dozens of resize events per second. zsh re-renders its prompt on
+   each SIGWINCH; combined with our destructive shrink (`row.resize(
+   5)` truncates cells past 5), the result was a left panel filled
+   with partial prompts — "artem", "artem", "@Arte", "ms-Ma", …
+   stacked from drag history. Fix: defer the sync to `on_mouse_release`.
+   Tree mutates immediately (visual), shell sees one SIGWINCH at the
+   end (semantic).
+
+2. **The PanelTree's bounds shrink before the emulator knows.**
+   Because the drag deferral above, during a drag the PanelTree's
+   rect shrinks immediately but the emulator stays at its pre-drag
+   dimensions. Without render-side culling, the (still-large) glyph
+   grid spilled into the neighbouring panel. Fix: in `populate_panel`
+   skip cells whose `col × cell_width_phys` exceeds the panel's
+   physical width; same idea in `build_cursor_rect`. The lag between
+   "tree bounds" and "emulator bounds" is a normal transient state,
+   not a bug to chase.
+
+3. **Reflow is not optional in a real terminal — but it's not
+   simple.** After release, the shrink-and-grow round-trip dropped
+   content (cells past the new width were gone). Tmux and alacritty
+   wrap long lines on column shrink (with a continuation marker) and
+   unwrap on grow; alacritty's `grid_storage/resize.rs::shrink_cols`
+   / `grow_cols` is ~130 LoC and needs a per-row wrap flag we don't
+   have yet. We accepted destructive resize for the demo, named the
+   limitation explicitly, and added reflow to the Phase 6 roadmap.
+
+## 13. Branch state at end of `term_grid`
+
+53 commits on `feat/gpu-terminal`. Three crates + four demos:
+
+| Demo | What it proves |
+|---|---|
+| `scroll_demo` | Pixel-scroll + momentum |
+| `render_term` | term_core × term_gpu single-panel pipe |
+| `layout_demo` | term_layout BSP shape + drag |
+| `term_grid` | All three crates + per-panel PTY shells |
+
+`term_grid` is the first end-to-end virtual terminal — open the
+window, get a shell prompt; type, get output; `Cmd+D`, get a second
+shell. It runs at 120 fps on Retina with multiple shells active
+simultaneously. Phase 5 (anyclaude integration) and Phase 6
+(polish: reflow, SGR visual flags, selection, clipboard,
+scrollback, performance pass) remain.
