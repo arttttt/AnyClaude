@@ -4,10 +4,8 @@
 //! what to do with them. No rendering, no PTY, no UX hooks. See
 //! `docs/gpu-terminal-spec.md` §6 for the surrounding design.
 //!
-//! `split` and `resize` land in this commit (they share `Branch`'s
-//! `split`/`ratio`/`bounds` storage — resize re-derives leaf bounds by
-//! walking the tree and applying each branch's ratio to its parent's
-//! new bounds). `close` / `hit_test` / `drag_divider` follow.
+//! `split` / `resize` / `close` land in this and the previous commit;
+//! `hit_test` / `drag_divider` follow.
 
 /// Minimum and maximum split ratios. Splits clamp the requested ratio
 /// into this range to avoid degenerate zero-area panels.
@@ -145,6 +143,63 @@ impl PanelTree {
                 h,
             };
             recompute_bounds(root, new_bounds);
+        }
+    }
+
+    /// Remove a panel. The sibling (or sibling subtree) absorbs the
+    /// parent branch's bounds; the tree never keeps a one-child Branch
+    /// around. Closing the only remaining panel empties the tree —
+    /// the calling code is expected to react to `is_empty()` (e.g. by
+    /// closing the window).
+    ///
+    /// Focus moves to the first panel still present (depth-first first
+    /// leaf) when the focused panel was the one that closed.
+    pub fn close(&mut self, target: PanelId) {
+        let old_root = self.root.take();
+        self.root = old_root.and_then(|node| close_node(node, target));
+        if self.focus == target {
+            self.focus = self
+                .panels()
+                .first()
+                .map(|(id, _)| *id)
+                .unwrap_or(self.focus);
+        }
+    }
+}
+
+/// Recursively remove `target` from this subtree. Returns the subtree's
+/// new root, or `None` if the entire subtree collapsed (every leaf in
+/// it was `target` — in practice only ever the immediate target leaf).
+/// When a `Branch` loses one of its children, the survivor is promoted
+/// to take the Branch's place and reflowed to fill the parent bounds.
+fn close_node(node: Node, target: PanelId) -> Option<Node> {
+    match node {
+        Node::Leaf { id, .. } if id == target => None,
+        leaf @ Node::Leaf { .. } => Some(leaf),
+        Node::Branch {
+            split,
+            ratio,
+            bounds,
+            left,
+            right,
+        } => {
+            let new_left = close_node(*left, target);
+            let new_right = close_node(*right, target);
+            match (new_left, new_right) {
+                (None, None) => None,
+                (Some(only), None) | (None, Some(only)) => {
+                    let mut survivor = only;
+                    recompute_bounds(&mut survivor, bounds);
+                    Some(survivor)
+                }
+                (Some(l), Some(r)) => Some(Node::Branch {
+                    split,
+                    ratio,
+                    bounds,
+                    left: Box::new(l),
+                    right: Box::new(r),
+                }),
+            }
         }
     }
 }
