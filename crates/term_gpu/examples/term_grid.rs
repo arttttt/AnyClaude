@@ -626,7 +626,7 @@ fn populate_panel(
     // the larger grid spill into the neighbouring panel.
     let panel_max_x_phys = panel_rect.w * sf;
     let panel_max_y_phys = panel_rect.h * sf;
-    for (row_idx, row) in snapshot.rows.iter().enumerate() {
+    for (row_idx, row) in snapshot.visible_iter().enumerate() {
         let row_y_phys = row_idx as f32 * metrics.height_physical;
         if row_y_phys >= panel_max_y_phys {
             break;

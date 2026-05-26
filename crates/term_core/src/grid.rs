@@ -301,6 +301,14 @@ impl Grid {
         self.rows[start..end].iter()
     }
 
+    /// Iterate all rows (scrollback first, then visible) top-to-bottom.
+    /// Used by renderers that draw the scrollback region — pair with
+    /// `RenderSnapshot::visible_rows` to know which trailing rows are
+    /// "currently visible" vs scrollback.
+    pub fn iter_all(&self) -> impl Iterator<Item = &Row> {
+        self.rows.iter()
+    }
+
     // ─── Printing ──────────────────────────────────────────────────────────
 
     /// Print one grapheme base character at the cursor; advances the cursor

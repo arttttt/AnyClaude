@@ -61,7 +61,7 @@ fn main() {
 
     let top_border = format!("+{}+", "-".repeat(cols));
     println!("{top_border}");
-    for row in &snap.rows {
+    for row in snap.visible_iter() {
         print!("|");
         for cell in &row.cells {
             print_cell(cell, colour);

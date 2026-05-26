@@ -21,11 +21,31 @@ pub struct CursorState {
 /// Snapshot of the rendered state taken at one point in time. Clones
 /// the visible rows so the renderer can hold the data across frames
 /// without taking a long-lived borrow on the emulator.
+///
+/// `rows` contains the **entire** buffer (scrollback first, then the
+/// currently visible region). `visible_rows` indicates how many trailing
+/// entries are visible — `rows.len() - visible_rows` is the index of the
+/// topmost visible row. Renderers that ignore scrollback can call
+/// [`RenderSnapshot::visible_iter`].
 pub struct RenderSnapshot {
     pub rows: Vec<Row>,
+    pub visible_rows: usize,
     pub cursor: CursorState,
     pub title: String,
     pub cwd: Option<String>,
+}
+
+impl RenderSnapshot {
+    /// Index of the first visible row inside `rows`.
+    pub fn visible_start(&self) -> usize {
+        self.rows.len().saturating_sub(self.visible_rows)
+    }
+
+    /// Iterate the visible region top-to-bottom (skipping scrollback).
+    pub fn visible_iter(&self) -> impl Iterator<Item = &Row> {
+        let start = self.visible_start();
+        self.rows[start..].iter()
+    }
 }
 
 /// Public terminal-emulator interface. Wraps the parser+grid so callers
@@ -318,7 +338,8 @@ impl TerminalEmulator for VtEmulator {
 
     fn snapshot(&self) -> RenderSnapshot {
         RenderSnapshot {
-            rows: self.grid.visible_iter().cloned().collect(),
+            rows: self.grid.iter_all().cloned().collect(),
+            visible_rows: self.grid.visible_rows(),
             cursor: CursorState {
                 row: self.grid.cursor_row,
                 col: self.grid.cursor_col,

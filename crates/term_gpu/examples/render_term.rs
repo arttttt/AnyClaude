@@ -293,7 +293,7 @@ fn populate_frame(
     let cell_w_logical = metrics.width_physical / sf;
     let cell_h_logical = metrics.height_physical / sf;
     let mut cell_text = String::with_capacity(8);
-    for (row_idx, row) in snapshot.rows.iter().enumerate() {
+    for (row_idx, row) in snapshot.visible_iter().enumerate() {
         let origin_y_physical = row_idx as f32 * metrics.height_physical;
         let pos_y_logical = origin_y_physical / sf;
         for (col_idx, cell) in row.cells.iter().enumerate() {
