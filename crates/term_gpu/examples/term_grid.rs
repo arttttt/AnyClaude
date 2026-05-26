@@ -676,14 +676,24 @@ fn populate_panel(
             let cell_origin_x_phys = panel_origin_x_physical + col_x_phys;
             let cell_origin_y_phys = panel_origin_y_physical + row_y_phys;
 
+            let weight = if cell.flags.bold() {
+                Weight::BOLD
+            } else {
+                Weight::NORMAL
+            };
+            let style = if cell.flags.italic() {
+                Style::Italic
+            } else {
+                Style::Normal
+            };
             let shaped = shape_cache.shape(
                 font_system,
                 &cell_text,
                 FONT_SIZE,
                 sf,
                 None,
-                Weight::NORMAL,
-                Style::Normal,
+                weight,
+                style,
             );
             for line in &shaped.lines {
                 let baseline_y = (cell_origin_y_phys + line.line_y).round();
