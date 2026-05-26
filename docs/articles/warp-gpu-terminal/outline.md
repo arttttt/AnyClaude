@@ -525,6 +525,76 @@ is universally applicable: match on `event.physical_key`
 always done this; we didn't realize until the user pointed it
 out. Extended to every Cmd shortcut, not just C/V.
 
+## Act 19 — Glyph cache fast-path: removing the per-cell `String` alloc
+
+Performance was the first remaining item on the polish list, and
+the user reminded me of it: "вспомнил, нужно проверить
+производительность." Easy to ignore on a fast laptop with low
+cell counts, harder to ignore once you run a real terminal at
+200×60 cells × 60 fps — that's 720 000 cells touched per second
+on the render path, and every one of them was allocating a
+`String` for the shape cache key.
+
+The audit was small: `TextShapeCache::shape(text: &str, ...)`
+stored its entries keyed on `ShapeKey { text: String, ... }`,
+and the key was built by `text.to_string()` at every call.
+That's an alloc on cache *hit*, not just miss. At 60 fps the
+allocator is doing more work than the rasterizer.
+
+Warp had already solved this, and the user's brief was the
+usual: "смотри на warp, как на эталон". A targeted read through
+`warpui_core::fonts::Cache` and `app/src/terminal/grid_renderer/
+cell_glyph_cache.rs` surfaced the structural answer:
+
+- Two caches, not one. Single-codepoint cells use a `(char,
+  FontId) → (GlyphId, FontId)` map. Combining-mark clusters use
+  the bigger `(String, FontId) → …` map. The comment in Warp
+  reads: *"avoid allocating strings when we don't need to!"*
+- The fast path doesn't go through cosmic-text at all. It
+  calls `font_face.glyph_index(char)` directly — a cmap lookup,
+  no shape buffer, no BiDi analysis. That's exactly what we
+  want for ASCII (the 99% case).
+
+We followed the same shape:
+
+1. `TextShapeCache::shape_char(font_system, ch, font_size,
+   scale_factor, weight, style) -> Option<CharGlyph>`. Key is
+   `(char, font_id)`, fully `Copy`, no allocation. On miss,
+   resolve primary face via `FontSystem::db().query()` and
+   read `Font::rustybuzz().glyph_index(ch)`. (cosmic-text's
+   `Font::rustybuzz()` derefs to `ttf_parser::Face`, so we get
+   the cmap query for free.)
+2. `CharGlyph { font_id, glyph_id, baseline_y_physical }`
+   carries enough to build a `CacheKey` and place the glyph
+   at the cell origin without a single line of shape code.
+   `baseline_y_physical = (ascender / units_per_em) *
+   font_size_physical`, cached per `(weight, style)` so we
+   pay for it once.
+3. `prepare_shape_for_panel` chooses fast vs slow path per
+   cell: `cell.extra.zerowidth.is_empty()` → fast path,
+   otherwise fall through. Bold/italic still works because
+   the face resolver keys on `(weight, style)`.
+4. `CacheKey::new(font_id, glyph_id, font_size_physical,
+   (cell_origin_x, baseline_y), CacheKeyFlags::empty())`
+   returns the same atlas key cosmic-text would have produced
+   via `LayoutGlyph::physical` — SubpixelBin binning preserved,
+   so glyphs rasterized by the slow path are reused by the
+   fast path and vice versa.
+
+The whole change is a tight diff: ~160 lines in `text.rs` for
+the API, ~80 lines at the callsite for the dispatch. Tests
+were green on both sides (~250 in the workspace), but the real
+verification is qualitative: type fast in a real shell with the
+demo, watch nothing change visually. The expensive thing — the
+720k/sec allocator pressure — is removed, and the rendering
+pipeline is now structurally a peer to Warp's hot path.
+
+Two atomic commits per the project's commit hygiene: API first
+(`3aa2a33`), then integration (`e67b7c2`). The split mattered:
+the API is independently useful for any future per-cell renderer
+(e.g. an `anyclaude` panel) without committing to a particular
+callsite.
+
 ## Outro — Takeaways
 
 1. **Read the source.** Warp's MIT crates contain answers to questions

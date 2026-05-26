@@ -826,6 +826,109 @@ word / triple-click line / Cmd+C / Cmd+V (plain text + image
 filepaths + image-data-to-temp). Phase 6 remaining: font
 fallback, performance pass (codepoint → glyph_id direct lookup).
 
+## Glyph cache fast-path (Phase 6 partial, May 2026)
+
+Two commits, ~240 LoC total. Removes the per-cell `String`
+allocation on the render hot path by adding a char-keyed
+fast path to `TextShapeCache`, mirroring Warp's
+`CellGlyphCache.glyph_cache` vs `string_cache` split.
+
+**The math on the per-cell alloc cost:**
+
+| Surface | Cells/frame | Allocs/frame | Allocs/sec @ 60fps |
+|---|---|---|---|
+| 80×24 | 1 920 | 1 920 | 115 200 |
+| 132×40 | 5 280 | 5 280 | 316 800 |
+| 200×60 | 12 000 | 12 000 | 720 000 |
+
+Each cell called `TextShapeCache::shape(text: &str, ...)`,
+which built a cache key via `text.to_string()` — a fresh
+`String` allocation even on cache hit. The fast path
+removes it entirely for single-codepoint cells (the 99%
+case) and only allocates on slow-path miss (combining
+clusters, ligatures).
+
+**Warp's comment in `cell_glyph_cache.rs:14`:**
+
+> We have 2 separate caches internally for performance
+> reasons (avoid allocating strings when we don't need to!)
+
+**Warp's glyph_for_char on Linux/Windows** (`crates/warpui/
+src/windowing/winit/fonts.rs:1219`):
+
+```rust
+fn glyph_for_char(&self, font_id: FontId, c: char) -> Option<GlyphId> {
+    self.try_read_font_face(font_id, |font_face| {
+        font_face.glyph_index(c).map(GlyphIdExt::to_glyph_id)
+    })?
+}
+```
+
+`font_face` is `ttf_parser::Face`. Direct cmap lookup, no
+shape buffer.
+
+**Our equivalent**: cosmic-text re-exports `ttf_parser`,
+and `cosmic_text::Font::rustybuzz()` returns a
+`RustybuzzFace<'_>` that derefs to `ttf_parser::Face<'a>`.
+So:
+
+```rust
+let font = font_system.get_font(face_info.font_id)?;
+let glyph_id = font.rustybuzz().glyph_index(ch).map(|g| g.0);
+```
+
+No new dependency, no custom cmap parser.
+
+**`CacheKey::new` signature** (cosmic-text 0.14 public API,
+`src/glyph_cache.rs:31`):
+
+```rust
+pub fn new(
+    font_id: fontdb::ID,
+    glyph_id: u16,
+    font_size: f32,
+    pos: (f32, f32),
+    flags: CacheKeyFlags,
+) -> (Self, i32, i32)
+```
+
+SubpixelBin binning happens inside `new`. Atlas keys
+produced by the fast path are bit-identical to what
+`LayoutGlyph::physical` would produce — so rasterized
+glyphs are shared between paths, no double-rasterization.
+
+**Baseline calculation:**
+
+```rust
+let upem = face.units_per_em() as f32;
+let ascent_em = face.ascender() as f32 / upem;
+let baseline_y_physical = ascent_em * font_size_physical;
+```
+
+Per-face value cached for the lifetime of the cache.
+Per `(weight, style)` only — at most a handful of entries.
+
+**Two atomic commits, in order:**
+
+| Commit | Subject | LoC |
+|---|---|---|
+| `3aa2a33` | `perf(term_gpu): add char-keyed fast-path API to TextShapeCache` | +161, −8 |
+| `e67b7c2` | `perf(term_gpu): route single-codepoint cells through shape_char fast-path` | +81, −36 |
+
+## Branch state at end of glyph cache fast-path
+
+81 commits on `feat/gpu-terminal`, 4 crates.
+
+| Crate | Tests | Notable |
+|---|---|---|
+| `term_core` | 56 | reflow, snapshot exposes full buffer |
+| `term_gpu` | 0 (visual demos only) | 4 examples, char + string two-tier shape cache |
+| `term_layout` | 28 | BSP shape + drag |
+| `term_clipboard` | 15 + 1 ignored mac | trait + InMemoryClipboard + MacClipboard, full warp parity |
+
+Phase 6 remaining: font fallback configuration, drop-shadow
+shader for overlays (§3.4 in the spec).
+
 ## License attribution snippet
 
 For files containing code ported from Warp:

@@ -1235,3 +1235,186 @@ macOS apps universally use hardware-position shortcuts. We
 didn't realize until the user reported "copy doesn't work on
 Russian layout"; extended to every Cmd combo at the user's
 explicit request.
+
+## 20. Glyph cache fast-path — direct cmap for ASCII
+
+Two commits, the structural performance pass. The audit was
+short: `TextShapeCache::shape(text: &str, ...)` was building
+its cache key with `text.to_string()` on every call — a
+`String` allocation per cell, even on cache hits. At
+200×60 cells × 60 fps that's ~720 000 allocations per second
+the allocator was doing for nothing.
+
+### Warp's solution, in their words
+
+Per the user's "смотри на warp, как на эталон" line, the
+first move was to read Warp's text path. `CellGlyphCache`
+in `app/src/terminal/grid_renderer/cell_glyph_cache.rs:16`
+opens with a comment that names the problem directly:
+
+> We have 2 separate caches internally for performance
+> reasons (avoid allocating strings when we don't need to!)
+
+The two caches:
+
+```rust
+pub struct CellGlyphCache {
+    glyph_cache: HashMap<(char, FontId), Option<(GlyphId, FontId)>>,
+    string_cache: HashMap<(String, FontId), Option<(GlyphId, FontId)>>,
+}
+```
+
+`Cell::raw_content()` (`crates/warp_terminal/src/model/grid/
+cell.rs:190`) returns either `CharOrStr::Char(c)` or
+`CharOrStr::Str(&str)` based on whether the cell has any
+zero-width modifiers stored. Warp's grid renderer
+(`render_cell_glyph` at `grid_renderer.rs:1725-1744`)
+dispatches on this enum: single chars take the fast path,
+multi-codepoint strings take the slow path.
+
+The fast path doesn't go through cosmic-text at all. On
+Linux/Windows (`crates/warpui/src/windowing/winit/fonts.rs:
+1219`):
+
+```rust
+fn glyph_for_char(&self, font_id: FontId, c: char) -> Option<GlyphId> {
+    self.try_read_font_face(font_id, |font_face| {
+        font_face.glyph_index(c).map(GlyphIdExt::to_glyph_id)
+    })?
+}
+```
+
+`font_face` is `ttf_parser::Face` — this is a direct cmap
+lookup, no shape buffer, no BiDi analysis.
+
+### Our adaptation
+
+We use cosmic-text already, and cosmic-text re-exports
+`ttf_parser` at `cosmic_text::ttf_parser`. `Font::rustybuzz()`
+returns a `RustybuzzFace<'_>` that derefs to `ttf_parser::
+Face<'a>`. So we can do exactly Warp's cmap call without
+adding a dependency:
+
+```rust
+fn resolve_primary_face(
+    font_system: &mut FontSystem,
+    family: &FontFamily,
+    weight: Weight,
+    style: Style,
+) -> Option<FaceInfo> {
+    let query = fontdb::Query {
+        families: &[family.as_cosmic()],
+        weight,
+        stretch: fontdb::Stretch::Normal,
+        style,
+    };
+    let id = font_system.db().query(&query)?;
+    let font = font_system.get_font(id)?;
+    let face = font.rustybuzz();
+    let upem = face.units_per_em() as f32;
+    if upem <= 0.0 { return None; }
+    let ascent_em = face.ascender() as f32 / upem;
+    Some(FaceInfo { font_id: id, ascent_em })
+}
+```
+
+That's the per-`(weight, style)` resolution, cached for the
+lifetime of `TextShapeCache`. The per-char lookup is then
+just `font.rustybuzz().glyph_index(ch)` against the resolved
+face, cached by `(char, font_id)`.
+
+### Choosing the atlas key without a layout pass
+
+The atlas is keyed on cosmic-text's `CacheKey`, which has a
+public constructor:
+
+```rust
+pub fn new(
+    font_id: fontdb::ID,
+    glyph_id: u16,
+    font_size: f32,
+    pos: (f32, f32),
+    flags: CacheKeyFlags,
+) -> (Self, i32, i32)
+```
+
+The `pos` is the *physical* position of the glyph's
+top-left, and `CacheKey::new` does the SubpixelBin binning
+internally — returning the cache key plus the floor of the
+position so the renderer knows where to draw the rasterized
+quad. By constructing the key this way at the fast-path
+callsite, we get bit-identical keys to what
+`LayoutGlyph::physical` would have produced, which means
+glyphs rasterized via the slow path are reused by the fast
+path and vice versa. No atlas churn, no double-rasterization
+on font changes.
+
+### The dispatch gate
+
+`prepare_shape_for_panel` chooses fast vs slow per cell:
+
+```rust
+let zerowidth_count = cell.extra.as_ref().map_or(0, |e| e.zerowidth.len());
+let mut fast_path_handled = false;
+if zerowidth_count == 0 {
+    if let Some(cg) = shape_cache.shape_char(
+        font_system, cell.c, FONT_SIZE, sf, weight, style,
+    ) {
+        let font_size_physical = FONT_SIZE * sf;
+        let baseline_y_phys = cell_origin_y_phys + cg.baseline_y_physical;
+        let (cache_key, x_floor, y_floor) = CacheKey::new(
+            cg.font_id,
+            cg.glyph_id,
+            font_size_physical,
+            (cell_origin_x_phys, baseline_y_phys),
+            CacheKeyFlags::empty(),
+        );
+        // … atlas lookup + push GlyphInstance
+        fast_path_handled = true;
+    }
+}
+if !fast_path_handled {
+    // existing String-keyed slow path
+}
+```
+
+`shape_char` returns `None` if either face resolution or
+`glyph_index` returns `None` — those cases (e.g. a glyph
+genuinely absent from the primary face) fall through to the
+slow path, where cosmic-text's font fallback chain takes
+over. Bold/italic still works on the fast path because face
+resolution is keyed on `(weight, style)`.
+
+### Verification discipline
+
+We don't run a `cargo bench` — there's no scaffolding for
+that and the qualitative measure is what the user cares
+about. Verification was:
+
+1. `cargo test --workspace` — ~250 tests green.
+2. Run `term_grid`, type in a real shell, watch nothing
+   change visually. ASCII text renders identically;
+   combining marks and CJK still hit the cosmic-text
+   fallback for shaping.
+3. Pause for explicit user verification before committing
+   docs/memory updates — `feedback_verify_before_docs.md`
+   in practice.
+
+### What we did NOT do
+
+- **No criterion benchmark.** The allocations removed are
+  measurable in principle (Instruments / `dtrace`) but the
+  structural argument is what matters: the work the
+  allocator was doing is provably gone, not hidden behind a
+  smaller hash. Adding a benchmark crate would have been
+  YAGNI noise at this stage.
+
+- **No custom cmap parser.** cosmic-text already pulls in
+  `ttf_parser` and exposes `Font::rustybuzz()`, which derefs
+  to `ttf_parser::Face`. The cmap lookup is a one-liner; no
+  reason to bypass it.
+
+- **No removal of cosmic-text from the slow path.**
+  Combining marks (e.g. zalgo text, IPA diacritics) and
+  multi-codepoint clusters still need shaping. Warp keeps
+  the same slow path for the same reason.

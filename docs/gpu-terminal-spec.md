@@ -2547,6 +2547,45 @@ The image-data → temp-file → path flow is what makes Claude
 Code's image input work: copy a screenshot, Cmd+V in CC's chat,
 CC reads the temp file.
 
+### Glyph cache fast-path ✅ done (May 2026)
+**Files:** `crates/term_gpu/src/text.rs`,
+`crates/term_gpu/examples/term_grid.rs`.
+**Delivered:** Two-tier text shape cache mirroring Warp's
+`CellGlyphCache.glyph_cache` (char → glyph) vs `string_cache`
+(`String` → shaped run) split. Single-codepoint cells — the 99%
+case for terminal grids — resolve through direct `ttf_parser` cmap,
+bypassing cosmic-text's `Buffer` and `String` cache key entirely.
+
+1. `TextShapeCache::shape_char(font_system, ch, font_size,
+   scale_factor, weight, style) -> Option<CharGlyph>` — fast
+   path. Key is `(char, font_id)`, no allocation. On miss:
+   resolve primary face via `FontSystem::db().query(&fontdb::Query
+   { families, weight, style, stretch })`, look up glyph via
+   `Font::rustybuzz().glyph_index(ch)`. `CharGlyph` carries
+   `(font_id, glyph_id, baseline_y_physical)` — enough to build
+   a `CacheKey` and place the glyph at the cell's origin without
+   ever shaping.
+2. `baseline_y_physical` derived from face's
+   `ascender() / units_per_em()` at the requested physical font
+   size. Per-face value cached for the lifetime of the
+   `TextShapeCache`; per-char glyph lookups cached by frame
+   counter alongside the existing string cache.
+3. `prepare_shape_for_panel` in `term_grid` picks fast vs slow
+   path per cell: `cell.extra.zerowidth.is_empty()` → fast path
+   via `shape_char`, `CacheKey::new(font_id, glyph_id,
+   font_size_physical, (cell_origin_x, baseline_y), CacheKeyFlags::
+   empty())` → atlas; combining clusters and missing-glyph
+   cases drop through to the existing String-keyed `shape()`.
+4. Cosmic-text's `SubpixelBin` binning preserved via
+   `CacheKey::new`'s tuple return — atlas keys remain identical
+   to what `LayoutGlyph::physical` would produce, so existing
+   rasterized glyphs continue to hit.
+
+Removes the per-cell `String::from(text)` allocation that
+`TextShapeCache::shape` did on every call for cache-key
+construction. At 200×60 cells × 60 fps that's ~720k allocations
+per second removed from the steady-state render loop.
+
 ### Phase 6 — Polish (1 week, partial) ⏳ in progress
 **Delivered:**
 - Reflow on column shrink/grow — see "Reflow on column resize" entry.
@@ -2555,9 +2594,9 @@ CC reads the temp file.
   term_grid" entry.
 - Text selection in `term_grid` — see "Selection in term_grid" entry.
 - Clipboard — see "Clipboard" entry.
+- Glyph cache fast-path — see "Glyph cache fast-path" entry.
 
 **Remaining (no fixed order):**
-- Direct codepoint→glyph_id lookup (avoid per-cell shape allocation).
 - Font fallback configuration.
 - Drop-shadow shader for overlays (§3.4).
 

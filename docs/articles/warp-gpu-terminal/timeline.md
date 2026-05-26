@@ -597,3 +597,80 @@ terminal needs: type, scroll with momentum, select with
 drag/double/triple-click, copy and paste plain text, paste
 images via the temp-file bridge. Phase 6 remaining: font
 fallback config, performance pass (direct codepoint→glyph_id).
+
+## 24. Glyph cache fast-path — direct cmap for single-codepoint cells (2 commits)
+
+User reminder after clipboard landed: "вспомнил, нужно
+проверить производительность." Audit surfaced the culprit
+quickly — `TextShapeCache::shape` was allocating a fresh
+`String` for the cache key on every call (even cache hits).
+At 200×60 cells × 60 fps that's ~720 000 allocations per
+second just for cache lookups, and the slow path was running
+unconditionally for every cell.
+
+Research first, per the user's "смотри на warp, как на
+эталон" line. The Explore agent surfaced Warp's structural
+solution: `CellGlyphCache` (in `app/src/terminal/grid_renderer/
+cell_glyph_cache.rs:16`) holds **two** caches — `glyph_cache:
+HashMap<(char, FontId), Option<(GlyphId, FontId)>>` for
+single-codepoint cells, `string_cache: HashMap<(String,
+FontId), …>` only for combining clusters. The hot path uses
+`font_face.glyph_index(char)` directly via `ttf_parser` —
+no cosmic-text shaper, no allocation, no BiDi. The comment
+in Warp says it out loud: *"avoid allocating strings when we
+don't need to!"*
+
+The path we'd designed was already aligned, so two atomic
+commits:
+
+- `3aa2a33` `perf(term_gpu): add char-keyed fast-path API
+  to TextShapeCache`. New `CharGlyph { font_id, glyph_id,
+  baseline_y_physical }` struct + `shape_char(font_system,
+  ch, font_size, scale_factor, weight, style) -> Option
+  <CharGlyph>` method. Key is `(char, font_id)`, no `String`.
+  On miss, resolve primary face via `FontSystem::db().query
+  (&fontdb::Query)` (one-time per `(weight, style)`),
+  query `Font::rustybuzz().glyph_index(ch)`. `baseline_y_
+  physical` derived from `ascender / units_per_em` cached on
+  the face. ~160 LoC.
+
+- `e67b7c2` `perf(term_gpu): route single-codepoint cells
+  through shape_char fast-path`. `prepare_shape_for_panel`
+  picks fast vs slow path: `cell.extra.zerowidth.is_empty()`
+  → `shape_char` + manual `CacheKey::new(font_id, glyph_id,
+  font_size_physical, (cell_origin_x, baseline_y),
+  CacheKeyFlags::empty())` → atlas. Combining clusters fall
+  through to the existing String-keyed slow path. ~80 LoC.
+
+`CacheKey::new` returns the same atlas key that
+`LayoutGlyph::physical` produces, including SubpixelBin
+binning — so rasterized glyphs are shared between paths.
+Bold/italic still work because face resolution keys on
+`(weight, style)`.
+
+Verification was the same pattern we settled on:
+
+1. `cargo test --workspace` — ~250 tests, all green.
+2. Run `term_grid` example, type in a real shell, check
+   that nothing changed visually. The 99% case (`ls`,
+   `cat`, prompt text) now bypasses the shaper entirely;
+   the user shouldn't notice anything except maybe
+   slightly steadier frame timing under heavy updates.
+3. Pause for user verification ("работает / не работает")
+   before docs/memory commits land — per the discipline
+   we encoded earlier.
+
+The win is structural, not just numerical: we now have the
+same hot path as Warp for terminal grid rendering. Whatever
+allocator activity remains on the render thread isn't
+coming from the shape cache key.
+
+## 25. Branch state at end of glyph cache fast-path
+
+81 commits on `feat/gpu-terminal`, 4 crates. `TextShapeCache`
+now has two tiers (char + string) matching Warp's
+`CellGlyphCache.glyph_cache` vs `string_cache` split. Hot
+render path for ASCII text is alloc-free on cache hit and
+one cmap lookup on miss — no `cosmic_text::Buffer` for the
+common case. Phase 6 remaining: font fallback configuration,
+drop-shadow shader for overlays.
