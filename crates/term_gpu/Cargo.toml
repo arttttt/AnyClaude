@@ -28,6 +28,9 @@ term_layout = { path = "../term_layout" }
 # shell PTY per panel. Not a runtime dep — term_gpu doesn't know about
 # processes either.
 portable-pty = "0.9"
+# term_clipboard backs the `term_grid` example's Cmd+C / Cmd+V flow.
+# Not a runtime dep — term_gpu has no clipboard story of its own.
+term_clipboard = { path = "../term_clipboard" }
 
 [[example]]
 name = "scroll_demo"

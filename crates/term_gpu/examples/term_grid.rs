@@ -41,6 +41,7 @@ use futures::future::{abortable, AbortHandle};
 use futures_timer::Delay;
 use glam::Vec2;
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
+use term_clipboard::{Clipboard, ClipboardContent};
 use term_core::{
     create_emulator, AnsiPalette, CellFlags, CursorState, CursorStyle, MouseMode, RenderSnapshot,
     TermColor, TerminalEmulator,
@@ -235,6 +236,10 @@ struct App {
     /// click detection. Cleared when the next click lands elsewhere
     /// or after `MULTI_CLICK_THRESHOLD_MS` of inactivity.
     last_click: Option<LastClick>,
+    /// System clipboard handle. `MacClipboard` on macOS,
+    /// `InMemoryClipboard` elsewhere (the demo's only supported
+    /// platform today is macOS — see `term_clipboard::MacClipboard`).
+    clipboard: Box<dyn Clipboard>,
     proxy: EventLoopProxy<CustomEvent>,
 }
 
@@ -268,6 +273,7 @@ impl App {
             gesture_end_abort: None,
             dragging_selection: None,
             last_click: None,
+            clipboard: make_clipboard(),
             proxy,
         }
     }
@@ -556,6 +562,24 @@ impl App {
             MOMENTUM_FRAME_INTERVAL,
             target,
         ));
+    }
+
+    /// Copy the focused panel's selection to the system clipboard.
+    /// No-op when nothing's selected or the selection is empty.
+    /// Selection is not cleared on copy (modern UX — matches Warp).
+    fn copy_focused_selection(&mut self) {
+        let id = self.tree.focus();
+        let Some(panel) = self.panels.get(&id) else { return };
+        let Some(sel) = panel.selection else { return };
+        if sel.is_empty() {
+            return;
+        }
+        let snap = panel.emulator.snapshot();
+        let text = selection_to_text(&sel, &snap);
+        if text.is_empty() {
+            return;
+        }
+        self.clipboard.write(ClipboardContent::plain_text(text));
     }
 
     /// Snap the focused panel's scroll to either the top (Cmd+Home) or
@@ -1050,6 +1074,10 @@ impl ApplicationHandler<CustomEvent> for App {
                                 }
                                 return;
                             }
+                            "c" | "C" => {
+                                self.copy_focused_selection();
+                                return;
+                            }
                             _ => {}
                         }
                     }
@@ -1375,6 +1403,72 @@ fn populate_panel(
             }
         }
     }
+}
+
+/// Construct the platform clipboard. macOS gets `MacClipboard`;
+/// other platforms fall back to `InMemoryClipboard` (the demo is
+/// macOS-targeted today, but the type already abstracts this).
+fn make_clipboard() -> Box<dyn Clipboard> {
+    #[cfg(target_os = "macos")]
+    {
+        Box::new(term_clipboard::MacClipboard::new())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Box::new(term_clipboard::InMemoryClipboard::default())
+    }
+}
+
+/// Render the selection as plain text. Mirrors Warp's
+/// `bounds_to_string` / `line_to_string`
+/// (`app/src/terminal/model/grid/grid_handler.rs`): per-row trim of
+/// trailing blank cells, no newline between soft-wrapped rows
+/// (continuation rows belong to the same logical line), newline
+/// between hard-broken rows.
+fn selection_to_text(sel: &Selection, snapshot: &RenderSnapshot) -> String {
+    let (start, end) = sel.range();
+    let mut out = String::new();
+    for row_idx in start.row..=end.row {
+        let Some(row) = snapshot.rows.get(row_idx) else { break };
+        let col_start = if row_idx == start.row {
+            start.col
+        } else {
+            0
+        };
+        let col_end = if row_idx == end.row {
+            end.col.min(row.cells.len())
+        } else {
+            row.cells.len()
+        };
+        if col_start >= col_end {
+            // Empty slice — still emit a newline between rows so a
+            // multi-row selection over a blank line doesn't collapse.
+        } else {
+            // Trim trailing blank cells (` ` with default attributes)
+            // so partial-row copies don't pad with spaces.
+            let mut effective_end = col_end;
+            while effective_end > col_start
+                && row.cells[effective_end - 1].c == ' '
+                && row.cells[effective_end - 1].flags.bits() == 0
+            {
+                effective_end -= 1;
+            }
+            for cell in &row.cells[col_start..effective_end] {
+                out.push(cell.c);
+            }
+        }
+        if row_idx < end.row {
+            // Soft-wrap continuation → no newline. Hard-break → '\n'.
+            let last = row.cells.last();
+            let is_wrap = last
+                .map(|c| c.flags.contains(CellFlags::WRAPLINE))
+                .unwrap_or(false);
+            if !is_wrap {
+                out.push('\n');
+            }
+        }
+    }
+    out
 }
 
 /// Expand a click point to the surrounding "word" by walking left
