@@ -61,7 +61,10 @@ use std::sync::mpsc;
 use std::sync::Arc;
 
 use cosmic_text::{FontSystem, SwashCache};
-use term_core::{create_emulator, AnsiPalette, RenderSnapshot, TermColor, TerminalEmulator};
+use term_core::{
+    create_emulator, AnsiPalette, CellFlags, CursorState, CursorStyle, RenderSnapshot, TermColor,
+    TerminalEmulator,
+};
 use term_gpu::{
     rasterize_glyph, FontFamily, GlyphAtlas, GlyphInstance, GpuRenderer, RectInstance,
     TextShapeCache,
@@ -81,6 +84,13 @@ const FONT_SIZE: f32 = 14.0;
 /// Default foreground when the cell's `fg` is `TermColor::Default`.
 /// Light gray to read against the dark clear colour.
 const DEFAULT_FG: [f32; 4] = [0.78, 0.78, 0.78, 1.0];
+/// Cursor rectangle colour. Semi-transparent white so the cell's text
+/// (drawn after rects in the same pass) still shows through a block
+/// cursor instead of disappearing under it.
+const CURSOR_COLOR: [f32; 4] = [0.95, 0.95, 0.95, 0.55];
+/// Thickness in physical pixels for non-block cursor shapes
+/// (underline / beam). Matches Warp's 2 px cursor stroke.
+const CURSOR_STROKE_PHYSICAL: f32 = 2.0;
 
 /// Custom event signalling that the stdin reader has shipped at least one
 /// chunk into the channel. The handler drains the channel and requests a
@@ -198,10 +208,9 @@ impl App {
 
         let snapshot = emulator.snapshot();
         let mut glyphs: Vec<GlyphInstance> = Vec::new();
-        // Backgrounds and cursor land in the next commit.
-        let rects: Vec<RectInstance> = Vec::new();
+        let mut rects: Vec<RectInstance> = Vec::new();
 
-        snapshot_to_glyphs(
+        populate_frame(
             &snapshot,
             palette,
             font_system,
@@ -210,8 +219,12 @@ impl App {
             shape_cache,
             *scale_factor,
             metrics,
+            &mut rects,
             &mut glyphs,
         );
+        if let Some(cursor_rect) = build_cursor_rect(snapshot.cursor, *scale_factor, metrics) {
+            rects.push(cursor_rect);
+        }
 
         window.pre_present_notify();
         renderer.render(&rects, &glyphs, 0.0);
@@ -219,15 +232,17 @@ impl App {
     }
 }
 
-/// Walk `snapshot.rows` cell-by-cell. Each non-empty cell is shaped on
-/// its own (base char + any combining marks from `cell.extra.zerowidth`)
-/// and emitted as `GlyphInstance`s placed at `(col × cell_width, row ×
-/// cell_height)` in integer physical pixels. The shaper's advances are
-/// ignored — column index × integer `cell_width_physical` is the only
-/// X source. This mirrors Warp's `paint_line` / `render_cell_glyph`
-/// behaviour (see commit message for the research summary).
+/// Walk `snapshot.rows` cell-by-cell, emitting a background `RectInstance`
+/// for every cell whose effective background is not `TermColor::Default`,
+/// and a per-cell shaped `GlyphInstance` set for every cell whose
+/// effective foreground produces a visible glyph. Effective fg / bg
+/// account for the `INVERSE` SGR flag by swapping the cell's colours.
+///
+/// Cell layout follows Warp parity: `(col × cell_width_physical,
+/// row × cell_height_physical)`, integer × integer. Shaper advances are
+/// ignored; column index alone fixes glyph X. See module docs.
 #[allow(clippy::too_many_arguments)]
-fn snapshot_to_glyphs(
+fn populate_frame(
     snapshot: &RenderSnapshot,
     palette: &AnsiPalette,
     font_system: &mut FontSystem,
@@ -236,18 +251,44 @@ fn snapshot_to_glyphs(
     shape_cache: &mut TextShapeCache,
     scale_factor: f32,
     metrics: CellMetrics,
-    out: &mut Vec<GlyphInstance>,
+    rects: &mut Vec<RectInstance>,
+    glyphs: &mut Vec<GlyphInstance>,
 ) {
     let sf = scale_factor;
+    let cell_w_logical = metrics.width_physical / sf;
+    let cell_h_logical = metrics.height_physical / sf;
     let mut cell_text = String::with_capacity(8);
     for (row_idx, row) in snapshot.rows.iter().enumerate() {
         let origin_y_physical = row_idx as f32 * metrics.height_physical;
+        let pos_y_logical = origin_y_physical / sf;
         for (col_idx, cell) in row.cells.iter().enumerate() {
-            // Skip cells with no visible glyph and default fg. Background
-            // rects (which would justify drawing a blank cell) land in the
-            // next commit.
+            // Effective fg/bg accounting for INVERSE — swap the colours.
+            // `INVERSE && both Default` is left as no bg/no glyph; the
+            // theoretically correct behaviour (paint default-fg over
+            // default-bg) has no visible difference on a blank cell with
+            // our colour scheme.
+            let inverse = cell.flags.contains(CellFlags::INVERSE);
+            let (fg_eff, bg_eff) = if inverse {
+                (cell.bg, cell.fg)
+            } else {
+                (cell.fg, cell.bg)
+            };
+
+            let origin_x_physical = col_idx as f32 * metrics.width_physical;
+            let pos_x_logical = origin_x_physical / sf;
+
+            // Background rect.
+            if bg_eff != TermColor::Default {
+                rects.push(RectInstance {
+                    pos: [pos_x_logical, pos_y_logical],
+                    size: [cell_w_logical, cell_h_logical],
+                    color: bg_eff.to_rgba(palette),
+                });
+            }
+
+            // Glyph(s) for this cell.
             let is_blank = cell.c == ' ' || cell.c == '\0';
-            if is_blank && cell.fg == TermColor::Default {
+            if is_blank && fg_eff == TermColor::Default {
                 continue;
             }
 
@@ -262,23 +303,15 @@ fn snapshot_to_glyphs(
                 }
             }
 
-            let color = if cell.fg == TermColor::Default {
+            let color = if fg_eff == TermColor::Default {
                 DEFAULT_FG
             } else {
-                cell.fg.to_rgba(palette)
+                fg_eff.to_rgba(palette)
             };
-            let origin_x_physical = col_idx as f32 * metrics.width_physical;
 
             let shaped = shape_cache.shape(font_system, &cell_text, FONT_SIZE, sf, None);
             for line in &shaped.lines {
-                // Snap the baseline-Y to an integer physical pixel. Without
-                // this, `origin_y_physical + line.line_y` carries the
-                // fractional part of `line.line_y` (cosmic-text returns it
-                // in physical units, but never rounded), which pushes
-                // `glyph.physical()` into a non-zero `SubpixelBin::Y`. The
-                // rasterised image is then shifted by 1/4 px vertically and
-                // every row picks a slightly different image — the
-                // residual softness we observed after fixing X.
+                // Snap the baseline-Y to an integer physical pixel.
                 let baseline_y = (origin_y_physical + line.line_y).round();
                 for glyph in &line.glyphs {
                     let physical = glyph.physical((origin_x_physical, baseline_y), 1.0);
@@ -289,7 +322,7 @@ fn snapshot_to_glyphs(
                     };
                     let pos_x = (physical.x as f32 + placed.offset_x) / sf;
                     let pos_y = (physical.y as f32 - placed.offset_y) / sf;
-                    out.push(GlyphInstance {
+                    glyphs.push(GlyphInstance {
                         pos: [pos_x, pos_y],
                         size: [placed.width / sf, placed.height / sf],
                         uv_min: placed.uv_min,
@@ -300,6 +333,44 @@ fn snapshot_to_glyphs(
             }
         }
     }
+}
+
+/// Return a single `RectInstance` for the cursor, sized and positioned
+/// according to `CursorStyle`. `None` when the cursor is hidden. The
+/// rect is semi-transparent so that the glyph drawn in the same cell
+/// remains legible under a block cursor.
+fn build_cursor_rect(
+    cursor: CursorState,
+    scale_factor: f32,
+    metrics: CellMetrics,
+) -> Option<RectInstance> {
+    if !cursor.visible {
+        return None;
+    }
+    let sf = scale_factor;
+    let cell_x_phys = cursor.col as f32 * metrics.width_physical;
+    let cell_y_phys = cursor.row as f32 * metrics.height_physical;
+    let cell_w_phys = metrics.width_physical;
+    let cell_h_phys = metrics.height_physical;
+
+    let (pos_phys, size_phys) = match cursor.style {
+        CursorStyle::BlockSteady | CursorStyle::BlockBlink => {
+            ([cell_x_phys, cell_y_phys], [cell_w_phys, cell_h_phys])
+        }
+        CursorStyle::UnderlineSteady | CursorStyle::UnderlineBlink => (
+            [cell_x_phys, cell_y_phys + cell_h_phys - CURSOR_STROKE_PHYSICAL],
+            [cell_w_phys, CURSOR_STROKE_PHYSICAL],
+        ),
+        CursorStyle::BeamSteady | CursorStyle::BeamBlink => {
+            ([cell_x_phys, cell_y_phys], [CURSOR_STROKE_PHYSICAL, cell_h_phys])
+        }
+    };
+
+    Some(RectInstance {
+        pos: [pos_phys[0] / sf, pos_phys[1] / sf],
+        size: [size_phys[0] / sf, size_phys[1] / sf],
+        color: CURSOR_COLOR,
+    })
 }
 
 impl ApplicationHandler<CustomEvent> for App {
