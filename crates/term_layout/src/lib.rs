@@ -4,9 +4,15 @@
 //! what to do with them. No rendering, no PTY, no UX hooks. See
 //! `docs/gpu-terminal-spec.md` §6 for the surrounding design.
 //!
-//! Bootstrap commit: the public types and an empty tree with a single
-//! full-window panel. `split` / `close` / `resize` / `hit_test` /
-//! `drag_divider` land in subsequent commits.
+//! `split` and `resize` land in this commit (they share `Branch`'s
+//! `split`/`ratio`/`bounds` storage — resize re-derives leaf bounds by
+//! walking the tree and applying each branch's ratio to its parent's
+//! new bounds). `close` / `hit_test` / `drag_divider` follow.
+
+/// Minimum and maximum split ratios. Splits clamp the requested ratio
+/// into this range to avoid degenerate zero-area panels.
+pub const MIN_RATIO: f32 = 0.05;
+pub const MAX_RATIO: f32 = 0.95;
 
 /// Stable handle for a panel. Issued by [`PanelTree`] when a panel is
 /// created (initial tree + every `split`) and never reused — closing a
@@ -40,7 +46,6 @@ enum Node {
         id: PanelId,
         bounds: Rect,
     },
-    #[allow(dead_code)] // surfaces in the `split` commit
     Branch {
         split: Split,
         ratio: f32,
@@ -50,10 +55,11 @@ enum Node {
     },
 }
 
-/// The panel layout tree. Holds the root node and the currently
-/// focused panel.
+/// The panel layout tree. Holds the root node, the next id to issue,
+/// and the currently focused panel.
 pub struct PanelTree {
     root: Option<Node>,
+    next_id: u64,
     focus: PanelId,
 }
 
@@ -73,6 +79,7 @@ impl PanelTree {
         };
         Self {
             root: Some(root),
+            next_id: 1,
             focus: id,
         }
     }
@@ -98,6 +105,127 @@ impl PanelTree {
             collect_leaves(root, &mut out);
         }
         out
+    }
+
+    /// Split `target` into two panels. The original keeps its id and
+    /// becomes the left/top child; the new panel takes the right/bottom
+    /// half. `ratio` is clamped to `[MIN_RATIO, MAX_RATIO]` to avoid
+    /// degenerate zero-area panels. Returns the new panel's id, or
+    /// `None` if `target` is not in the tree.
+    ///
+    /// On success the new panel becomes focused — matching the
+    /// "open a split and start typing into it" behaviour familiar from
+    /// Warp / tmux.
+    pub fn split(&mut self, target: PanelId, split: Split, ratio: f32) -> Option<PanelId> {
+        let ratio = ratio.clamp(MIN_RATIO, MAX_RATIO);
+        let new_id = PanelId(self.next_id);
+        let happened = match self.root.as_mut() {
+            Some(root) => split_node(root, target, split, ratio, new_id),
+            None => false,
+        };
+        if happened {
+            self.next_id += 1;
+            self.focus = new_id;
+            Some(new_id)
+        } else {
+            None
+        }
+    }
+
+    /// Reflow the tree to a new window size. Every leaf's bounds are
+    /// recomputed by walking the tree top-down: each branch redivides
+    /// its (new) bounds using its stored `ratio`, so all splits keep
+    /// their proportions across resizes.
+    pub fn resize(&mut self, w: f32, h: f32) {
+        if let Some(root) = self.root.as_mut() {
+            let new_bounds = Rect {
+                x: 0.0,
+                y: 0.0,
+                w,
+                h,
+            };
+            recompute_bounds(root, new_bounds);
+        }
+    }
+}
+
+fn split_node(
+    node: &mut Node,
+    target: PanelId,
+    split: Split,
+    ratio: f32,
+    new_id: PanelId,
+) -> bool {
+    match node {
+        Node::Leaf { id, bounds } if *id == target => {
+            let parent_bounds = *bounds;
+            let old_id = *id;
+            let (left_bounds, right_bounds) = split_bounds(parent_bounds, split, ratio);
+            *node = Node::Branch {
+                split,
+                ratio,
+                bounds: parent_bounds,
+                left: Box::new(Node::Leaf {
+                    id: old_id,
+                    bounds: left_bounds,
+                }),
+                right: Box::new(Node::Leaf {
+                    id: new_id,
+                    bounds: right_bounds,
+                }),
+            };
+            true
+        }
+        Node::Leaf { .. } => false,
+        Node::Branch { left, right, .. } => {
+            split_node(left, target, split, ratio, new_id)
+                || split_node(right, target, split, ratio, new_id)
+        }
+    }
+}
+
+fn recompute_bounds(node: &mut Node, new_bounds: Rect) {
+    match node {
+        Node::Leaf { bounds, .. } => *bounds = new_bounds,
+        Node::Branch {
+            split,
+            ratio,
+            bounds,
+            left,
+            right,
+        } => {
+            *bounds = new_bounds;
+            let (lb, rb) = split_bounds(new_bounds, *split, *ratio);
+            recompute_bounds(left, lb);
+            recompute_bounds(right, rb);
+        }
+    }
+}
+
+fn split_bounds(bounds: Rect, split: Split, ratio: f32) -> (Rect, Rect) {
+    match split {
+        Split::Horizontal => {
+            let top_h = bounds.h * ratio;
+            (
+                Rect { h: top_h, ..bounds },
+                Rect {
+                    y: bounds.y + top_h,
+                    h: bounds.h - top_h,
+                    ..bounds
+                },
+            )
+        }
+        Split::Vertical => {
+            let left_w = bounds.w * ratio;
+            (
+                Rect { w: left_w, ..bounds },
+                Rect {
+                    x: bounds.x + left_w,
+                    w: bounds.w - left_w,
+                    ..bounds
+                },
+            )
+        }
     }
 }
 
