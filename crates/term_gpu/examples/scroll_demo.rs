@@ -15,8 +15,9 @@ use futures_timer::Delay;
 use glam::Vec2;
 use term_gpu::{
     decay_velocity, rasterize_glyph, FontFamily, GlyphAtlas, GlyphInstance, GpuRenderer,
-    RectInstance, ScrollState, ScrollVelocity, Style, TextShapeCache, Weight, GESTURE_END_TIMEOUT,
-    MOMENTUM_FRAME_INTERVAL, MOMENTUM_MIN_VELOCITY, MOMENTUM_THRESHOLD, NUM_PIXELS_PER_LINE,
+    RectInstance, RenderLayer, ScrollState, ScrollVelocity, Style, TextShapeCache, Weight,
+    GESTURE_END_TIMEOUT, MOMENTUM_FRAME_INTERVAL, MOMENTUM_MIN_VELOCITY, MOMENTUM_THRESHOLD,
+    NUM_PIXELS_PER_LINE,
 };
 use winit::application::ApplicationHandler;
 use winit::event::{MouseScrollDelta, TouchPhase, WindowEvent};
@@ -480,7 +481,11 @@ impl App {
         );
 
         window.pre_present_notify();
-        renderer.render(rects, &glyphs, scroll.offset_y);
+        renderer.render(
+            RenderLayer::rects_and_glyphs(rects, &glyphs),
+            None,
+            scroll.offset_y,
+        );
         shape_cache.end_frame();
     }
 

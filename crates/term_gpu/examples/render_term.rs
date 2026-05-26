@@ -66,8 +66,8 @@ use term_core::{
     TerminalEmulator,
 };
 use term_gpu::{
-    rasterize_glyph, FontFamily, GlyphAtlas, GlyphInstance, GpuRenderer, RectInstance, Style,
-    TextShapeCache, Weight,
+    rasterize_glyph, FontFamily, GlyphAtlas, GlyphInstance, GpuRenderer, RectInstance, RenderLayer,
+    Style, TextShapeCache, Weight,
 };
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
@@ -262,7 +262,7 @@ impl App {
         }
 
         window.pre_present_notify();
-        renderer.render(&rects, &glyphs, 0.0);
+        renderer.render(RenderLayer::rects_and_glyphs(&rects, &glyphs), None, 0.0);
         shape_cache.end_frame();
     }
 }

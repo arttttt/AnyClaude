@@ -22,8 +22,8 @@ use term_gpu::{
     build_cursor_rect, decay_velocity, encode_key, encode_paste, expand_line, expand_word,
     measure_cell_metrics, measure_label_width, populate_panel, push_label, push_selection_rects,
     selection_to_text, shell_quote_path, CellMetrics, CellPoint, FontFamily, FontSystem,
-    GlyphAtlas, GlyphInstance, GpuRenderer, PanelRect, RectInstance, ScrollState, ScrollVelocity,
-    Selection, Style, SwashCache, TextShapeCache, Weight, GESTURE_END_TIMEOUT,
+    GlyphAtlas, GlyphInstance, GpuRenderer, PanelRect, RectInstance, RenderLayer, ScrollState,
+    ScrollVelocity, Selection, Style, SwashCache, TextShapeCache, Weight, GESTURE_END_TIMEOUT,
     MOMENTUM_FRAME_INTERVAL, MOMENTUM_MIN_VELOCITY, MOMENTUM_THRESHOLD, NUM_PIXELS_PER_LINE,
 };
 use uuid::Uuid;
@@ -741,7 +741,7 @@ impl GpuApp {
         );
 
         window.pre_present_notify();
-        renderer.render(&rects, &glyphs, 0.0);
+        renderer.render(RenderLayer::rects_and_glyphs(&rects, &glyphs), None, 0.0);
         self.shape_cache.end_frame();
         self.ui_shape_cache.end_frame();
     }

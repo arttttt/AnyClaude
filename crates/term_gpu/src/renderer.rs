@@ -7,10 +7,10 @@ use std::sync::Arc;
 use winit::window::Window;
 
 use crate::atlas::GlyphAtlas;
-use crate::instances::{GlyphInstance, RectInstance, Uniforms};
+use crate::instances::{GlyphInstance, RectInstance, RenderLayer, ShadowInstance, Uniforms};
 use crate::pipeline::{
-    create_atlas_bind_group_layout, create_prim_pipeline, create_text_pipeline,
-    create_uniform_bind_group_layout,
+    create_atlas_bind_group_layout, create_prim_pipeline, create_shadow_pipeline,
+    create_text_pipeline, create_uniform_bind_group_layout,
 };
 
 pub struct GpuRenderer {
@@ -19,6 +19,7 @@ pub struct GpuRenderer {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     prim_pipeline: wgpu::RenderPipeline,
+    shadow_pipeline: wgpu::RenderPipeline,
     text_pipeline: wgpu::RenderPipeline,
     uniform_bind_group: wgpu::BindGroup,
     uniform_buffer: wgpu::Buffer,
@@ -118,6 +119,7 @@ impl GpuRenderer {
         });
 
         let prim_pipeline = create_prim_pipeline(&device, format, &uniform_bgl);
+        let shadow_pipeline = create_shadow_pipeline(&device, format, &uniform_bgl);
         let text_pipeline = create_text_pipeline(&device, format, &uniform_bgl, &atlas_bgl);
 
         Self {
@@ -126,6 +128,7 @@ impl GpuRenderer {
             queue,
             config,
             prim_pipeline,
+            shadow_pipeline,
             text_pipeline,
             uniform_bind_group,
             uniform_buffer,
@@ -167,8 +170,8 @@ impl GpuRenderer {
 
     pub fn render(
         &mut self,
-        rects: &[RectInstance],
-        glyphs: &[GlyphInstance],
+        base: RenderLayer<'_>,
+        overlay: Option<RenderLayer<'_>>,
         scroll_offset_y: f32,
     ) {
         // Flush any pending atlas updates from this frame's get_or_insert calls.
@@ -198,27 +201,11 @@ impl GpuRenderer {
         self.queue
             .write_buffer(&self.uniform_buffer, 0, uniforms.as_bytes());
 
-        let rect_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("term_gpu/rect_instance_buffer"),
-            size: (std::mem::size_of::<RectInstance>() * rects.len().max(1)) as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        if !rects.is_empty() {
-            self.queue
-                .write_buffer(&rect_buffer, 0, RectInstance::as_bytes(rects));
-        }
-
-        let glyph_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("term_gpu/glyph_instance_buffer"),
-            size: (std::mem::size_of::<GlyphInstance>() * glyphs.len().max(1)) as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        if !glyphs.is_empty() {
-            self.queue
-                .write_buffer(&glyph_buffer, 0, GlyphInstance::as_bytes(glyphs));
-        }
+        // Upload all instance data up-front. Each layer's three lists
+        // get their own GPU buffer so the render pass can draw them
+        // independently without copying.
+        let base_buffers = self.upload_layer_instances(base, "base");
+        let overlay_buffers = overlay.map(|o| self.upload_layer_instances(o, "overlay"));
 
         let mut encoder = self
             .device
@@ -245,20 +232,10 @@ impl GpuRenderer {
                 occlusion_query_set: None,
                 timestamp_writes: None,
             });
-            // Rect pass first — backgrounds, ruler, etc.
-            pass.set_pipeline(&self.prim_pipeline);
             pass.set_bind_group(0, &self.uniform_bind_group, &[]);
-            pass.set_vertex_buffer(0, rect_buffer.slice(..));
-            if !rects.is_empty() {
-                pass.draw(0..6, 0..rects.len() as u32);
-            }
-            // Glyph pass — text on top. Uniform bind group at @group(0) is
-            // still bound; only @group(1) needs to change.
-            pass.set_pipeline(&self.text_pipeline);
-            pass.set_bind_group(1, &self.atlas_bind_group, &[]);
-            pass.set_vertex_buffer(0, glyph_buffer.slice(..));
-            if !glyphs.is_empty() {
-                pass.draw(0..6, 0..glyphs.len() as u32);
+            self.draw_layer(&mut pass, base, &base_buffers);
+            if let (Some(overlay_layer), Some(buffers)) = (overlay, overlay_buffers.as_ref()) {
+                self.draw_layer(&mut pass, overlay_layer, buffers);
             }
         }
         self.queue.submit(std::iter::once(encoder.finish()));
@@ -267,4 +244,79 @@ impl GpuRenderer {
         // Age unused atlas entries; entries reused this frame stay fresh.
         self.atlas.end_frame();
     }
+
+    /// Allocate per-layer vertex buffers and stream the layer's
+    /// instance bytes into them. Returns the three buffers (shadow,
+    /// rect, glyph) for the draw pass.
+    fn upload_layer_instances(&self, layer: RenderLayer<'_>, name: &str) -> LayerBuffers {
+        let shadow_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(&format!("term_gpu/{name}_shadow_buffer")),
+            size: (std::mem::size_of::<ShadowInstance>() * layer.shadows.len().max(1)) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        if !layer.shadows.is_empty() {
+            self.queue
+                .write_buffer(&shadow_buf, 0, ShadowInstance::as_bytes(&layer.shadows));
+        }
+        let rect_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(&format!("term_gpu/{name}_rect_buffer")),
+            size: (std::mem::size_of::<RectInstance>() * layer.rects.len().max(1)) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        if !layer.rects.is_empty() {
+            self.queue
+                .write_buffer(&rect_buf, 0, RectInstance::as_bytes(&layer.rects));
+        }
+        let glyph_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(&format!("term_gpu/{name}_glyph_buffer")),
+            size: (std::mem::size_of::<GlyphInstance>() * layer.glyphs.len().max(1)) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        if !layer.glyphs.is_empty() {
+            self.queue
+                .write_buffer(&glyph_buf, 0, GlyphInstance::as_bytes(&layer.glyphs));
+        }
+        LayerBuffers {
+            shadow: shadow_buf,
+            rect: rect_buf,
+            glyph: glyph_buf,
+        }
+    }
+
+    /// Issue draw calls for one layer in fixed order: shadows → rects
+    /// → glyphs. The uniform bind group at `@group(0)` is set by the
+    /// caller before the first layer; only the text pass swaps the
+    /// atlas at `@group(1)`.
+    fn draw_layer<'a>(
+        &'a self,
+        pass: &mut wgpu::RenderPass<'a>,
+        layer: RenderLayer<'_>,
+        buffers: &'a LayerBuffers,
+    ) {
+        if !layer.shadows.is_empty() {
+            pass.set_pipeline(&self.shadow_pipeline);
+            pass.set_vertex_buffer(0, buffers.shadow.slice(..));
+            pass.draw(0..6, 0..layer.shadows.len() as u32);
+        }
+        if !layer.rects.is_empty() {
+            pass.set_pipeline(&self.prim_pipeline);
+            pass.set_vertex_buffer(0, buffers.rect.slice(..));
+            pass.draw(0..6, 0..layer.rects.len() as u32);
+        }
+        if !layer.glyphs.is_empty() {
+            pass.set_pipeline(&self.text_pipeline);
+            pass.set_bind_group(1, &self.atlas_bind_group, &[]);
+            pass.set_vertex_buffer(0, buffers.glyph.slice(..));
+            pass.draw(0..6, 0..layer.glyphs.len() as u32);
+        }
+    }
+}
+
+struct LayerBuffers {
+    shadow: wgpu::Buffer,
+    rect: wgpu::Buffer,
+    glyph: wgpu::Buffer,
 }

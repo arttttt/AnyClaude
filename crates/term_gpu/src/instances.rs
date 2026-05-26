@@ -103,6 +103,121 @@ impl GlyphInstance {
     }
 }
 
+/// Per-instance data for the drop-shadow pipeline. Drawn UNDER the
+/// content rect that overlays it — typically a popup or command
+/// palette. The fragment shader evaluates a rounded-rect SDF at
+/// `pos + offset` with the given `corner_radius`, then smoothsteps
+/// from saturated (inside content) to transparent at `blur_radius`
+/// outwards. The content rect drawn afterward covers the saturated
+/// centre, leaving only the soft halo visible.
+///
+/// Coordinates and dimensions are in **logical pixels**, matching
+/// `RectInstance` / `GlyphInstance`. Colour is non-premultiplied
+/// (the shader's blend state is `ALPHA_BLENDING`).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct ShadowInstance {
+    pub pos: [f32; 2],
+    pub size: [f32; 2],
+    pub blur_radius: f32,
+    pub corner_radius: f32,
+    pub offset: [f32; 2],
+    pub color: [f32; 4],
+}
+
+impl ShadowInstance {
+    pub fn as_bytes(slice: &[Self]) -> &[u8] {
+        // Safety: `ShadowInstance` is `#[repr(C)]` and `Copy`.
+        unsafe { std::slice::from_raw_parts(slice.as_ptr() as *const u8, size_of_val(slice)) }
+    }
+
+    pub const ATTRIBS: [wgpu::VertexAttribute; 6] = [
+        wgpu::VertexAttribute {
+            offset: 0,
+            shader_location: 0,
+            format: wgpu::VertexFormat::Float32x2,
+        },
+        wgpu::VertexAttribute {
+            offset: 8,
+            shader_location: 1,
+            format: wgpu::VertexFormat::Float32x2,
+        },
+        wgpu::VertexAttribute {
+            offset: 16,
+            shader_location: 2,
+            format: wgpu::VertexFormat::Float32,
+        },
+        wgpu::VertexAttribute {
+            offset: 20,
+            shader_location: 3,
+            format: wgpu::VertexFormat::Float32,
+        },
+        wgpu::VertexAttribute {
+            offset: 24,
+            shader_location: 4,
+            format: wgpu::VertexFormat::Float32x2,
+        },
+        wgpu::VertexAttribute {
+            offset: 32,
+            shader_location: 5,
+            format: wgpu::VertexFormat::Float32x4,
+        },
+    ];
+
+    pub const fn layout() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: size_of::<Self>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &Self::ATTRIBS,
+        }
+    }
+}
+
+/// A render layer groups shadow / rect / glyph instances drawn as one
+/// stratum in a layered render call. Within a layer, draw order is
+/// fixed: shadows first, then rects, then glyphs. Between layers,
+/// `GpuRenderer::render` draws `base` before the optional `overlay`,
+/// which is how popups (with their drop shadow) sit on top of the
+/// terminal grid.
+///
+/// Borrowed slices — the renderer doesn't take ownership. Callers
+/// typically build the underlying `Vec`s once per frame, slice into
+/// this struct, and pass it to `render`.
+#[derive(Debug, Clone, Copy)]
+pub struct RenderLayer<'a> {
+    pub shadows: &'a [ShadowInstance],
+    pub rects: &'a [RectInstance],
+    pub glyphs: &'a [GlyphInstance],
+}
+
+impl<'a> RenderLayer<'a> {
+    pub const EMPTY: RenderLayer<'static> = RenderLayer {
+        shadows: &[],
+        rects: &[],
+        glyphs: &[],
+    };
+
+    pub fn rects(rects: &'a [RectInstance]) -> Self {
+        Self {
+            shadows: &[],
+            rects,
+            glyphs: &[],
+        }
+    }
+
+    pub fn rects_and_glyphs(rects: &'a [RectInstance], glyphs: &'a [GlyphInstance]) -> Self {
+        Self {
+            shadows: &[],
+            rects,
+            glyphs,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.shadows.is_empty() && self.rects.is_empty() && self.glyphs.is_empty()
+    }
+}
+
 /// Per-frame uniforms shared by both pipelines. All instance positions and
 /// sizes are in **logical pixels**; the shader multiplies by `scale_factor`
 /// to get physical pixels before the NDC transform. This keeps `RectInstance`

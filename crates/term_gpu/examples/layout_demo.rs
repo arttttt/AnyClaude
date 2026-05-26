@@ -23,7 +23,7 @@
 
 use std::sync::Arc;
 
-use term_gpu::{GlyphInstance, GpuRenderer, RectInstance};
+use term_gpu::{GlyphInstance, GpuRenderer, RectInstance, RenderLayer};
 use term_layout::{BranchId, Divider, PanelId, PanelTree, Rect, Split};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition};
@@ -206,7 +206,7 @@ impl App {
             return;
         };
         window.pre_present_notify();
-        renderer.render(&rects, &glyphs, 0.0);
+        renderer.render(RenderLayer::rects_and_glyphs(&rects, &glyphs), None, 0.0);
     }
 }
 
