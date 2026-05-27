@@ -44,7 +44,7 @@ use crate::config::{
     save_claude_settings, Backend, ClaudeSettingsManager, Config, ConfigStore, DebugLogLevel,
     SettingsFieldSnapshot,
 };
-use crate::metrics::{init_global_logger, DebugLogger};
+use crate::metrics::{init_global_logger, DebugLogger, ObservabilityHub};
 use crate::proxy::ProxyServer;
 use crate::shim::TeammateShim;
 use crate::ui::backend_switch::{
@@ -257,6 +257,7 @@ pub fn run(
     let backend_state = proxy_server.backend_state();
     let subagent_backend = proxy_server.subagent_backend();
     let teammate_backend = proxy_server.teammate_backend();
+    let observability = proxy_server.observability();
     let _proxy_task = async_runtime.spawn(async move {
         if let Err(e) = proxy_server.run().await {
             crate::metrics::app_log_error("gpu_runtime", "Proxy server exited", &e.to_string());
@@ -277,6 +278,7 @@ pub fn run(
         backend_state,
         subagent_backend,
         teammate_backend,
+        observability,
         settings_manager,
     );
     event_loop
@@ -361,6 +363,9 @@ struct GpuApp {
     /// — separate field so subagents and teammates can route to
     /// different backends.
     teammate_backend: AgentBackendState,
+    /// Proxy's observability hub. Header reads the total request
+    /// counter via `snapshot()` once per frame.
+    observability: ObservabilityHub,
     /// Spawn params for Claude Code, prepared by `run()` before the
     /// event loop. Used in `resumed()` to spawn the PTY child.
     spawn_command: String,
@@ -397,6 +402,7 @@ impl GpuApp {
         backend_state: BackendState,
         subagent_backend: AgentBackendState,
         teammate_backend: AgentBackendState,
+        observability: ObservabilityHub,
         settings_manager: ClaudeSettingsManager,
     ) -> Self {
         Self {
@@ -430,6 +436,7 @@ impl GpuApp {
             backend_state,
             subagent_backend,
             teammate_backend,
+            observability,
             spawn_command,
             spawn_args,
             spawn_env,
@@ -1216,6 +1223,28 @@ impl GpuApp {
             }
         }
         let active_backend = self.backend_state.get_active_backend();
+        let cfg = self.backend_state.get_config();
+        let resolve_display = |id: &str| -> Option<String> {
+            cfg.backends
+                .iter()
+                .find(|b| b.name == id)
+                .map(|b| b.display_name.clone())
+        };
+        let subagent_label = self
+            .subagent_backend
+            .get()
+            .and_then(|id| resolve_display(&id));
+        let teammate_label = self
+            .teammate_backend
+            .get()
+            .and_then(|id| resolve_display(&id));
+        let total_reqs: u64 = self
+            .observability
+            .snapshot()
+            .per_backend
+            .values()
+            .map(|m| m.total)
+            .sum();
         self.session_click_zone = draw_header(
             renderer.atlas_mut(),
             &mut self.font_system,
@@ -1223,6 +1252,9 @@ impl GpuApp {
             &mut self.ui_shape_cache,
             &mut glyphs,
             &active_backend,
+            subagent_label.as_deref(),
+            teammate_label.as_deref(),
+            total_reqs,
             &self.session_id,
             self.start_time,
             self.session_copied_until.is_some(),
@@ -1349,20 +1381,17 @@ fn draw_header(
     ui_shape_cache: &mut TextShapeCache,
     glyphs: &mut Vec<GlyphInstance>,
     active_backend: &str,
+    subagent: Option<&str>,
+    teammate: Option<&str>,
+    reqs: u64,
     session_id: &str,
     start_time: Instant,
     session_copied_active: bool,
     sf: f32,
 ) -> Option<(f32, f32)> {
-    // Subagent / teammate routing surface comes from
-    // ProxyServer::{subagent_backend,teammate_backend} — wiring them
-    // through is straightforward but punted to a post-Phase-5 polish
-    // commit (no popup or hot-path depends on the labels). Reqs
-    // counter is similarly deferred.
     let backend = active_backend;
-    let sub = "—";
-    let team = "—";
-    let reqs: u64 = 0;
+    let sub = subagent.unwrap_or("—");
+    let team = teammate.unwrap_or("—");
     let uptime_s = start_time.elapsed().as_secs();
 
     let sep = " │ ";
