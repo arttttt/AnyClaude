@@ -8,6 +8,7 @@
 //! the default and removes the flag.
 
 pub mod app;
+mod chrome;
 pub mod pty;
 
 pub use app::run;
