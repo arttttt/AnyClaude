@@ -1018,6 +1018,107 @@ Tracked in memory `gpu-terminal-remaining-bugs.md`:
 
 Cutover deferred until those settle.
 
+## Phase 5 closing pass (2026-05-28) — eleven commits, all bugs closed
+
+| Commit | Summary | Bug closed |
+|--------|---------|------------|
+| `9ac9b85` | `feat(backend_switch): add Clear intent for subagent/teammate sections` | #4 prep |
+| `af009a3` | `feat(gpu): render backend popup with Active/Subagent/Teammate sections` | #4 |
+| `af339db` | `feat(gpu): wire section-aware Enter and Del/Backspace in backend popup` | #4 wire |
+| `a87cda5` | `feat(gpu): render real sub/team labels and Reqs counter in header` | #6 |
+| `9366f79` | `feat(gpu): 1Hz periodic redraw for header heartbeat` | #6 refresh |
+| `3927b2b` | `feat(gpu): wire Cmd+R to restart the Claude PTY session` | #5 |
+| `db8b212` | `feat(gpu): add 1px chrome separator below header and above footer` | #3 |
+| `145c6fe` | `debug(gpu): tee raw PTY bytes to a file when ANYCLAUDE_DEBUG_PTY is set` | diag |
+| `948e490` | `debug(gpu): add Cmd+Shift+D one-shot diagnostic snapshot dump` | diag |
+| `dbce0f9` | `fix(term_core): stop slicing OSC payloads at UTF-8 continuation byte 0x9C` | #1 + #2 |
+| `440794f` | `fix(term_gpu): render inverse-video cells with default fg/bg as a visible block` | #7 (was reported as "no cursor") |
+
+Bug numbering matches the FIX-4 remaining-bugs list above. Bug #7
+("invisible prompt cursor") was not in that list — it surfaced
+during this session's own user verification after Wave 1 fixed
+the other six.
+
+### The OSC slice — bytes that matter
+
+PTY trace offsets (captured via the new `ANYCLAUDE_DEBUG_PTY`
+env tee — no `script -q -F` needed):
+
+```
+0x40-0x43:  1b 5d 30 3b           ESC ] 0 ;        (OSC begin, cmd "0")
+0x44-0x46:  e2 9c b3              ✳ (U+2733)       (first 3 bytes of payload)
+0x47-0x52:  20 43 6c 61 75 64     " Claude Code"   (rest of payload)
+            65 20 43 6f 64 65
+0x53:       07                    BEL              (terminator)
+```
+
+The buggy parser matched `0x9C` (offset 0x45) as 8-bit C1 ST,
+called `dispatch_osc` with the partial buffer
+`[0x30, 0x3b, 0xe2]`, then went to ground. `0xb3` at offset
+0x46 was discarded; bytes 0x47-0x52 (` Claude Code`) printed
+into row 0 cells 0-11 as plain text.
+
+The fix is removing one branch from `osc_string`. Eight bytes
+of code, ten lines of comment. The bug was three weeks old.
+
+### The INVERSE swap — table of zeros
+
+For Claude's prompt cursor cell (`CSI 7 m SP CSI 27 m`):
+
+| | Pre-swap | After enum swap | Effect |
+|---|---|---|---|
+| `cell.fg` | `TermColor::Default` | becomes `bg_eff` = `Default` | |
+| `cell.bg` | `TermColor::Default` | becomes `fg_eff` = `Default` | |
+| `bg_eff != Default` | — | false | bg rect SKIPPED |
+| `is_blank && fg_eff == Default && !decoration` | — | true | cell SKIPPED |
+| **Pixels rendered** | — | — | **0** |
+
+Post-fix, with `DEFAULT_BG = [0.04, 0.04, 0.06, 1.0]` matching
+the renderer surface clear color:
+
+| | Resolved | After rgba swap | Effect |
+|---|---|---|---|
+| `fg_concrete` | `DEFAULT_FG` = `[0.78, 0.78, 0.78, 1.0]` | becomes `bg_eff_rgba` | bg rect = light grey |
+| `bg_explicit` | `None` | becomes `fg_eff_rgba` = `DEFAULT_BG` | text colour = dark |
+| `bg_eff_rgba.is_some()` | — | true | bg rect PUSHED |
+| `is_blank && !inverse && bg.is_none()` | — | false (inverse true) | cell NOT skipped |
+| **Pixels rendered** | — | — | **full cell with bg + glyph** |
+
+The bg rect itself is the visible cursor. The glyph (a space) is
+also pushed but transparent.
+
+### Diagnostics infrastructure — load-bearing for future debugging
+
+`ANYCLAUDE_DEBUG_PTY=/tmp/pty.bin`: PTY reader thread tees bytes
+to the file before forwarding to the parser. No external tooling
+needed. The branch is `if let Some(f) = trace_file.as_mut() {
+let _ = f.write_all(bytes); }` — one null-check in the hot loop.
+
+`Cmd+Shift+D`: dumps `grid_size`, cursor row/col/visible/style,
+visible row range, title, first 4 visible rows' chars + non-zero
+flags to stderr. Triggered with `KeyCode::KeyD if
+self.modifiers.shift_key()`.
+
+Both together turned the OSC bug from "three iterations of static
+analysis" (the pre-FIX-4 norm) into "one screenshot →
+hex dump → snapshot → fix" in under an hour.
+
+### Lesson summary (saved as memory)
+
+- **8-bit C1 control codes (0x80-0x9F) cannot be honoured in a
+  UTF-8 terminal.** Every byte in that range can appear as a
+  UTF-8 continuation byte. Use only the 7-bit ESC-prefixed forms
+  (ESC \\ for ST, ESC O for SS3, etc.) and accept BEL where
+  applicable.
+- **INVERSE / xterm reverse-video must resolve Default to
+  concrete RGBA before the swap.** The renderer should short-
+  circuit on RGBA values, not enum variants. Every ink-based
+  TUI draws its cursor / selection bar as `CSI 7 m SP CSI 27 m`.
+- **Ship diagnostics on day one.** An env-var-keyed PTY tee and
+  a keystroke-triggered state snapshot are each <30 LoC and pay
+  back the first time a render bug isn't obvious from a
+  screenshot.
+
 ## License attribution snippet
 
 For files containing code ported from Warp:

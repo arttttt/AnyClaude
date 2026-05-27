@@ -865,6 +865,64 @@ settle.
     scenarios into one `#[test]` function. Trades a single
     "many asserts" function for zero extra deps; fine when the
     surface is small.
+38. **8-bit C1 control codes (0x80-0x9F) cannot be honoured in a
+    UTF-8 terminal.** Every byte in that range can appear as a
+    UTF-8 continuation byte. The OSC string handler's `0x9C` arm
+    (8-bit C1 String Terminator) sliced Claude's title-set
+    sequence in the middle of the `✳` codepoint (encoded
+    `e2 9c b3`), spilling 12 bytes of payload into row 0 of the
+    grid as plain text. Three weeks of "title double-render
+    bug" closed by removing eight bytes of parser code. The
+    rule generalises to DCS, SOS, PM, APC: only the 7-bit
+    ESC-prefixed terminators (ESC \\) and BEL are safe; the
+    8-bit C1 equivalents are UTF-8 hazards.
+39. **INVERSE / xterm reverse-video must resolve Default to
+    concrete RGBA BEFORE the swap.** Swapping `TermColor::Default
+    ↔ Default` is degenerate — the bg-rect push gate misses, the
+    blank-cell short-circuit fires, zero pixels render. Every
+    ink-based TUI (Claude Code, htop, vim visual mode, nano
+    selection) draws its cursor / selection bar as
+    `CSI 7 m SP CSI 27 m` — getting this wrong = invisible
+    cursors and selections across the entire ecosystem. The fix
+    is straightforward once you see it: resolve to RGBA first,
+    keep bg as `Option<[f32; 4]>` so the non-inverse default
+    path still skips the rect, and have the inverse path fall
+    back to `DEFAULT_BG` (matching the renderer surface clear
+    color) when no explicit bg was set.
+40. **Ship diagnostics on day one, not when you finally need
+    them.** `ANYCLAUDE_DEBUG_PTY=<path>` (PTY reader thread
+    tees bytes to a file) and `Cmd+Shift+D` (snapshot dump of
+    grid + cursor + first 4 rows to stderr) are each <30 LoC
+    and gated to zero-cost when unused. Together they turn
+    "user reports a render bug" from "set up `script -q -F`,
+    walk the user through capturing, eyeball the trace" into
+    "ask user to run with the env var, hit the keystroke,
+    paste the file path". Both root-cause fixes in the Phase 5
+    closing pass (OSC 0x9C, INVERSE Default-swap) became
+    one-iteration loops the moment the diagnostics existed.
+41. **Partial MVI projection is worse than no popup.** The
+    backend-switch MVI state carried `section`,
+    `subagent_selection`, `teammate_selection`,
+    `backends_count` — but `draw_backend_switch_popup` rendered
+    only the Active section as a flat list. The Tab key
+    "worked" (it cycled an invisible `section` field) but the
+    user saw a flat list of backends and "selected"
+    backends with `Enter` regardless of section. When the
+    state machine carries more data than the renderer projects,
+    the gap shows up as a popup that does the wrong thing.
+    Render every field the state tracks, or don't ship the
+    popup.
+42. **Header chrome needs both a live reference and a 1Hz tick.**
+    The previous header read `sub` / `team` / `Reqs` from
+    hardcoded placeholders because plumbing the live references
+    was punted, and the redraw loop only fired on local input
+    (PTY output, mouse, keys). Even after the references were
+    threaded, idle claude meant idle header. A 1Hz
+    `UserEvent::TickRedraw` from an abortable loop solved
+    both: data changes on the proxy's threads are now visible
+    within a second. The pattern generalises: any chrome
+    reading external state needs a periodic refresh, not just
+    render-on-input.
 
 ## Possible follow-up articles
 

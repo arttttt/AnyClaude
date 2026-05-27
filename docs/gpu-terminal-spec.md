@@ -2398,13 +2398,14 @@ signature — drag-divider release no longer leaves history
 fragments. 12 integration tests in `tests/reflow.rs` pin the
 behavior.
 
-### Phase 5 — Integration (in progress) ⏳
+### Phase 5 — Integration ✅ done (May 2026)
 **Files:** `src/ui/gpu/{mod,app,pty}.rs`, `src/main.rs`,
-`crates/term_gpu/src/{panel_render,label,input,paste,selection}.rs`.
+`crates/term_gpu/src/{panel_render,label,input,paste,selection}.rs`,
+`crates/term_core/src/parser.rs`.
 
 **Status (2026-05-28):** GPU UI runs Claude Code end-to-end through
-the proxy. Hidden `--gpu` CLI flag routes to the new entry; legacy
-ratatui path preserved. Cutover deferred until rendering bugs settle.
+the proxy with no known visible bugs. `--gpu` CLI flag still opt-in;
+legacy ratatui path preserved. Cutover is the next milestone.
 
 **Delivered**
 1. winit ApplicationHandler skeleton + wgpu setup (C1).
@@ -2429,19 +2430,59 @@ ratatui path preserved. Cutover deferred until rendering bugs settle.
 - FIX-3: non-sRGB swap chain + luma-aware glyph contrast (matches Warp / iTerm2 / Windows Terminal).
 - FIX-4: VT parser — `:` sub-param separator, sub-param tracking (`param_is_sub`), alt-screen SGR isolation, XTERM private-marker (`>`/`<`/`=`) rejection. Root cause of stuck-underline-everywhere was `CSI > 4 ; 2 m` (modifyOtherKeys) being misdispatched as SGR 4;2.
 
-**Remaining bugs** (not blockers for further development — pickup
-list in memory `gpu-terminal-remaining-bugs.md`):
-- Title-row double-render artifact.
-- Cursor position when claude shows prompt.
-- No visible separation between chrome + content panels.
-- Backend popup should show 3 sections (Active / Subagent / Teammate).
-- Cmd+R restart wiring.
-- Header sub/team labels stuck at "—"; Reqs counter at 0.
+**Phase 5 closing pass** (FIX-5..FIX-9, one session — eleven commits)
+After FIX-4 shipped, seven visible bugs remained. One session closed
+all of them; two were the same root cause.
 
-**Cutover (pending):** delete `src/ui/{render,terminal,header,footer,
-layout,terminal_guard,input,selection,events,theme,runtime,app}.rs`,
-remove the `--gpu` flag and route `main.rs` directly to
-`ui::gpu::run`. Defer until the remaining-bugs list is resolved.
+- FIX-5: backend popup gets its 3 sections back (Active / Subagent /
+  Teammate). New `BackendSwitchIntent::Clear` (Del/Backspace resets
+  override to Disabled). Section-aware Enter: Active → `switch_backend`;
+  Subagent/Teammate → `AgentBackendState::set`. Commits `9ac9b85`,
+  `af009a3`, `af339db`.
+- FIX-6: header reads live `subagent_backend` / `teammate_backend` /
+  `ObservabilityHub.snapshot()` instead of hardcoded `"—"` / 0. New
+  `UserEvent::TickRedraw` fires once per second so Uptime / Reqs
+  refresh when the PTY is silent. Commits `a87cda5`, `9366f79`.
+- FIX-7: `restart_pty()` drops the current `ChildPty` (master close
+  signals child via SIGHUP), rebuilds emulator, resets scroll/selection,
+  re-spawns with stored params. Wired to Cmd+R. Plus 1px dim-grey
+  separator rects below the header and above the footer. Commits
+  `3927b2b`, `db8b212`.
+- FIX-8: **OSC 0x9C must not terminate the string in UTF-8 mode**.
+  The 8-bit C1 String Terminator collides with UTF-8 continuation
+  bytes — e.g. the middle byte of `✳` (U+2733, `e2 9c b3`) was
+  prematurely terminating Claude's `ESC ] 0 ; ✳ Claude Code BEL`
+  startup OSC. The leftover payload bytes ` Claude Code` were
+  printed into row 0 cells 0-11; subsequent CHA-positioned BOLD
+  "Claude"/"Code" partially overrode them, producing the visible
+  "Claude CodClaude Code v2.1.152" duplicate. Same bug accounted
+  for the stray `█` at col 17 (a surviving alpaca char from the
+  cell-position mismatch). Fix is one branch removal: only BEL
+  (0x07) and ESC \ (0x1B 0x5C) terminate OSC. Commit `dbce0f9`.
+- FIX-9: **INVERSE on default fg/bg must render as a visible block**.
+  The swap operated on `TermColor` enum values; swapping two
+  `Default`s produced two more `Default`s, the bg-rect push was
+  skipped, and the blank-glyph short-circuit fired → zero pixels
+  rendered. Claude's faux-cursor (`CSI 7 m SP CSI 27 m`) was
+  collapsing to invisible. Fix resolves `TermColor::Default` to
+  concrete RGBA before the swap; new `DEFAULT_BG = [0.04, 0.04,
+  0.06, 1.0]` matches the renderer surface clear color. Commit
+  `440794f`.
+
+**Diagnostics infrastructure** added during the closing pass:
+
+- `ANYCLAUDE_DEBUG_PTY=<path>` env tees raw PTY bytes to a file
+  (`145c6fe`). No external `script`/`tee` needed.
+- `Cmd+Shift+D` one-shot snapshot dump of grid_size, cursor state,
+  visible rows + flags to stderr (`948e490`).
+
+**Cutover (next milestone):** delete `src/ui/{render,terminal,header,
+footer,layout,terminal_guard,input,selection,events,theme,runtime,
+app}.rs`, remove the `--gpu` flag and route `main.rs` directly to
+`ui::gpu::run`. **Keep** the `mvi` crate and the `src/ui/
+{backend_switch,history,settings,pty}/` MVI store modules — they are
+consumed by the GPU UI and the user has mandated all UI go through
+MVI.
 
 ### SGR visual flags ✅ done (May 2026)
 **Files:** `crates/term_gpu/src/text.rs`, `crates/term_gpu/src/lib.rs`,

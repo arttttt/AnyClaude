@@ -1548,3 +1548,492 @@ rendering bug looks like wrong attributes, capture PTY bytes
 BEFORE static analysis. Static analysis tells you what your
 parser CAN do; the trace tells you what the application actually
 triggers. The intersection is where bugs live.
+
+### FIX-5 — Backend popup gets its 3 sections back
+
+**Files**: `src/ui/gpu/app.rs` (rewrite of
+`draw_backend_switch_popup`, new `push_section_header` /
+`push_backend_item` / `push_override_section_rows` helpers),
+`src/ui/backend_switch/{intent,actor}.rs` (new
+`BackendSwitchIntent::Clear`).
+
+The MVI state machine for the popup was complete: it carried
+`section: BackendPopupSection`, `backend_selection: usize`,
+`subagent_selection: usize`, `teammate_selection: usize`,
+`backends_count: usize`. `Tab` dispatched `NextSection`. Arrow
+keys dispatched `MoveUp` / `MoveDown` that hit the right index
+based on `section`. The renderer projected only
+`backend_selection` as a flat list — the user's selection in
+the Subagent or Teammate sections had nowhere to land.
+
+Rewriting `draw_backend_switch_popup` was the bulk of the
+commit:
+
+```rust
+fn draw_backend_switch_popup(
+    state: &BackendSwitchState,
+    items_and_ids: &[(String, String)],
+    active_backend: &str,
+    current_subagent: Option<&str>,
+    current_teammate: Option<&str>,
+    ...
+) {
+    // Title row.
+    // Active Backend section header (▸ marker if active section).
+    // Active Backend list with [Active] status on matching id.
+    // gap.
+    // Subagent Backend section header.
+    // "Disabled (use active backend)" leader + [Active] if current None.
+    // Subagent Backend list with [Selected] on current_subagent.
+    // gap.
+    // Teammate Backend section header (mirror).
+    // gap.
+    // Footer hint: Tab: Section  ↑/↓: Move  Enter: Select  Del: Clear  Esc: Close
+}
+```
+
+The MVI `Open` intent picks up `backends_count`; the override
+sections internally use selection index 0 = "Disabled (use active
+backend)" and indices 1..=N for the backends, matching the legacy
+ratatui chrome (`src/ui/backend_switch/dialog.rs` reference).
+`BackendSwitchIntent::Clear` lets Del/Backspace reset an override
+to index 0 — no-op in the Active section, since the proxy always
+has one active backend.
+
+`handle_backend_switch_key`'s Enter handler became section-aware:
+
+```rust
+match section {
+    BackendPopupSection::ActiveBackend => {
+        let id = cfg.backends.get(backend_sel)?.name.clone();
+        backend_state.switch_backend(&id)?;
+    }
+    BackendPopupSection::SubagentBackend => {
+        let new = override_selection_to_backend_id(&cfg.backends, subagent_sel);
+        self.subagent_backend.set(new);
+    }
+    BackendPopupSection::TeammateBackend => {
+        let new = override_selection_to_backend_id(&cfg.backends, teammate_sel);
+        self.teammate_backend.set(new);
+    }
+}
+```
+
+Where `override_selection_to_backend_id(backends, 0) = None` and
+`override_selection_to_backend_id(backends, n) = Some(backends[n-1].name)`.
+
+**Lesson**: when the MVI state machine carries more data than the
+renderer projects, the gap shows up as a popup that "lets me
+select X but I can't see what X means". Partial projection is
+worse than no popup — it implies functionality that isn't there.
+
+### FIX-6 — Header chrome reads live proxy state + 1Hz heartbeat
+
+**Files**: `src/ui/gpu/app.rs` (new `AgentBackendState` /
+`ObservabilityHub` fields on `GpuApp`, rewrite of `draw_header`,
+new `UserEvent::TickRedraw` + `schedule_periodic_redraw`).
+
+`draw_header` was hardcoded `sub = "—"`, `team = "—"`, `reqs = 0`
+since C4 — a TODO that survived FIX-4. Plumbed the three
+references through:
+
+```rust
+let subagent_backend = proxy_server.subagent_backend();
+let teammate_backend = proxy_server.teammate_backend();
+let observability = proxy_server.observability();
+let mut app = GpuApp::new(
+    proxy, spawn.command, spawn.args, spawn.env,
+    backend_state, subagent_backend, teammate_backend,
+    observability, settings_manager,
+);
+```
+
+`draw_header` then resolves the agent backend ids to their
+`display_name` via the live `BackendState` config (a closure that
+captures `cfg.backends`) and sums per-backend totals from the
+`MetricsSnapshot`:
+
+```rust
+let total_reqs: u64 = self
+    .observability
+    .snapshot()
+    .per_backend
+    .values()
+    .map(|m| m.total)
+    .sum();
+```
+
+`snapshot()` clones the aggregates internally and is cheap enough
+for 1Hz polling.
+
+The 1Hz heartbeat is the harder problem. The pre-FIX-6 code only
+issued `request_redraw` on PTY output, scroll input, or popup key
+events. When claude was idle (no output, no input), the header
+froze. `Uptime: 9s` would stay forever.
+
+Solved with a new event variant and an abortable loop:
+
+```rust
+enum UserEvent {
+    PtyBytesArrived,
+    GestureEnded,
+    MomentumTick,
+    TickRedraw,  // new — 1Hz heartbeat
+}
+
+fn schedule_periodic_redraw(proxy: EventLoopProxy<UserEvent>) -> AbortHandle {
+    let (fut, abort) = abortable(async move {
+        loop {
+            Delay::new(Duration::from_secs(1)).await;
+            if proxy.send_event(UserEvent::TickRedraw).is_err() {
+                break;  // window dropped — exit
+            }
+        }
+    });
+    std::thread::spawn(move || {
+        let _ = futures::executor::block_on(fut);
+    });
+    abort
+}
+```
+
+Started in `resumed()` once the window exists; the handle is
+held in `GpuApp.periodic_tick_abort` to keep it alive. The loop
+self-terminates when `send_event` fails (window dropped).
+
+**Lesson**: any chrome reading external state needs both the live
+reference and a periodic tick. Render-on-input alone misses cases
+where data changes without local activity (network requests
+completing on another thread, time advancing).
+
+### FIX-7 — Cmd+R restart + chrome separators
+
+**Files**: `src/ui/gpu/app.rs` (new `restart_pty()`, KeyR
+arm in Cmd shortcut table; new `CHROME_SEPARATOR_COLOR` constant,
+1px rects in `draw_header` / `draw_footer`).
+
+`restart_pty()` is straightforward but exercises the full PTY
+lifecycle:
+
+```rust
+fn restart_pty(&mut self) {
+    self.pty = None;  // drops ChildPty → master close → SIGHUP → child exits
+    let (cols, rows) = self.grid_size;
+    self.emulator = Some(create_emulator(cols, rows, SCROLLBACK_LINES));
+    self.scroll = ScrollState::default();
+    self.scroll_velocity = None;
+    self.cancel_momentum();
+    self.cancel_gesture_end();
+    self.selection = None;
+    self.dragging_selection = false;
+    self.last_click = None;
+    // Re-spawn with the same params.
+    let proxy = self.proxy.clone();
+    match ChildPty::spawn(cols as u16, rows as u16, ...) {
+        Ok(pty) => self.pty = Some(pty),
+        Err(e) => eprintln!("anyclaude: failed to restart shell: {e}"),
+    }
+    self.request_redraw();
+}
+```
+
+The previous `ChildPty`'s reader thread exits on its own when its
+master is dropped. The new `ChildPty` has its own channel; no
+race-y handover needed.
+
+Wired in the Cmd shortcut table:
+
+```rust
+match code {
+    KeyCode::KeyC => self.copy_selection(),
+    KeyCode::KeyV => self.paste_into_pty(),
+    KeyCode::KeyB => self.toggle_backend_switch_popup(),
+    KeyCode::KeyH => self.toggle_history_popup(),
+    KeyCode::KeyE => self.toggle_settings_popup(),
+    KeyCode::KeyR => self.restart_pty(),
+    KeyCode::KeyD if self.modifiers.shift_key() => self.dump_diagnostic_snapshot(),
+    KeyCode::KeyQ => event_loop.exit(),
+    _ => {}
+}
+```
+
+Chrome separators are two `RectInstance` pushes — one in
+`draw_header` at `y = HEADER_HEIGHT_LOGICAL - 1`, one in
+`draw_footer` at `y = window_h_logical - FOOTER_HEIGHT_LOGICAL`,
+both `[0.25, 0.25, 0.27, 1.0]` and full window width.
+
+The fiddly part was threading `&mut Vec<RectInstance>` through
+the chrome functions — they previously only got `&mut glyphs`.
+Once the parameter was added, the per-frame ordering invariants
+(rects pushed before glyphs in `RenderLayer`) were preserved
+automatically because the chrome calls land before the final
+`renderer.render` call.
+
+### FIX-8 — OSC string handler honoured 0x9C as terminator, slicing UTF-8
+
+**Files**: `crates/term_core/src/parser.rs` (`osc_string` handler,
+one branch removed).
+
+The first user-visible bug after Wave 1 was still "Claude
+CodClaude Code v2.1.152" at the title row. The new `Cmd+Shift+D`
+snapshot dump was decisive:
+
+```
+=== anyclaude diagnostic snapshot ===
+grid_size: 141 cols x 44 rows
+scroll: offset_y=0.00, max=0.00
+cursor: row=6, col=2, visible=false, style=BlockSteady
+visible_rows: 44, total_rows: 44, visible_start: 0
+title: ""
+row[00]: " Claude CodClaude█Code v2.1.152                             "
+    [00][11]='C' flags=0x0001
+    [00][12]='l' flags=0x0001
+    ...
+    [00][18]='C' flags=0x0001
+    ...
+```
+
+Two clues:
+1. `title: ""` — claude sends `ESC ] 0 ; ✳ Claude Code BEL`, the
+   title should be set. It's empty.
+2. Row 0 cells 1-10 contain `Claude Cod` (no BOLD), then cells
+   11-16 contain BOLD `Claude` (from CHA 12), then cell 17
+   contains `█`, then cells 18-21 contain BOLD `Code`.
+
+The 12 chars ` Claude Code` in cells 0-11 match exactly the OSC
+payload `e2 9c b3 20 43 6c 61 75 64 65 20 43 6f 64 65` minus
+the `e2 9c b3` (✳) prefix.
+
+Read the OSC string state:
+
+```rust
+fn osc_string(&mut self, byte: u8, emit: &mut F) {
+    match byte {
+        0x07 => { self.dispatch_osc(emit); self.state = State::Ground; }
+        0x1B => { self.dispatch_osc(emit); self.state = State::Escape; }
+        0x9C => { self.dispatch_osc(emit); self.state = State::Ground; }
+        _ => { self.osc_buf.push(byte); }
+    }
+}
+```
+
+`0x9C` is the 8-bit C1 String Terminator. The middle byte of
+`✳` (U+2733) encoded as `e2 9c b3` is `0x9C`. The parser hit
+the ST branch on the middle of the multibyte sequence,
+dispatched OSC with the broken `[0x30, 0x3b, 0xe2]` buffer
+(`std::str::from_utf8([0xe2])` returns Err, SetTitle dropped),
+went to ground. The next byte `0xb3` was discarded as an
+invalid UTF-8 lead. The remaining payload ` Claude Code` was
+printed into the grid as plain text starting at the cursor's
+ground-state position (row 0 col 0). BEL terminated the
+hypothetical OSC at the end but it was actually in ground
+state — BEL is a Bell action there, no-op for the grid. Then
+the actual rendering sequences fired: CHA 12 + BOLD "Claude"
+overwrote cells 11-16, CHA 19 + BOLD "Code" overwrote cells
+18-21, CHA 24 + "v2.1.152" overwrote cells 23-30. The `█` at
+col 17 was a surviving alpaca character (alpaca's actual
+position got shifted because cells 0-9 were occupied by OSC
+spill — the printed cells went into cols 12-21 instead of cols
+1-10, and the CHA-positioned overrides only hit some of those).
+
+The fix is removing the `0x9C` arm:
+
+```rust
+fn osc_string(&mut self, byte: u8, emit: &mut F) {
+    match byte {
+        0x07 => { self.dispatch_osc(emit); self.state = State::Ground; }
+        0x1B => { self.dispatch_osc(emit); self.state = State::Escape; }
+        // NOTE: 0x9C (8-bit C1 ST) is intentionally NOT a terminator
+        // here. In UTF-8 mode (the universal default that Claude Code
+        // and every modern shell use), 0x9C appears as a CONTINUATION
+        // byte inside multibyte sequences ...
+        _ => { self.osc_buf.push(byte); }
+    }
+}
+```
+
+The trace confirmed claude never emits a real 8-bit C1 ST
+sequence (it would have been a standalone `0x9C` outside any
+multibyte context). It uses BEL (`0x07`) to terminate OSC, which
+the handler still honours.
+
+**Lesson generalises across the C1 range**: 8-bit C1 control
+codes (`0x80-0x9F`) cannot be honoured in a UTF-8 terminal.
+Every byte in that range can appear as a UTF-8 continuation
+byte. The 7-bit ESC-prefixed forms (ESC \\ for ST, ESC O for
+SS3, etc.) remain valid and unambiguous. This applies to
+`dcs_passthrough` and `sos_pm_apc` too — their `0x9C` arms
+will become regressions the day a DCS / SOS / PM / APC
+sequence carries UTF-8. (Claude doesn't, but other shells
+might.)
+
+### FIX-9 — INVERSE on default fg/bg collapsed to invisible
+
+**Files**: `crates/term_gpu/src/panel_render.rs` (the inverse
+swap, the blank-cell short-circuit, new `DEFAULT_BG` constant).
+
+After FIX-8, the title was correct but the prompt cursor was
+still missing. Claude's `❯ ыфвыфвфыв` line on screen had no
+visible cursor block after the typed text.
+
+PTY trace showed claude does emit the standard ink-cursor
+sequence near the prompt position: `CSI 7 m SP CSI 27 m`. An
+inverse-video space. So the cursor IS being sent — but
+rendered as nothing.
+
+The cell at the prompt-cursor position carried
+`{ c: ' ', fg: Default, bg: Default, flags: INVERSE }`. The
+existing inverse handling:
+
+```rust
+let inverse = cell.flags.contains(CellFlags::INVERSE);
+let (fg_eff, bg_eff) = if inverse {
+    (cell.bg, cell.fg)  // swap on TermColor enum
+} else {
+    (cell.fg, cell.bg)
+};
+
+if bg_eff != TermColor::Default {
+    rects.push(RectInstance { ..., color: bg_eff.to_rgba(palette) });
+}
+
+let is_blank = cell.c == ' ' || cell.c == '\0';
+let has_decoration = ...;
+if is_blank && fg_eff == TermColor::Default && !has_decoration {
+    continue;  // ← THIS short-circuit
+}
+```
+
+Default ↔ Default swap is a no-op. `bg_eff != Default` is
+false → no bg rect pushed. Cell is blank + fg is Default →
+`continue`. **Zero pixels rendered.** The faux-cursor collapsed
+into invisibility.
+
+The fix resolves `TermColor::Default` to concrete RGBA before
+the swap, keeping the bg side `Option<[f32; 4]>` so non-inverse
+default cells can still skip the rect push:
+
+```rust
+let inverse = cell.flags.contains(CellFlags::INVERSE);
+let fg_concrete: [f32; 4] = if cell.fg == TermColor::Default {
+    DEFAULT_FG
+} else {
+    cell.fg.to_rgba(palette)
+};
+let bg_explicit: Option<[f32; 4]> = if cell.bg == TermColor::Default {
+    None
+} else {
+    Some(cell.bg.to_rgba(palette))
+};
+let (fg_eff_rgba, bg_eff_rgba): ([f32; 4], Option<[f32; 4]>) = if inverse {
+    (bg_explicit.unwrap_or(DEFAULT_BG), Some(fg_concrete))
+} else {
+    (fg_concrete, bg_explicit)
+};
+
+if let Some(bg) = bg_eff_rgba {
+    rects.push(RectInstance { ..., color: bg });
+}
+
+if is_blank && !inverse && bg_eff_rgba.is_none() && !has_decoration {
+    continue;
+}
+
+let mut color = fg_eff_rgba;
+if cell.flags.faint() {
+    color[3] *= 0.5;
+}
+```
+
+`DEFAULT_BG = [0.04, 0.04, 0.06, 1.0]` is a new constant that
+matches the renderer surface clear color from `renderer.rs:228`.
+An inverse cell with no explicit background ends up with its new
+foreground set to `DEFAULT_BG` (the window's clear color),
+which is visually correct — the inverse block "shows through" to
+the same backdrop the rest of the cell would have shown.
+
+The blank-cell short-circuit gains `!inverse &&
+bg_eff_rgba.is_none()`. An inverse blank already pushed its bg
+rect (which IS the visible content) and shouldn't skip out
+before getting a chance to render any decoration.
+
+**Lesson**: when implementing INVERSE / xterm reverse-video, do
+the Default → concrete RGBA resolution BEFORE the swap. A swap
+of `Default ↔ Default` is degenerate. The renderer must short-
+circuit on RGBA values, not enum variants. Every ink-based TUI
+(Claude Code, htop, vim visual mode, nano selection) draws its
+cursor / selection bar as `CSI 7 m SP CSI 27 m` — getting this
+wrong = invisible cursor / selection across the entire ecosystem.
+
+### Diagnostics infrastructure added during the closing pass
+
+Two zero-cost-when-unused mechanisms that paid for themselves in
+this session and stay valuable for future debugging.
+
+**`ANYCLAUDE_DEBUG_PTY=<path>` env tee**
+(`src/ui/gpu/pty.rs`, commit `145c6fe`): the PTY reader thread
+opens the file when the env var is set, appends every byte chunk
+before forwarding to the parser. No `script -q -F` ceremony
+needed.
+
+```rust
+let mut trace_file = std::env::var("ANYCLAUDE_DEBUG_PTY")
+    .ok()
+    .and_then(|p| OpenOptions::new().create(true).append(true).open(p).ok());
+
+std::thread::spawn(move || {
+    let mut buf = [0u8; 4096];
+    loop {
+        match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                let bytes = &buf[..n];
+                if let Some(f) = trace_file.as_mut() {
+                    let _ = f.write_all(bytes);
+                }
+                if tx.send(bytes.to_vec()).is_err() { break; }
+                on_data();
+            }
+            Err(_) => break,
+        }
+    }
+});
+```
+
+The `as_mut()` keeps the trace path branch a single null-check
+in the hot loop — no copy when unset.
+
+**`Cmd+Shift+D` one-shot snapshot dump**
+(`src/ui/gpu/app.rs`, commit `948e490`): prints grid_size,
+cursor row/col/visible/style, visible_rows / total_rows /
+visible_start, title, and the first 4 visible rows + non-zero
+flags to stderr. Triggered from the keyboard handler via
+`KeyCode::KeyD if self.modifiers.shift_key()`.
+
+```rust
+fn dump_diagnostic_snapshot(&self) {
+    eprintln!("=== anyclaude diagnostic snapshot ===");
+    eprintln!("grid_size: {} cols x {} rows", self.grid_size.0, self.grid_size.1);
+    eprintln!("scroll: offset_y={:.2}, max={:.2}",
+              self.scroll.offset_y, self.scroll.max_offset());
+    let snap = emu.snapshot();
+    eprintln!("cursor: row={}, col={}, visible={}, style={:?}",
+              snap.cursor.row, snap.cursor.col, snap.cursor.visible, snap.cursor.style);
+    eprintln!("title: {:?}", snap.title);
+    for (offset, row) in snap.visible_iter().take(4).enumerate() {
+        let chars: String = row.cells.iter().take(60).map(|c| c.c).collect();
+        eprintln!("row[{offset:02}]: {chars:?}");
+        for (i, c) in row.cells.iter().enumerate().take(60) {
+            if c.flags.bits() != 0 {
+                eprintln!("    [{offset:02}][{i:02}]={:?} flags=0x{:04x}", c.c, c.flags.bits());
+            }
+        }
+    }
+    eprintln!("=== end snapshot ===");
+}
+```
+
+Together they make "the user shows a screenshot, I find the root
+cause" a one-iteration loop instead of three. The OSC and INVERSE
+fixes both used both: the trace to confirm what claude actually
+sent; the snapshot to confirm what the emulator actually stored.

@@ -756,3 +756,193 @@ split, Cmd+R wiring, header sub/team labels) — tracked in
 `gpu-terminal-remaining-bugs.md` for next-session pickup.
 Cutover (delete ratatui paths, remove `--gpu` flag) deferred
 until those settle.
+
+## 28. Phase 5 closing pass — popup polish, then two UTF-8 / inverse root causes
+
+One session. Eleven commits. Started with seven visible bugs;
+ended with zero.
+
+**Wave 1 — popup polish (FIX-5..7).** The MVI state for the
+backend popup already carried `section` / `backend_selection` /
+`subagent_selection` / `teammate_selection` / `backends_count`,
+but `draw_backend_switch_popup` projected only the Active
+section as a flat list. Rewrote it to render three labelled
+sections with a `▸` marker on the Tab-active one, "Disabled (use
+active backend)" leader in the override sections, and
+`[Active]` / `[Selected]` suffixes. New `BackendSwitchIntent::Clear`
+lets Del/Backspace reset an override to Disabled. Section-aware
+Enter dispatches `switch_backend` / `AgentBackendState::set` per
+active section.
+
+Header `sub:` / `team:` / `Reqs:` plumbed: `GpuApp` now captures
+`ProxyServer::subagent_backend()` /
+`ProxyServer::teammate_backend()` /
+`ProxyServer::observability()`. `draw_header` resolves the
+`AgentBackendState::get()` ids back to `display_name` via the
+live config and sums `MetricsSnapshot::per_backend[*].total` for
+the Reqs counter. New `UserEvent::TickRedraw` fires every second
+through an abortable loop so Uptime / Reqs refresh even when the
+PTY is silent.
+
+`restart_pty()` drops the current `ChildPty` (master close →
+SIGHUP to the child → reader thread exits on EOF), rebuilds the
+emulator at the current `grid_size`, resets `ScrollState` /
+selection / momentum, re-spawns with the captured
+`spawn_command` / `args` / `env`. Wired to Cmd+R. Plus 1px dim-
+grey rect separators below the header and above the footer.
+
+Smoke test: claude welcome screen renders cleanly. Header values
+update live. Cmd+R cycles claude. But the title still showed
+"Claude CodClaude Code v2.1.152", and the prompt cursor was
+invisible.
+
+**Wave 2 — diagnostic infrastructure first.** Two zero-cost-when-
+unused additions: `ANYCLAUDE_DEBUG_PTY=/tmp/pty.bin` tees raw PTY
+bytes to a file from the reader thread; `Cmd+Shift+D` dumps
+grid_size, cursor row/col/visible/style, visible rows + non-zero
+flags to stderr. Both were a "should have shipped this on day
+one" realisation — without them the FIX-4 PTY-trace process
+required `script -q -F` and external ceremony.
+
+**FIX-8 — OSC sliced at UTF-8 continuation byte 0x9C.** The
+`Cmd+Shift+D` dump on the still-broken title showed:
+
+```
+row[00]: " Claude CodClaude█Code v2.1.152                             "
+title: ""
+```
+
+The empty `title:""` was the tell. Claude's `ESC ] 0 ; ✳ Claude
+Code BEL` should have set the window title. The hex dump (from
+the new env tee) showed the OSC payload bytes
+`e2 9c b3 20 43 6c 61 75 64 65 20 43 6f 64 65 07`
+followed by the rest of the welcome screen.
+
+Read the OSC string handler. It matched three terminators:
+`0x07` (BEL), `0x1B` (possible ESC \\), and `0x9C` (8-bit C1
+String Terminator). The middle byte of `✳` (U+2733) is `0x9C`.
+**The parser was treating the middle of a UTF-8 multibyte
+sequence as a string terminator.**
+
+What happened: parser sees `1b 5d` (OSC start), buffers `30 3b`
+(`"0;"`), buffers `e2`, then sees `9c` and triggers the 8-bit ST
+branch. `dispatch_osc` fires on the partial `[0x30, 0x3b, 0xe2]`
+buffer — `std::str::from_utf8([0xe2])` returns Err, `SetTitle`
+silently dropped. State back to ground. Next byte `b3` is a
+continuation byte at ground state — invalid UTF-8 lead, ignored.
+The remaining ` Claude Code` (12 chars) is just plain text,
+printed into row 0 cells 0-11. Then BEL (no-op in ground state),
+then the actual rendering sequences. CHA 12 + BOLD "Claude" at
+cells 11-16, CHA 19 + BOLD "Code" at cells 18-21, CHA 24 +
+"v2.1.152" at cells 23-30 — these all overrode parts of the
+spilled OSC payload, producing the visible "Claude CodClaude
+Code v2.1.152" duplicate. The `█` at col 17 was an alpaca char
+(printed at the wrong grid position because cells 1-10 were
+already occupied by OSC spill) that survived all the CHA
+overrides.
+
+The fix is removing one branch from `osc_string`. Eight bytes of
+code. The comment took longer:
+
+```rust
+// NOTE: 0x9C (8-bit C1 ST) is intentionally NOT a terminator
+// here. In UTF-8 mode (the universal default that Claude Code
+// and every modern shell use), 0x9C appears as a CONTINUATION
+// byte inside multibyte sequences — e.g. as the middle byte of
+// ✳ (U+2733, encoded `e2 9c b3`). Treating it as ST would
+// slice the payload mid-character, drop the trailing byte at
+// ground state as an invalid UTF-8 lead, then print the
+// remaining payload bytes as plain characters in the grid.
+// OSC senders that genuinely need ST use the 7-bit form `ESC \`.
+```
+
+The lesson generalises: **8-bit C1 control codes (0x80-0x9F)
+cannot be honoured in a UTF-8 terminal.** Every byte in that
+range can appear as a UTF-8 continuation byte. The 7-bit ESC-
+prefixed forms remain valid.
+
+**FIX-9 — INVERSE on default fg/bg collapsed to invisible.**
+With the title fixed, the next pass revealed the prompt cursor
+was missing. Claude's faux-cursor is the standard ink idiom:
+`CSI 7 m SP CSI 27 m` — an inverse-video space. The trace
+confirmed it was being sent.
+
+Read `populate_panel`'s inverse handling:
+
+```rust
+let inverse = cell.flags.contains(CellFlags::INVERSE);
+let (fg_eff, bg_eff) = if inverse {
+    (cell.bg, cell.fg)
+} else {
+    (cell.fg, cell.bg)
+};
+
+if bg_eff != TermColor::Default {
+    rects.push(RectInstance { ... bg_eff color ... });
+}
+let is_blank = cell.c == ' ' || cell.c == '\0';
+if is_blank && fg_eff == TermColor::Default && !has_decoration {
+    continue;
+}
+```
+
+For a default-coloured inverse space: `cell.bg = Default`,
+`cell.fg = Default`. The swap produces `(Default, Default)`.
+`bg_eff != Default` is false → no bg rect pushed. `is_blank` is
+true, `fg_eff == Default` is true → `continue`. **Zero pixels
+rendered.** The "block cursor" was a swap of nothing for
+nothing.
+
+Fix is to resolve `TermColor::Default` to concrete RGBA before
+the swap. The bg side stays `Option<[f32; 4]>` so the non-
+inverse default path can still skip the rect push and let the
+window clear-color show through; the inverse path falls back to
+a new `DEFAULT_BG = [0.04, 0.04, 0.06, 1.0]` (matching the
+renderer surface clear color) when no explicit bg was set:
+
+```rust
+let fg_concrete = if cell.fg == TermColor::Default {
+    DEFAULT_FG
+} else {
+    cell.fg.to_rgba(palette)
+};
+let bg_explicit: Option<[f32; 4]> = if cell.bg == TermColor::Default {
+    None
+} else {
+    Some(cell.bg.to_rgba(palette))
+};
+let (fg_eff_rgba, bg_eff_rgba) = if inverse {
+    (bg_explicit.unwrap_or(DEFAULT_BG), Some(fg_concrete))
+} else {
+    (fg_concrete, bg_explicit)
+};
+```
+
+The blank-glyph short-circuit also gains an `!inverse &&
+bg_eff_rgba.is_none()` clause so an inverse blank doesn't get
+skipped after the rect push.
+
+The user confirmed: cursor visible. Phase 5 closed.
+
+**Workflow lessons added to memory.** Two new lessons join
+`feedback_capture_pty_bytes_for_render_bugs`: when adding a new
+state-machine handler that recognises C1 control codes, audit
+every occurrence against UTF-8 reality; when implementing
+INVERSE / xterm reverse-video, do the Default→concrete
+resolution before the swap, not after.
+
+## 29. Branch state at end of Phase 5
+
+~120 commits on `feat/gpu-terminal`. Five crates (mvi preserved
+per user mandate). GPU UI runs Claude Code end-to-end with no
+known visible bugs. The `--gpu` flag is still opt-in pending
+cutover.
+
+Next milestone: cutover commit deletes the legacy ratatui code
+paths (`src/ui/{render,terminal,header,footer,layout,...}.rs`,
+`src/pty/`, etc.), removes the `--gpu` flag, routes `main.rs`
+directly to `ui::gpu::run`, drops `ratatui` / `crossterm` /
+`alacritty_terminal` / `arboard` / `term_input` from
+`Cargo.toml`. Explicitly preserves the `mvi` crate and the
+`src/ui/{backend_switch,history,settings,pty}/` MVI stores per
+user mandate.
