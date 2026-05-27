@@ -39,7 +39,7 @@ use winit::window::{Window, WindowAttributes, WindowId};
 use mvi::Store;
 
 use crate::args::build_spawn_params;
-use crate::backend::BackendState;
+use crate::backend::{AgentBackendState, BackendState};
 use crate::config::{
     save_claude_settings, ClaudeSettingsManager, Config, ConfigStore, DebugLogLevel,
     SettingsFieldSnapshot,
@@ -47,7 +47,9 @@ use crate::config::{
 use crate::metrics::{init_global_logger, DebugLogger};
 use crate::proxy::ProxyServer;
 use crate::shim::TeammateShim;
-use crate::ui::backend_switch::{BackendSwitchActor, BackendSwitchIntent, BackendSwitchState};
+use crate::ui::backend_switch::{
+    BackendPopupSection, BackendSwitchActor, BackendSwitchIntent, BackendSwitchState,
+};
 use crate::ui::gpu::pty::ChildPty;
 use crate::ui::history::{HistoryActor, HistoryDialogState, HistoryEntry, HistoryIntent};
 use crate::ui::settings::{SettingsActor, SettingsDialogState, SettingsIntent};
@@ -253,6 +255,8 @@ pub fn run(
 
     // --- Capture proxy state and run proxy as a tokio task ----------
     let backend_state = proxy_server.backend_state();
+    let subagent_backend = proxy_server.subagent_backend();
+    let teammate_backend = proxy_server.teammate_backend();
     let _proxy_task = async_runtime.spawn(async move {
         if let Err(e) = proxy_server.run().await {
             crate::metrics::app_log_error("gpu_runtime", "Proxy server exited", &e.to_string());
@@ -271,6 +275,8 @@ pub fn run(
         spawn.args,
         spawn.env,
         backend_state,
+        subagent_backend,
+        teammate_backend,
         settings_manager,
     );
     event_loop
@@ -347,6 +353,14 @@ struct GpuApp {
     /// here and Enter calls `switch_backend`; history popup pulls
     /// from `get_switch_log()`.
     backend_state: BackendState,
+    /// Live subagent backend override. `None` means "use active backend
+    /// for subagents". Header reads it for the `sub:` label; backend
+    /// popup writes it via `Enter` in the Subagent section.
+    subagent_backend: AgentBackendState,
+    /// Live teammate backend override. Same shape as `subagent_backend`
+    /// — separate field so subagents and teammates can route to
+    /// different backends.
+    teammate_backend: AgentBackendState,
     /// Spawn params for Claude Code, prepared by `run()` before the
     /// event loop. Used in `resumed()` to spawn the PTY child.
     spawn_command: String,
@@ -381,6 +395,8 @@ impl GpuApp {
         spawn_args: Vec<String>,
         spawn_env: Vec<(String, String)>,
         backend_state: BackendState,
+        subagent_backend: AgentBackendState,
+        teammate_backend: AgentBackendState,
         settings_manager: ClaudeSettingsManager,
     ) -> Self {
         Self {
@@ -412,6 +428,8 @@ impl GpuApp {
             session_copied_until: None,
             session_click_zone: None,
             backend_state,
+            subagent_backend,
+            teammate_backend,
             spawn_command,
             spawn_args,
             spawn_env,
@@ -1206,9 +1224,15 @@ impl GpuApp {
                 .iter()
                 .map(|b| (b.display_name.clone(), b.name.clone()))
                 .collect();
+            let active_backend = self.backend_state.get_active_backend();
+            let current_subagent = self.subagent_backend.get();
+            let current_teammate = self.teammate_backend.get();
             draw_backend_switch_popup(
                 self.backend_switch_store.state(),
                 &items_and_ids,
+                &active_backend,
+                current_subagent.as_deref(),
+                current_teammate.as_deref(),
                 renderer.atlas_mut(),
                 &mut self.font_system,
                 &mut self.swash_cache,
@@ -1643,15 +1667,20 @@ fn schedule_momentum_loop(proxy: EventLoopProxy<UserEvent>, interval: Duration) 
     abort
 }
 
-/// Render the backend-switch popup from its MVI store state. Items
-/// come from the parallel `(display_name, id)` slice the caller
-/// snapshotted from `backend_state.get_config().backends`. C7 stage
-/// renders only the Active section; Subagent / Teammate state lives
-/// in the store but isn't projected yet (post-Phase-5 polish).
+/// Backend popup with three independent sections — Active, Subagent,
+/// Teammate. Tab cycles the active section; Up/Down move selection
+/// within the active section. Enter applies the section's action;
+/// Del/Backspace resets the override sections back to Disabled.
+///
+/// Mirrors the legacy ratatui chrome (`backend_switch::dialog`) layout
+/// 1:1 so users coming from the old UI find the same affordances.
 #[allow(clippy::too_many_arguments)]
 fn draw_backend_switch_popup(
     state: &BackendSwitchState,
     items_and_ids: &[(String, String)],
+    active_backend: &str,
+    current_subagent: Option<&str>,
+    current_teammate: Option<&str>,
     atlas: &mut GlyphAtlas,
     font_system: &mut FontSystem,
     swash_cache: &mut SwashCache,
@@ -1663,29 +1692,595 @@ fn draw_backend_switch_popup(
     window_h: f32,
     sf: f32,
 ) {
-    let selected = match *state {
+    let (active_section, backend_sel, subagent_sel, teammate_sel) = match *state {
         BackendSwitchState::Visible {
-            backend_selection, ..
-        } => backend_selection,
+            section,
+            backend_selection,
+            subagent_selection,
+            teammate_selection,
+            ..
+        } => (
+            section,
+            backend_selection,
+            subagent_selection,
+            teammate_selection,
+        ),
         BackendSwitchState::Hidden => return,
     };
-    let items: Vec<String> = items_and_ids.iter().map(|(name, _id)| name.clone()).collect();
-    draw_string_list_popup(
-        "Switch Backend",
-        &items,
-        selected,
-        None,
-        atlas,
+    let n = items_and_ids.len();
+    if n == 0 {
+        return;
+    }
+
+    let title = "Select Backend";
+    let footer_hint =
+        "Tab: Section  ↑/↓: Move  Enter: Select  Del: Clear  Esc: Close";
+    let separator = "  ──────────────────";
+
+    let measure = |fs: &mut FontSystem,
+                   sc: &mut TextShapeCache,
+                   s: &str,
+                   weight: Weight,
+                   style: Style|
+     -> f32 { measure_label_width(fs, sc, s, POPUP_FONT_SIZE, sf, weight, style) };
+
+    // Width: longest of title / footer / headers / longest formatted item.
+    let mut content_w = measure(
+        font_system,
+        ui_shape_cache,
+        title,
+        Weight::BOLD,
+        Style::Normal,
+    );
+    content_w = content_w.max(measure(
+        font_system,
+        ui_shape_cache,
+        footer_hint,
+        Weight::NORMAL,
+        Style::Normal,
+    ));
+    for header in &[
+        "▸ Active Backend",
+        "▸ Subagent Backend",
+        "▸ Teammate Backend",
+    ] {
+        content_w = content_w.max(measure(
+            font_system,
+            ui_shape_cache,
+            header,
+            Weight::BOLD,
+            Style::Normal,
+        ));
+    }
+    // Longest possible item row: "  → 10. <name>  [Selected]".
+    let max_name_w = items_and_ids
+        .iter()
+        .map(|(name, _)| {
+            measure(
+                font_system,
+                ui_shape_cache,
+                name,
+                Weight::NORMAL,
+                Style::Normal,
+            )
+        })
+        .fold(0.0_f32, f32::max);
+    let prefix_w = measure(
+        font_system,
+        ui_shape_cache,
+        "  → 10. ",
+        Weight::NORMAL,
+        Style::Normal,
+    );
+    let suffix_w = measure(
+        font_system,
+        ui_shape_cache,
+        "  [Selected]",
+        Weight::NORMAL,
+        Style::Normal,
+    );
+    content_w = content_w.max(prefix_w + max_name_w + suffix_w);
+    let disabled_w = measure(
+        font_system,
+        ui_shape_cache,
+        "    Disabled (use active backend)  [Active]",
+        Weight::NORMAL,
+        Style::Normal,
+    );
+    content_w = content_w.max(disabled_w);
+
+    let width = (content_w + POPUP_PADDING * 2.0).max(POPUP_MIN_WIDTH);
+
+    // Total rows: title + gap + (header + sep + items) per section + gaps + footer.
+    let active_rows = n as f32;
+    let override_rows = (n + 1) as f32;
+    let total_rows: f32 = 1.0  // title
+        + 1.0                  // gap before sections
+        + 1.0 + 1.0 + active_rows   // Active section
+        + 1.0                  // gap
+        + 1.0 + 1.0 + override_rows // Subagent
+        + 1.0                  // gap
+        + 1.0 + 1.0 + override_rows // Teammate
+        + 1.0                  // gap before footer
+        + 1.0; // footer
+    let height = POPUP_PADDING * 2.0 + total_rows * POPUP_LINE_HEIGHT;
+
+    let x = ((window_w - width) * 0.5).max(0.0);
+    let y = ((window_h - height) * 0.25).max(0.0);
+
+    draw_popup_chrome(x, y, width, height, shadows, rects);
+
+    let content_x = x + POPUP_PADDING;
+    let mut cursor_y = y + POPUP_PADDING + POPUP_LINE_HEIGHT * 0.75;
+
+    // Title.
+    push_label(
         font_system,
         swash_cache,
+        atlas,
         ui_shape_cache,
-        shadows,
-        rects,
         glyphs,
-        window_w,
-        window_h,
+        title,
+        content_x,
+        cursor_y,
+        POPUP_FONT_SIZE,
+        sf,
+        Weight::BOLD,
+        Style::Normal,
+        DEFAULT_FG_FOR_POPUP_SELECTED,
+    );
+    cursor_y += POPUP_LINE_HEIGHT;
+    cursor_y += POPUP_LINE_HEIGHT;
+
+    // --- Active Backend section ---
+    push_section_header(
+        font_system,
+        swash_cache,
+        atlas,
+        ui_shape_cache,
+        glyphs,
+        "Active Backend",
+        active_section == BackendPopupSection::ActiveBackend,
+        content_x,
+        cursor_y,
         sf,
     );
+    cursor_y += POPUP_LINE_HEIGHT;
+    push_label(
+        font_system,
+        swash_cache,
+        atlas,
+        ui_shape_cache,
+        glyphs,
+        separator,
+        content_x,
+        cursor_y,
+        POPUP_FONT_SIZE,
+        sf,
+        Weight::NORMAL,
+        Style::Normal,
+        CHROME_TEXT_COLOR,
+    );
+    cursor_y += POPUP_LINE_HEIGHT;
+    for (idx, (name, id)) in items_and_ids.iter().enumerate() {
+        let in_section = active_section == BackendPopupSection::ActiveBackend;
+        let selected = in_section && idx == backend_sel;
+        let status = if id == active_backend {
+            Some(("Active", CHROME_FLASH_COLOR))
+        } else {
+            None
+        };
+        push_backend_item(
+            font_system,
+            swash_cache,
+            atlas,
+            ui_shape_cache,
+            glyphs,
+            rects,
+            x,
+            width,
+            content_x,
+            cursor_y,
+            sf,
+            idx + 1,
+            name,
+            status,
+            selected,
+        );
+        cursor_y += POPUP_LINE_HEIGHT;
+    }
+    cursor_y += POPUP_LINE_HEIGHT;
+
+    // --- Subagent Backend section ---
+    push_section_header(
+        font_system,
+        swash_cache,
+        atlas,
+        ui_shape_cache,
+        glyphs,
+        "Subagent Backend",
+        active_section == BackendPopupSection::SubagentBackend,
+        content_x,
+        cursor_y,
+        sf,
+    );
+    cursor_y += POPUP_LINE_HEIGHT;
+    push_label(
+        font_system,
+        swash_cache,
+        atlas,
+        ui_shape_cache,
+        glyphs,
+        separator,
+        content_x,
+        cursor_y,
+        POPUP_FONT_SIZE,
+        sf,
+        Weight::NORMAL,
+        Style::Normal,
+        CHROME_TEXT_COLOR,
+    );
+    cursor_y += POPUP_LINE_HEIGHT;
+    cursor_y += push_override_section_rows(
+        font_system,
+        swash_cache,
+        atlas,
+        ui_shape_cache,
+        glyphs,
+        rects,
+        items_and_ids,
+        current_subagent,
+        subagent_sel,
+        active_section == BackendPopupSection::SubagentBackend,
+        x,
+        width,
+        content_x,
+        cursor_y,
+        sf,
+    );
+    cursor_y += POPUP_LINE_HEIGHT;
+
+    // --- Teammate Backend section ---
+    push_section_header(
+        font_system,
+        swash_cache,
+        atlas,
+        ui_shape_cache,
+        glyphs,
+        "Teammate Backend",
+        active_section == BackendPopupSection::TeammateBackend,
+        content_x,
+        cursor_y,
+        sf,
+    );
+    cursor_y += POPUP_LINE_HEIGHT;
+    push_label(
+        font_system,
+        swash_cache,
+        atlas,
+        ui_shape_cache,
+        glyphs,
+        separator,
+        content_x,
+        cursor_y,
+        POPUP_FONT_SIZE,
+        sf,
+        Weight::NORMAL,
+        Style::Normal,
+        CHROME_TEXT_COLOR,
+    );
+    cursor_y += POPUP_LINE_HEIGHT;
+    cursor_y += push_override_section_rows(
+        font_system,
+        swash_cache,
+        atlas,
+        ui_shape_cache,
+        glyphs,
+        rects,
+        items_and_ids,
+        current_teammate,
+        teammate_sel,
+        active_section == BackendPopupSection::TeammateBackend,
+        x,
+        width,
+        content_x,
+        cursor_y,
+        sf,
+    );
+    cursor_y += POPUP_LINE_HEIGHT;
+
+    // --- Footer hint ---
+    push_label(
+        font_system,
+        swash_cache,
+        atlas,
+        ui_shape_cache,
+        glyphs,
+        footer_hint,
+        content_x,
+        cursor_y,
+        POPUP_FONT_SIZE,
+        sf,
+        Weight::NORMAL,
+        Style::Normal,
+        CHROME_TEXT_COLOR,
+    );
+}
+
+/// Draw a section header line prefixed with `▸` when this section is
+/// the active one (Tab target) and two spaces otherwise.
+#[allow(clippy::too_many_arguments)]
+fn push_section_header(
+    font_system: &mut FontSystem,
+    swash_cache: &mut SwashCache,
+    atlas: &mut GlyphAtlas,
+    ui_shape_cache: &mut TextShapeCache,
+    glyphs: &mut Vec<GlyphInstance>,
+    label: &str,
+    is_active: bool,
+    content_x: f32,
+    cursor_y: f32,
+    sf: f32,
+) {
+    let prefix = if is_active { "▸ " } else { "  " };
+    let line = format!("{prefix}{label}");
+    let color = if is_active {
+        DEFAULT_FG_FOR_POPUP_SELECTED
+    } else {
+        CHROME_TEXT_COLOR
+    };
+    push_label(
+        font_system,
+        swash_cache,
+        atlas,
+        ui_shape_cache,
+        glyphs,
+        &line,
+        content_x,
+        cursor_y,
+        POPUP_FONT_SIZE,
+        sf,
+        Weight::BOLD,
+        Style::Normal,
+        color,
+    );
+}
+
+/// Draw a single backend item row: optional highlight bar, numbered
+/// prefix, display name, optional `[status]` suffix in `status_color`.
+#[allow(clippy::too_many_arguments)]
+fn push_backend_item(
+    font_system: &mut FontSystem,
+    swash_cache: &mut SwashCache,
+    atlas: &mut GlyphAtlas,
+    ui_shape_cache: &mut TextShapeCache,
+    glyphs: &mut Vec<GlyphInstance>,
+    rects: &mut Vec<RectInstance>,
+    popup_x: f32,
+    popup_w: f32,
+    content_x: f32,
+    cursor_y: f32,
+    sf: f32,
+    item_index: usize,
+    display_name: &str,
+    status: Option<(&str, [f32; 4])>,
+    is_selected: bool,
+) {
+    if is_selected {
+        rects.push(RectInstance {
+            pos: [popup_x + 1.0, cursor_y - POPUP_LINE_HEIGHT * 0.75],
+            size: [popup_w - 2.0, POPUP_LINE_HEIGHT],
+            color: POPUP_HIGHLIGHT_COLOR,
+        });
+    }
+    let prefix = if is_selected {
+        format!("  → {}. ", item_index)
+    } else {
+        format!("    {}. ", item_index)
+    };
+    let row_color = if is_selected {
+        DEFAULT_FG_FOR_POPUP_SELECTED
+    } else {
+        CHROME_TEXT_COLOR
+    };
+    let mut x_cursor = push_label(
+        font_system,
+        swash_cache,
+        atlas,
+        ui_shape_cache,
+        glyphs,
+        &prefix,
+        content_x,
+        cursor_y,
+        POPUP_FONT_SIZE,
+        sf,
+        Weight::NORMAL,
+        Style::Normal,
+        row_color,
+    );
+    x_cursor = push_label(
+        font_system,
+        swash_cache,
+        atlas,
+        ui_shape_cache,
+        glyphs,
+        display_name,
+        x_cursor,
+        cursor_y,
+        POPUP_FONT_SIZE,
+        sf,
+        Weight::NORMAL,
+        Style::Normal,
+        row_color,
+    );
+    if let Some((status_text, color)) = status {
+        x_cursor = push_label(
+            font_system,
+            swash_cache,
+            atlas,
+            ui_shape_cache,
+            glyphs,
+            "  [",
+            x_cursor,
+            cursor_y,
+            POPUP_FONT_SIZE,
+            sf,
+            Weight::NORMAL,
+            Style::Normal,
+            row_color,
+        );
+        x_cursor = push_label(
+            font_system,
+            swash_cache,
+            atlas,
+            ui_shape_cache,
+            glyphs,
+            status_text,
+            x_cursor,
+            cursor_y,
+            POPUP_FONT_SIZE,
+            sf,
+            Weight::NORMAL,
+            Style::Normal,
+            color,
+        );
+        let _ = push_label(
+            font_system,
+            swash_cache,
+            atlas,
+            ui_shape_cache,
+            glyphs,
+            "]",
+            x_cursor,
+            cursor_y,
+            POPUP_FONT_SIZE,
+            sf,
+            Weight::NORMAL,
+            Style::Normal,
+            row_color,
+        );
+    }
+}
+
+/// Draw the body of a Subagent / Teammate section: a "Disabled" row
+/// first (selection index 0), then each backend with a `[Selected]`
+/// status when it matches the override's current value. Returns the
+/// total vertical advance (rows × `POPUP_LINE_HEIGHT`) so the caller
+/// can position whatever follows.
+#[allow(clippy::too_many_arguments)]
+fn push_override_section_rows(
+    font_system: &mut FontSystem,
+    swash_cache: &mut SwashCache,
+    atlas: &mut GlyphAtlas,
+    ui_shape_cache: &mut TextShapeCache,
+    glyphs: &mut Vec<GlyphInstance>,
+    rects: &mut Vec<RectInstance>,
+    items_and_ids: &[(String, String)],
+    current_id: Option<&str>,
+    selection: usize,
+    in_section: bool,
+    popup_x: f32,
+    popup_w: f32,
+    content_x: f32,
+    cursor_y: f32,
+    sf: f32,
+) -> f32 {
+    let mut local_y = cursor_y;
+
+    // Row 0 — Disabled.
+    let disabled_selected = in_section && selection == 0;
+    if disabled_selected {
+        rects.push(RectInstance {
+            pos: [popup_x + 1.0, local_y - POPUP_LINE_HEIGHT * 0.75],
+            size: [popup_w - 2.0, POPUP_LINE_HEIGHT],
+            color: POPUP_HIGHLIGHT_COLOR,
+        });
+    }
+    let disabled_color = if disabled_selected {
+        DEFAULT_FG_FOR_POPUP_SELECTED
+    } else {
+        CHROME_TEXT_COLOR
+    };
+    let prefix = if disabled_selected { "  → " } else { "    " };
+    let mut x_cursor = push_label(
+        font_system,
+        swash_cache,
+        atlas,
+        ui_shape_cache,
+        glyphs,
+        prefix,
+        content_x,
+        local_y,
+        POPUP_FONT_SIZE,
+        sf,
+        Weight::NORMAL,
+        Style::Normal,
+        disabled_color,
+    );
+    x_cursor = push_label(
+        font_system,
+        swash_cache,
+        atlas,
+        ui_shape_cache,
+        glyphs,
+        "Disabled (use active backend)",
+        x_cursor,
+        local_y,
+        POPUP_FONT_SIZE,
+        sf,
+        Weight::NORMAL,
+        Style::Normal,
+        disabled_color,
+    );
+    if current_id.is_none() {
+        let _ = push_label(
+            font_system,
+            swash_cache,
+            atlas,
+            ui_shape_cache,
+            glyphs,
+            "  [Active]",
+            x_cursor,
+            local_y,
+            POPUP_FONT_SIZE,
+            sf,
+            Weight::NORMAL,
+            Style::Normal,
+            CHROME_FLASH_COLOR,
+        );
+    }
+    local_y += POPUP_LINE_HEIGHT;
+
+    // Rows 1..=n — backends, idx+1 in the override selection space.
+    for (idx, (name, id)) in items_and_ids.iter().enumerate() {
+        let selection_idx = idx + 1;
+        let selected = in_section && selection == selection_idx;
+        let status = if current_id == Some(id.as_str()) {
+            Some(("Selected", CHROME_FLASH_COLOR))
+        } else {
+            None
+        };
+        push_backend_item(
+            font_system,
+            swash_cache,
+            atlas,
+            ui_shape_cache,
+            glyphs,
+            rects,
+            popup_x,
+            popup_w,
+            content_x,
+            local_y,
+            sf,
+            idx + 1,
+            name,
+            status,
+            selected,
+        );
+        local_y += POPUP_LINE_HEIGHT;
+    }
+
+    local_y - cursor_y
 }
 
 #[allow(clippy::too_many_arguments)]
