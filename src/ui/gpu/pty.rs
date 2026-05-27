@@ -11,6 +11,7 @@
 //! own a restart state machine yet. Restart support lands together
 //! with the post-Phase-5 MVI App store integration.
 
+use std::fs::OpenOptions;
 use std::io::{self, Read, Write};
 use std::sync::mpsc;
 
@@ -70,13 +71,32 @@ impl ChildPty {
             .map_err(|e| io::Error::other(e.to_string()))?;
         let (tx, rx) = mpsc::channel::<Vec<u8>>();
 
+        // Optional raw-byte trace. When ANYCLAUDE_DEBUG_PTY is set to
+        // a writable path, every chunk the reader produces is appended
+        // to that file before being forwarded to the parser. Used for
+        // post-mortem diagnosis of VT rendering bugs (see
+        // feedback_capture_pty_bytes_for_render_bugs).
+        let mut trace_file = std::env::var("ANYCLAUDE_DEBUG_PTY")
+            .ok()
+            .and_then(|path| {
+                OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                    .ok()
+            });
+
         std::thread::spawn(move || {
             let mut buf = [0u8; 4096];
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
-                        if tx.send(buf[..n].to_vec()).is_err() {
+                        let bytes = &buf[..n];
+                        if let Some(f) = trace_file.as_mut() {
+                            let _ = f.write_all(bytes);
+                        }
+                        if tx.send(bytes.to_vec()).is_err() {
                             break;
                         }
                         on_data();
