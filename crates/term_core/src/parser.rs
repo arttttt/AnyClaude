@@ -258,6 +258,14 @@ impl Parser {
         self.param_count = 0;
         self.current_param = 0;
         self.next_is_sub = false;
+        // Wipe the parallel sub-param markers — leaving stale `true`
+        // entries from a previous `CSI 4:3 m` (curly underline) would
+        // poison subsequent semicolon-form SGRs, e.g. a later
+        // `CSI 4 ; 24 m` would see slot 1 marked as a sub-param of 4
+        // and consume `24` as an underline style instead of letting
+        // the top-level dispatch hit the `24 → ClearFlag(UNDERLINE)`
+        // arm.
+        self.param_is_sub = [false; MAX_PARAMS];
         self.private_marker = 0;
         self.intermediate_count = 0;
         self.osc_buf.clear();
@@ -540,6 +548,17 @@ impl Parser {
                 b'p' => emit(Action::RequestMode(self.param(0, 0))),
                 _ => {}
             }
+            return;
+        }
+        // XTERM private-marker prefixes (`>`, `<`, `=`) flag extension
+        // sequences we don't implement: secondary/tertiary device
+        // attributes, modifyOtherKeys, Kitty keyboard stack, etc.
+        // Falling through to the plain CSI dispatch made
+        // `CSI > 4 ; 2 m` (modifyOtherKeys = 2 — emitted by Claude
+        // Code at startup) get processed as plain SGR 4;2 →
+        // permanent DOUBLE_UNDERLINE on every subsequent cell.
+        if self.private_marker != 0 {
+            emit(Action::Unsupported);
             return;
         }
         // Plain CSI.
