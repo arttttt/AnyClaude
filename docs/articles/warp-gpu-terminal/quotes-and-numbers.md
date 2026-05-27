@@ -1119,6 +1119,39 @@ hex dump → snapshot → fix" in under an hour.
   back the first time a render bug isn't obvious from a
   screenshot.
 
+## Phase 5 cutover (2026-05-28) — four commits, ~13K LoC of legacy deleted
+
+| Commit | Summary | What went |
+|--------|---------|-----------|
+| `13d50f2` | `refactor: route main.rs to the GPU UI as the default entry` | `--gpu` flag, crossterm raw mode, legacy branch in `main.rs` |
+| `08faeb7` | `refactor: delete legacy ratatui runtime and non-UI modules` | `src/ui/{app,events,footer,header,input,layout,render,runtime,selection,terminal,terminal_guard,theme}.rs`, `src/ui/components/`, `src/ui/{backend_switch,history}/dialog.rs`, `src/pty/`, `src/clipboard.rs`, `src/ipc/`, `src/shutdown.rs`, `src/error.rs` |
+| `f9d07d5` | `test: prune tests targeting deleted legacy code` | `tests/{app_lifecycle,app_startup,args_pipeline,clipboard,error_registry,ipc,pty_passthrough,restart_claude,test_shutdown,word_selection}.rs` + App/PTY helpers from `tests/common/mod.rs` |
+| `f0693bd` | `chore: remove legacy dependencies and the term_input crate` | `ratatui`, `crossterm`, `signal-hook`, `alacritty_terminal`, `arboard`, `term_input` from `Cargo.toml`; `crates/term_input/` directory |
+
+### What survived
+
+- `mvi` crate and the `src/ui/{backend_switch,history,settings,pty}/{actor,intent,state,mod}.rs` MVI stores — preserved per user mandate "ВЕСЬ UI должен быть на mvi".
+- The four custom rendering crates: `term_core` (VT parser + grid + emulator, 56 integration tests), `term_gpu` (renderer + atlas + scroll + label + panel_render + paint_block_char), `term_layout` (BSP panel manager, 28 tests), `term_clipboard` (NSPasteboard via objc2-app-kit, 15 + 1 ignored mac).
+- `portable-pty` as the spawning library for the GPU UI's `ChildPty`.
+- Everything proxy / config / metrics / shim / args — none of it depended on the legacy UI.
+
+### Cutover guarantee — ordering matters
+
+`cargo check --workspace` passes after each commit. Order chosen to make this true:
+
+1. `main.rs` rerouted FIRST so the legacy `ui::run` becomes
+   unreachable but still compiles.
+2. Legacy modules deleted SECOND in one sweep — internally
+   consistent (every deleted module's consumers were either
+   other deleted modules or in `tests/`).
+3. Tests pruned THIRD — `cargo check` doesn't compile tests,
+   so the broken tests in step 2 didn't show up until now.
+4. Dependencies dropped LAST — once no `use` references
+   them, the `Cargo.toml` removal is just cleanup.
+
+User's smoke test on the resulting binary after all four
+commits: **"работает."**
+
 ## License attribution snippet
 
 For files containing code ported from Warp:

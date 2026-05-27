@@ -923,6 +923,22 @@ settle.
     within a second. The pattern generalises: any chrome
     reading external state needs a periodic refresh, not just
     render-on-input.
+43. **Cutover commit ordering — entry point first, modules
+    second, tests third, deps fourth.** Phase 5 ended with a
+    four-commit deletion of the legacy ratatui path. Order
+    chosen so `cargo check --workspace` passes after every
+    commit: (1) reroute `main.rs` so the legacy entry becomes
+    unreachable but still compiles; (2) delete the legacy
+    modules in one sweep, internally consistent because every
+    deleted module's consumers were either other deleted
+    modules or in `tests/`; (3) prune broken tests (cargo
+    check doesn't compile them, so they show up here, not
+    earlier); (4) drop the unused dependencies. Any other
+    order needs `#[allow(unused_imports)]` band-aids or a
+    period of red builds. The atomic-commit feedback rule
+    survives a 13K-LoC deletion by letting the deletion be one
+    "remove the legacy path" logical change, not 25 individual
+    file removals.
 
 ## Possible follow-up articles
 

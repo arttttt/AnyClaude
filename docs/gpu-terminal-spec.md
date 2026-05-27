@@ -2403,9 +2403,9 @@ behavior.
 `crates/term_gpu/src/{panel_render,label,input,paste,selection}.rs`,
 `crates/term_core/src/parser.rs`.
 
-**Status (2026-05-28):** GPU UI runs Claude Code end-to-end through
-the proxy with no known visible bugs. `--gpu` CLI flag still opt-in;
-legacy ratatui path preserved. Cutover is the next milestone.
+**Status (2026-05-28):** GPU UI is the default and only entry. No
+known visible bugs. Legacy ratatui path and all its supporting
+modules are deleted (see "Phase 5 cutover" below).
 
 **Delivered**
 1. winit ApplicationHandler skeleton + wgpu setup (C1).
@@ -2476,13 +2476,36 @@ all of them; two were the same root cause.
 - `Cmd+Shift+D` one-shot snapshot dump of grid_size, cursor state,
   visible rows + flags to stderr (`948e490`).
 
-**Cutover (next milestone):** delete `src/ui/{render,terminal,header,
-footer,layout,terminal_guard,input,selection,events,theme,runtime,
-app}.rs`, remove the `--gpu` flag and route `main.rs` directly to
-`ui::gpu::run`. **Keep** the `mvi` crate and the `src/ui/
-{backend_switch,history,settings,pty}/` MVI store modules — they are
-consumed by the GPU UI and the user has mandated all UI go through
-MVI.
+**Phase 5 cutover ✅ done (May 28 2026)** — four commits, all
+green:
+
+- `13d50f2` — `main.rs` drops the `--gpu` flag and the raw-mode /
+  legacy branch, routes directly to `ui::gpu::run`. The crossterm
+  + `IsTerminal` probe go away.
+- `08faeb7` — deletes the entire legacy UI runtime
+  (`src/ui/{app,events,footer,header,input,layout,render,runtime,
+  selection,terminal,terminal_guard,theme}.rs` and
+  `src/ui/components/`), the ratatui dialog renderers
+  (`src/ui/{backend_switch,history}/dialog.rs`), and the legacy
+  non-UI helpers (`src/pty/`, `src/clipboard.rs`, `src/ipc/`,
+  `src/shutdown.rs`, `src/error.rs`). Updates `src/lib.rs` and
+  every relevant `mod.rs` to drop the removed declarations.
+- `f9d07d5` — prunes tests that targeted the removed code
+  (`app_lifecycle`, `app_startup`, `args_pipeline`, `clipboard`,
+  `error_registry`, `ipc`, `pty_passthrough`, `restart_claude`,
+  `test_shutdown`, `word_selection`) and strips App / PTY helpers
+  from `tests/common/mod.rs`. All remaining tests pass.
+- `f0693bd` — removes the legacy dependencies from `Cargo.toml`
+  (`ratatui`, `crossterm`, `signal-hook`, `alacritty_terminal`,
+  `arboard`, `term_input`) and drops the `crates/term_input`
+  workspace member.
+
+**Preserved per user mandate "ВЕСЬ UI должен быть на mvi"**: the
+`mvi` crate and the `src/ui/{backend_switch,history,settings,pty}/
+{actor,intent,state,mod}.rs` MVI store modules. The PtyActor /
+PtyLifecycleState aren't wired into the GPU UI yet — kept so a
+future async-attach refactor can use them without re-implementing
+the state machine.
 
 ### SGR visual flags ✅ done (May 2026)
 **Files:** `crates/term_gpu/src/text.rs`, `crates/term_gpu/src/lib.rs`,

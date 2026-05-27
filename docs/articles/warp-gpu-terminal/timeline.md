@@ -946,3 +946,90 @@ directly to `ui::gpu::run`, drops `ratatui` / `crossterm` /
 `Cargo.toml`. Explicitly preserves the `mvi` crate and the
 `src/ui/{backend_switch,history,settings,pty}/` MVI stores per
 user mandate.
+
+## 30. Phase 5 cutover — deleting the legacy path
+
+Four commits, all green. The plan from §29 landed exactly as
+described.
+
+**Commit 1 (`13d50f2`) — main.rs to GPU default.** Drop the
+`--gpu` flag, the crossterm raw-mode handling, and the legacy /
+GPU branch. `main.rs` now loads config, validates `--backend`,
+and hands off to `ui::gpu::run`. The crossterm + `IsTerminal`
+probe go away — winit owns keyboard input. Kept first because
+nothing else depends on it; `cargo check --workspace` still
+passes with the legacy `ui::run` simply becoming unreachable
+from the binary.
+
+**Commit 2 (`08faeb7`) — deleting the legacy code.** One
+sweeping deletion of every file the GPU UI doesn't need:
+
+```
+src/ui/app.rs            src/ui/render.rs
+src/ui/events.rs         src/ui/runtime.rs
+src/ui/footer.rs         src/ui/selection.rs
+src/ui/header.rs         src/ui/terminal.rs
+src/ui/input.rs          src/ui/terminal_guard.rs
+src/ui/layout.rs         src/ui/theme.rs
+src/ui/components/       src/ui/backend_switch/dialog.rs
+src/ui/history/dialog.rs
+
+src/pty/                 src/clipboard.rs
+src/ipc/                 src/shutdown.rs
+src/error.rs
+```
+
+`src/lib.rs`, `src/ui/mod.rs`, and the surviving MVI store
+`mod.rs` files lose their `pub mod` / `pub use` references to
+the deleted modules. Net: −13K LoC of legacy. `cargo check
+--workspace` stays green because the deletions are internally
+consistent — every deleted module was only consumed by other
+deleted modules or by the `tests/` directory.
+
+**Commit 3 (`f9d07d5`) — pruning tests.** Ten test files
+deleted: `app_lifecycle`, `app_startup`, `args_pipeline`,
+`clipboard`, `error_registry`, `ipc`, `pty_passthrough`,
+`restart_claude`, `test_shutdown`, `word_selection`. Each
+targeted a now-removed module. The shared `tests/common/mod.rs`
+loses its App / PTY helpers (`make_app`, `make_app_with_pty`,
+`SpyWriter`, `MockMasterPty`, the `SharedEmulator` alias);
+keeps the network / config utilities (`free_port`,
+`temp_config`, `wait_for_server`, `mock_backend`) that proxy /
+sse / pipeline tests still rely on. `cargo test --workspace`:
+all passing — including every MVI store test (`history_actor`,
+`history_state`, `pty_actor`, `pty_state`, `settings_actor`),
+every proxy / backend / config / shim / metrics test, and the
+`term_core` integration suite (56 tests).
+
+**Commit 4 (`f0693bd`) — dropping legacy dependencies.**
+`Cargo.toml` loses `ratatui`, `crossterm`, `signal-hook`,
+`alacritty_terminal`, `arboard`, `term_input`. The workspace
+members list loses `crates/term_input`; the directory itself is
+gone. `portable-pty` stays — the GPU UI's `ChildPty` spawns
+through it. `Cargo.lock` will regenerate on next build and drop
+the transitive closure of the removed crates.
+
+The user's smoke test on the resulting binary: "работает." That's
+the end of Phase 5.
+
+**Total deletion**: ~13K LoC of legacy ratatui code, 10 test
+files, 6 dependencies, one workspace crate. The remaining
+codebase is the GPU UI, the four custom crates that back it
+(`term_core`, `term_gpu`, `term_layout`, `term_clipboard`), the
+`mvi` framework, the proxy + config + metrics + shim
+infrastructure, and the MVI store backbone (preserved per user
+mandate even where the GPU UI doesn't consume it yet).
+
+## 31. Branch state at end of Phase 5 cutover
+
+~125 commits on `feat/gpu-terminal`. Five workspace crates:
+`mvi`, `term_core`, `term_gpu`, `term_layout`, `term_clipboard`
+(was six — `term_input` removed). The binary entry is
+`./target/release/anyclaude` (no flags, no opt-in); it runs
+Claude Code end-to-end through the proxy on the GPU UI.
+
+What's next: Phase 6 polish items from the spec that didn't
+ship in the closing pass — font fallback configuration is the
+main one. No more cutover, no more legacy. The next
+deliverable is whatever the user prioritises against an open
+slate.
