@@ -99,6 +99,9 @@ const SESSION_COPY_FLASH: Duration = Duration::from_millis(1500);
 
 /// Dim foreground for chrome labels.
 const CHROME_TEXT_COLOR: [f32; 4] = [0.55, 0.55, 0.55, 1.0];
+/// 1px separator line that visually fences the terminal panel off
+/// from the header / footer chrome.
+const CHROME_SEPARATOR_COLOR: [f32; 4] = [0.25, 0.25, 0.27, 1.0];
 /// Highlight color for the "Session ID copied!" flash. Same green
 /// the legacy ratatui chrome uses for STATUS_OK.
 const CHROME_FLASH_COLOR: [f32; 4] = [0.4, 0.85, 0.4, 1.0];
@@ -1292,11 +1295,15 @@ impl GpuApp {
             .values()
             .map(|m| m.total)
             .sum();
+        let window_size = window.inner_size();
+        let window_w_logical = window_size.width as f32 / sf;
+        let window_h_logical = window_size.height as f32 / sf;
         self.session_click_zone = draw_header(
             renderer.atlas_mut(),
             &mut self.font_system,
             &mut self.swash_cache,
             &mut self.ui_shape_cache,
+            &mut rects,
             &mut glyphs,
             &active_backend,
             subagent_label.as_deref(),
@@ -1305,17 +1312,16 @@ impl GpuApp {
             &self.session_id,
             self.start_time,
             self.session_copied_until.is_some(),
+            window_w_logical,
             sf,
         );
 
-        let window_size = window.inner_size();
-        let window_w_logical = window_size.width as f32 / sf;
-        let window_h_logical = window_size.height as f32 / sf;
         draw_footer(
             renderer.atlas_mut(),
             &mut self.font_system,
             &mut self.swash_cache,
             &mut self.ui_shape_cache,
+            &mut rects,
             &mut glyphs,
             window_w_logical,
             window_h_logical,
@@ -1426,6 +1432,7 @@ fn draw_header(
     font_system: &mut FontSystem,
     swash_cache: &mut SwashCache,
     ui_shape_cache: &mut TextShapeCache,
+    rects: &mut Vec<RectInstance>,
     glyphs: &mut Vec<GlyphInstance>,
     active_backend: &str,
     subagent: Option<&str>,
@@ -1434,8 +1441,17 @@ fn draw_header(
     session_id: &str,
     start_time: Instant,
     session_copied_active: bool,
+    window_w_logical: f32,
     sf: f32,
 ) -> Option<(f32, f32)> {
+    // 1px separator that visually delineates the header from the
+    // terminal panel below.
+    rects.push(RectInstance {
+        pos: [0.0, HEADER_HEIGHT_LOGICAL - 1.0],
+        size: [window_w_logical, 1.0],
+        color: CHROME_SEPARATOR_COLOR,
+    });
+
     let backend = active_backend;
     let sub = subagent.unwrap_or("—");
     let team = teammate.unwrap_or("—");
@@ -1524,11 +1540,20 @@ fn draw_footer(
     font_system: &mut FontSystem,
     swash_cache: &mut SwashCache,
     ui_shape_cache: &mut TextShapeCache,
+    rects: &mut Vec<RectInstance>,
     glyphs: &mut Vec<GlyphInstance>,
     window_w_logical: f32,
     window_h_logical: f32,
     sf: f32,
 ) {
+    // 1px separator that visually delineates the terminal panel from
+    // the footer below it.
+    rects.push(RectInstance {
+        pos: [0.0, window_h_logical - FOOTER_HEIGHT_LOGICAL],
+        size: [window_w_logical, 1.0],
+        color: CHROME_SEPARATOR_COLOR,
+    });
+
     let baseline_y = window_h_logical - FOOTER_HEIGHT_LOGICAL * 0.3;
 
     push_label(
