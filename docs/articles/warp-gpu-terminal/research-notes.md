@@ -1418,3 +1418,133 @@ about. Verification was:
   Combining marks (e.g. zalgo text, IPA diacritics) and
   multi-codepoint clusters still need shaping. Warp keeps
   the same slow path for the same reason.
+
+## 21. Phase 5 — Warp parity hunt
+
+After the GPU UI bootstrap shipped (commit `337c0ac`) and Claude
+Code rendered for the first time, the screen looked wrong in
+several ways: underlines under every line, a stretched alpaca
+logo, double-rendered title text, washed-out colors. Four
+targeted commits with a Warp-source agent fixed each in turn.
+
+### FIX-1 — cell metrics from real font face
+
+**File**: `crates/term_gpu/src/text.rs` (FaceMetrics +
+`TextShapeCache::face_metrics`), `panel_render.rs`
+(`measure_cell_metrics`).
+
+Warp's `grid_size_util.rs:23-36`:
+
+```rust
+let ascent  = font_cache.ascent(font_id, font_size);
+let descent = font_cache.descent(font_id, font_size); // negative
+let leading = font_cache.leading(font_id, font_size);
+let height  = ((ascent - descent + leading)
+              * (line_height_ratio / DEFAULT_UI_LINE_HEIGHT_RATIO))
+              .ceil().max(1.);
+```
+
+We dropped the `LINE_HEIGHT_RATIO` constant entirely and now read
+`face.ascender() / units_per_em()` etc. directly from
+`cosmic_text::Font::rustybuzz()` (which derefs to
+`ttf_parser::Face`). Cell height = `ceil(ascent + |descent| +
+line_gap)` in physical pixels. Glyph baseline = ascent (from cell
+top). Result: block characters tile pixel-perfectly and text
+descenders fit within the cell.
+
+### FIX-2 — native block-character painter
+
+**File**: `crates/term_gpu/src/panel_render.rs::paint_block_char`.
+
+Warp's discovery via the agent:
+`app/src/terminal/grid_renderer.rs:2008+` intercepts U+2580-259F
+BEFORE the font shaper and paints solid colored rects covering
+specific cell fractions:
+
+```rust
+NativeGlyphType::UpperHalfBlock => {
+    let rect = RectF::new(cell_bounds.origin(),
+        vec2f(cell_bounds.width(), cell_bounds.height() / 2.0));
+    ctx.scene.draw_rect(rect).with_background(foreground);
+}
+```
+
+Because the rect uses `cell_bounds` (integer pixel-aligned), `█`
+at row N ends at exactly the same pixel where `█` at row N+1
+begins. No AA fringe, no font-metrics gap, perfect tiling.
+
+We ported all 32 block chars (U+2580-U+259F) and 3 shade chars
+(U+2591-U+2593 light/medium/dark, painted as full-cell rects
+with α=64/128/191). Quadrant chars (▖▗▘▙▚▛▜▝▞▟) are paired-rect
+combinations.
+
+### FIX-3 — non-sRGB swap chain + luma-aware glyph contrast
+
+**File**: `crates/term_gpu/src/renderer.rs` (surface format),
+`crates/term_gpu/src/shaders/text.wgsl` (fragment shader).
+
+Two parts, both copied from Warp.
+
+(a) Warp's `crates/warpui/src/rendering/wgpu/resources.rs:835`:
+
+```rust
+config.format = config.format.remove_srgb_suffix();
+```
+
+Forces gamma-space blending — matching iTerm2, Windows Terminal,
+macOS Terminal convention. Instance colors pass through to wgpu
+as raw `[f32;4]` without linear→sRGB conversion. We changed our
+`find(|f| f.is_srgb())` to `find(|f| !f.is_srgb())`.
+
+(b) Warp's `glyph_shader.wgsl:1-22`:
+
+```wgsl
+let k = dot(color.rgb, vec3<f32>(0.30, 0.59, 0.11));  // REC.601 luma
+let contrasted = alpha * (k + 1.0) / (alpha * k + 1.0);
+color.a *= max(contrasted, f32(in.is_emoji));
+```
+
+Brighter glyphs get a fatter AA-fringe alpha so thin strokes
+don't look anaemic on a gamma-space surface. The comment in the
+shader file calls out the source: Windows Terminal's DirectWrite
+light-text fix.
+
+### FIX-4 — VT parser correctness, found via PTY trace
+
+**Files**: `crates/term_core/src/parser.rs` (sub-param tracking,
+private-marker rejection), `grid.rs` (alt-screen SGR isolation).
+
+The story that mattered: three rounds of static analysis found
+real adjacent bugs that didn't fix the user-visible artefact. The
+fourth round captured `/tmp/claude_pty_trace.bin` via
+`script -q -F` and found the actual cause in one pass.
+
+The trace showed claude emits `CSI > 4 ; 2 m` at offset 0x38 —
+XTERM `modifyOtherKeys = 2`, with a `>` private marker. Our
+`dispatch_csi` only handled `?` as a private marker; for `>`,
+`<`, `=` it fell through to plain SGR dispatch. The parser
+interpreted `4 ; 2` as legacy semicolon-form SGR 4;2 →
+DOUBLE_UNDERLINE → stuck on every subsequent cell.
+
+The fix is one branch in `dispatch_csi`:
+
+```rust
+if self.private_marker != 0 {
+    emit(Action::Unsupported);
+    return;
+}
+```
+
+The trace also confirmed claude NEVER emits plain `CSI 4 m`,
+`CSI 4:0 m`, `CSI 4:3 m`, or `CSI 24 m` for its welcome screen.
+The earlier three commits (colon sub-param handling, sub-param
+tracking, alt-screen SGR isolation) addressed real parser
+correctness issues but weren't the cause — they were dormant
+bugs in code paths claude doesn't exercise.
+
+**The workflow lesson, saved as memory**
+(`feedback_capture_pty_bytes_for_render_bugs`): when a terminal-
+rendering bug looks like wrong attributes, capture PTY bytes
+BEFORE static analysis. Static analysis tells you what your
+parser CAN do; the trace tells you what the application actually
+triggers. The intersection is where bugs live.

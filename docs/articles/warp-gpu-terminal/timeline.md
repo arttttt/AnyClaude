@@ -674,3 +674,85 @@ render path for ASCII text is alloc-free on cache hit and
 one cmap lookup on miss — no `cosmic_text::Buffer` for the
 common case. Phase 6 remaining: font fallback configuration,
 drop-shadow shader for overlays.
+
+## 26. Phase 5 — anyclaude GPU integration (~30 commits)
+
+**Setup half (C1-C9 + C10a):** Hidden `--gpu` flag routed to a
+fresh `src/ui/gpu/` module while the legacy ratatui path stayed
+alive next door. Skeleton → shell PTY rendering → keyboard /
+scroll / selection / clipboard parity with `term_grid` → top
+header + bottom footer chrome → drop-shadow shader → three popup
+overlays (backend switch / history / settings). Each commit was a
+tight diff because the heavy lifting had shipped in earlier
+phases. Verification incremental thanks to the flag.
+
+C10a ported ~250 LoC of legacy `runtime.rs` bootstrap (Config,
+DebugLogger, tokio runtime, ProxyServer + try_bind, TeammateShim,
+subagent hooks, proxy as tokio task) into `gpu::run`. `ChildPty`
+started spawning claude with the real env. Backend popup pre-
+selected the active backend; Enter called real `switch_backend`.
+History pulled real switch log.
+
+**MVI mid-stream refactor.** User feedback: "ВЕСЬ ui должен быть
+на mvi". The popup state had been inline `Option<Popup>` enum +
+field-mutating handlers. One refactor commit replaced it with
+`Store<BackendSwitchActor>` / `Store<HistoryActor>` /
+`Store<SettingsActor>` using the existing actor implementations
+from the legacy ratatui path. Lesson: when a codebase has an
+architecture convention, follow it even when "simpler" looks
+possible.
+
+**Warp parity fix half (FIX-1 .. FIX-4).** First screenshot of
+running claude showed underlines under every line, stretched
+alpaca logo, double-rendered title. Three iterations of explore
+agents on Warp's source:
+
+- **FIX-1**: cell metrics from real `ttf_parser::Face` ascent +
+  descent + line_gap (Warp's `grid_size_util.rs:23-36`). Removed
+  `LINE_HEIGHT_RATIO`.
+- **FIX-2**: native painter `paint_block_char` for U+2580-U+259F
+  block + shade characters — solid rects sized to integer cell
+  pixels, not shaped glyphs (Warp's
+  `render_native_glyph:2008+`). 32 block chars + 3 shades.
+- **FIX-3**: non-sRGB swap chain (gamma-space blending) + luma-
+  dependent glyph contrast (`k = dot(rgb, vec3(0.30, 0.59,
+  0.11))`; `alpha *= (k+1) / (alpha*k + 1)`). Copied from
+  Warp's `glyph_shader.wgsl` which lifted it from Windows
+  Terminal's DirectWrite shader.
+
+Block art tiled. Colors became saturated. Underlines remained.
+
+Three more rounds of SGR-parser static analysis found real
+adjacent bugs — `:` sub-param separator unhandled, SGR-4
+dispatcher mis-consumed sub-args, alt-screen SGR state leaked.
+Each correct. Underlines persisted.
+
+**FIX-4 the breakthrough.** Fourth-round agent ran Claude Code
+under `script -q -F` and captured the actual bytes
+(`/tmp/claude_pty_trace.bin`). The trace said: claude never emits
+plain `CSI 4 m` for the welcome screen. The previous three
+parser fixes were chasing sequences that didn't exist. The real
+culprit, sixth control sequence in the trace: `CSI > 4 ; 2 m` —
+XTERM `modifyOtherKeys = 2`. Our `dispatch_csi` only treated `?`
+as a private marker; for `>`, `<`, `=` it fell through to plain
+SGR. Claude's extended-keyboard handshake at startup was being
+dispatched as SGR 4;2 → permanent DOUBLE_UNDERLINE on every cell.
+
+One commit (`f72f652`) — reject non-`?` private markers, reset
+`param_is_sub` array in `reset_for_escape` — and the underline
+went away.
+
+**The workflow lesson, saved as memory**: when a
+terminal-rendering bug looks like wrong attributes, capture PTY
+bytes via `script` BEFORE static analysis. Three rounds of
+parser-grepping missed what one trace made obvious.
+
+## 27. Branch state at end of FIX-4
+
+~110 commits on `feat/gpu-terminal`, 5 crates (mvi preserved per
+user mandate). GPU UI runs Claude Code end-to-end. Five visible
+bugs remain (title double-render, cursor placement, popup section
+split, Cmd+R wiring, header sub/team labels) — tracked in
+`gpu-terminal-remaining-bugs.md` for next-session pickup.
+Cutover (delete ratatui paths, remove `--gpu` flag) deferred
+until those settle.

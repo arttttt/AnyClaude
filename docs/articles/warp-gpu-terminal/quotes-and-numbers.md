@@ -929,6 +929,95 @@ Per `(weight, style)` only — at most a handful of entries.
 Phase 6 remaining: font fallback configuration, drop-shadow
 shader for overlays (§3.4 in the spec).
 
+## Phase 5 — anyclaude GPU integration (May 2026)
+
+~30 commits, broken roughly into 15 "happy path" + 4 Warp-parity
+fixes + several intermediate refactors and bug-chases.
+
+| Commit | Subject | Scope |
+|---|---|---|
+| `c6a4a64` | winit skeleton behind --gpu | C1 |
+| `a507d0b` | extract populate_panel + build_cursor_rect | C2a refactor |
+| `8aa206a` | shell PTY through term_gpu | C2b |
+| `f98d600` | extract input + selection + paste helpers | C3a |
+| `209ac4b` | keyboard input | C3b |
+| `d910273` | scroll + momentum + follow mode | C3c |
+| `44391fd` | mouse selection | C3d |
+| `e0f77c7` | Cmd+C / Cmd+V + image paste | C3e |
+| `e659e91` | top header on GPU canvas | C4 |
+| `8bd2004` | bottom footer on GPU canvas | C5 |
+| `4c000e0` | drop-shadow shader + layered render API | C6 |
+| `d19d217` | backend switch popup overlay | C7 |
+| `a28fed8` | history popup overlay | C8 |
+| `6cb2451` | settings popup overlay | C9 |
+| `337c0ac` | full bootstrap (claude + proxy + shim) | C10a |
+| `b8dec69` | MVI refactor of popups | mid-stream |
+| `c359181` | non-sRGB surface + luma contrast | FIX-3 |
+| `29a446f` | cell metrics + block-char painter | FIX-1+2 |
+| `fc16199` | `:` sub-param separator | FIX-4a |
+| `195aae4` | sub-param tracking + alt-screen SGR isolation | FIX-4b |
+| `f72f652` | XTERM private-marker rejection + param_is_sub reset | FIX-4c |
+
+### Cell metrics formula
+
+Mirrors Warp's `app/src/terminal/grid_size_util.rs:23-36`:
+
+```text
+cell_h_physical = ceil(ascent + |descent| + line_gap) * scale_factor
+cell_w_physical = round(em_width * scale_factor)
+```
+
+`ascent`, `descent`, `line_gap` come from `ttf_parser::Face`
+(via `cosmic_text::Font::rustybuzz()`).
+
+### Block-character painter
+
+32 chars handled (U+2580-U+259F) + 3 shades (U+2591-U+2593).
+Each emits 1-2 `RectInstance`s aligned to integer cell pixels.
+
+### Glyph contrast shader
+
+Mirrors Warp's `glyph_shader.wgsl:1-22`, which credits Windows
+Terminal's DirectWrite light-text fix:
+
+```wgsl
+let k = dot(color.rgb, vec3<f32>(0.30, 0.59, 0.11));
+let alpha = sample.a * (k + 1.0) / (sample.a * k + 1.0);
+return vec4(in.color.rgb, in.color.a * alpha);
+```
+
+Plus non-sRGB swap chain (`config.format.remove_srgb_suffix()`).
+
+### The PTY trace that ended the underline hunt
+
+```bash
+timeout 4 script -q -F /tmp/claude_pty_trace.bin \
+    /Users/artem/.local/bin/claude </dev/null \
+    >/dev/null 2>/dev/null || true
+```
+
+2259 bytes. Sequence #10 at offset 0x38: `ESC [ > 4 ; 2 m` —
+XTERM `modifyOtherKeys = 2`. Our parser only treated `?` as a
+private marker; for `>` it fell through to plain SGR dispatch
+and saw params `[4, 2]` → DOUBLE_UNDERLINE → stuck on every cell.
+
+The trace also confirmed claude NEVER emits plain `CSI 4 m`,
+`4:0 m`, `4:3 m`, or `24 m` for the welcome screen — three
+earlier parser-fix iterations were chasing sequences that didn't
+exist.
+
+### Remaining bugs at end of FIX-4
+
+Tracked in memory `gpu-terminal-remaining-bugs.md`:
+1. "Claude CodClaude Code v2.1.152" title double-render
+2. Cursor renders in unexpected position
+3. No visible separator between chrome and content panels
+4. Backend popup is flat list (legacy showed 3 sections)
+5. Cmd+R restart not wired
+6. Header sub/team labels stuck at "—"; Reqs counter at 0
+
+Cutover deferred until those settle.
+
 ## License attribution snippet
 
 For files containing code ported from Warp:

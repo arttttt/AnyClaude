@@ -595,6 +595,90 @@ the API is independently useful for any future per-cell renderer
 (e.g. an `anyclaude` panel) without committing to a particular
 callsite.
 
+## Act 20 — Phase 5: bootstrapping `anyclaude --gpu`
+
+The point where everything we'd built had to actually run Claude
+Code. Phase 5 turned out to be three orthogonal problems wearing
+the same trench coat.
+
+**The first half — uneventful integration** (~15 commits, C1-C9).
+A `--gpu` flag in `main.rs` routed to a fresh `src/ui/gpu/` module
+while the legacy ratatui path stayed alive next door. Skeleton →
+shell PTY rendering → keyboard / scroll / selection / clipboard
+parity with `term_grid` → top header + bottom footer chrome →
+drop-shadow shader → three popup overlays (backend switch /
+history / settings). Each commit was a tight diff because the
+heavy lifting (cell rendering, scroll math, glyph cache) had
+shipped in earlier phases. The `--gpu` flag let us verify
+incrementally without breaking the legacy entry.
+
+**Then C10a — full bootstrap**. Port the ~250 LoC of legacy
+`runtime.rs` setup (Config, DebugLogger, tokio runtime,
+ProxyServer + try_bind, TeammateShim, subagent hooks, proxy as
+tokio task) into `gpu::run`. `ChildPty` started spawning claude
+with the real env. Backend popup pre-selected the active backend;
+Enter called real `switch_backend`. History pulled real switch
+log. The GPU UI was running anyclaude for the first time.
+
+And the rendering looked terrible.
+
+**The second half — four rounds of Warp parity research.** The
+first user screenshot showed Claude Code's welcome screen with
+underlines under every line, a stretched alpaca logo, and double-
+rendered title text. Three iterations of explore agents on Warp's
+source produced FIX-1 (cell metrics from real ttf-parser
+ascent/descent/line_gap, not `font_size * 1.2`), FIX-2 (native
+painter for U+2580-259F block characters — solid rects, not
+shaped glyphs), FIX-3 (non-sRGB swap chain + luma-dependent glyph
+contrast curve from Windows Terminal). Block art tiled. Colors
+became saturated. Lines underneath text stayed.
+
+Three more rounds of static analysis on the SGR parser found
+real adjacent bugs — `:` sub-param separator was unhandled, the
+SGR-4 dispatcher mis-consumed sub-args as top-level params, alt-
+screen entry/exit leaked SGR state. Each fix was correct.
+Underlines persisted.
+
+**The fourth round was different.** We dispatched an agent that
+ran Claude Code under `script -q -F` and captured the actual
+bytes. The trace said: claude never emits a single `CSI 4 m`
+during the welcome screen. The previous three fixes were chasing
+sequences that didn't exist. The real culprit, on line 6 of the
+trace, was `CSI > 4 ; 2 m` — XTERM's `modifyOtherKeys = 2`
+extension. Our `dispatch_csi` only treated `?` as a private
+marker; for `>`, `<`, `=` it fell through to plain SGR. Claude's
+extended-keyboard handshake at startup was being dispatched as
+SGR 4;2 → permanent DOUBLE_UNDERLINE on every cell.
+
+One line of code reject those sequences; the underline went away.
+
+**The lesson, painfully**: when a terminal-rendering bug looks
+like wrong attributes, the FIRST step is to capture the PTY
+bytes. Three rounds of static analysis missed what one PTY trace
+made obvious. We saved this as a workflow memory
+(`feedback_capture_pty_bytes_for_render_bugs`) so it doesn't get
+re-learned.
+
+**MVI mid-story**: user feedback midway through the second half —
+"ВЕСЬ ui должен быть на mvi". I'd refactored the popup state to
+inline `Option<Popup>` enum + field-mutating handlers because it
+was the simplest thing that worked. The user reminded that the
+project had an mvi crate (Store + Actor primitives) that was
+mandatory for ALL UI design. One refactor commit later, the
+popups dispatched intents to `Store<BackendSwitchActor>`,
+`Store<HistoryActor>`, `Store<SettingsActor>` — using the existing
+actor implementations from the legacy ratatui path. The lesson:
+when a codebase has an architecture convention, follow it even
+when "simpler" looks possible — the convention is usually load-
+bearing for things you don't see.
+
+Phase 5 isn't fully done — a handful of visible bugs remain
+(title double-render, cursor placement, popup section split,
+header sub/team labels). Tracked in
+`gpu-terminal-remaining-bugs.md`. The cutover commit (delete
+ratatui code, remove the `--gpu` flag) is deferred until those
+settle.
+
 ## Outro — Takeaways
 
 1. **Read the source.** Warp's MIT crates contain answers to questions

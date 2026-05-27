@@ -2398,12 +2398,50 @@ signature — drag-divider release no longer leaves history
 fragments. 12 integration tests in `tests/reflow.rs` pin the
 behavior.
 
-### Phase 5 — Integration (2 weeks) ⬜ pending
-**Files:** `src/ui/runtime.rs`, `src/pty/emulator/mod.rs`,
-`src/pty/session.rs`, `src/pty/handle.rs`.
-**Deliverable:** AnyClaude runs on the GPU terminal; Claude Code
-renders correctly. **Blocker:** UX decisions — panels↔sessions
-mapping, tab semantics, header/footer chrome.
+### Phase 5 — Integration (in progress) ⏳
+**Files:** `src/ui/gpu/{mod,app,pty}.rs`, `src/main.rs`,
+`crates/term_gpu/src/{panel_render,label,input,paste,selection}.rs`.
+
+**Status (2026-05-28):** GPU UI runs Claude Code end-to-end through
+the proxy. Hidden `--gpu` CLI flag routes to the new entry; legacy
+ratatui path preserved. Cutover deferred until rendering bugs settle.
+
+**Delivered**
+1. winit ApplicationHandler skeleton + wgpu setup (C1).
+2. Shell PTY rendering through `term_gpu::populate_panel` (C2).
+3. Keyboard / scroll+momentum+follow / drag-select / Cmd+C+V with
+   image-paste (C3).
+4. Top header + bottom footer on GPU canvas via `push_label` (C4-C5).
+5. Drop-shadow shader + layered `RenderLayer { shadows, rects,
+   glyphs }` API + `render(base, overlay, scroll)` (C6).
+6. Backend switch / History / Settings popups as GPU overlays with
+   shared `draw_string_list_popup` chrome (C7-C9).
+7. Full anyclaude bootstrap — Config, DebugLogger, ProxyServer +
+   try_bind, TeammateShim, subagent hook injection, claude PTY
+   spawn (C10a).
+8. MVI refactor of popups — `Store<BackendSwitchActor>` /
+   `Store<HistoryActor>` / `Store<SettingsActor>` replace inline
+   field-mutating state.
+
+**Warp-parity fixes** (after C10a shipped, four targeted commits)
+- FIX-1: cell metrics from real ttf-parser ascent + descent + line_gap.
+- FIX-2: native block-char painter for U+2580-259F (solid rects, not shaped glyphs).
+- FIX-3: non-sRGB swap chain + luma-aware glyph contrast (matches Warp / iTerm2 / Windows Terminal).
+- FIX-4: VT parser — `:` sub-param separator, sub-param tracking (`param_is_sub`), alt-screen SGR isolation, XTERM private-marker (`>`/`<`/`=`) rejection. Root cause of stuck-underline-everywhere was `CSI > 4 ; 2 m` (modifyOtherKeys) being misdispatched as SGR 4;2.
+
+**Remaining bugs** (not blockers for further development — pickup
+list in memory `gpu-terminal-remaining-bugs.md`):
+- Title-row double-render artifact.
+- Cursor position when claude shows prompt.
+- No visible separation between chrome + content panels.
+- Backend popup should show 3 sections (Active / Subagent / Teammate).
+- Cmd+R restart wiring.
+- Header sub/team labels stuck at "—"; Reqs counter at 0.
+
+**Cutover (pending):** delete `src/ui/{render,terminal,header,footer,
+layout,terminal_guard,input,selection,events,theme,runtime,app}.rs`,
+remove the `--gpu` flag and route `main.rs` directly to
+`ui::gpu::run`. Defer until the remaining-bugs list is resolved.
 
 ### SGR visual flags ✅ done (May 2026)
 **Files:** `crates/term_gpu/src/text.rs`, `crates/term_gpu/src/lib.rs`,
