@@ -1,20 +1,5 @@
-pub mod app;
 pub mod backend_switch;
-pub mod events;
-pub mod footer;
 pub mod gpu;
-pub mod header;
 pub mod history;
-pub mod input;
-pub mod layout;
-pub mod components;
 pub mod pty;
-pub mod render;
-pub mod selection;
 pub mod settings;
-pub mod runtime;
-pub mod terminal;
-pub mod terminal_guard;
-pub mod theme;
-
-pub use runtime::run;
