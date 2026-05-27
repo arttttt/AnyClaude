@@ -17,6 +17,14 @@ use crate::{rasterize_glyph, GlyphAtlas, GlyphInstance, RectInstance, TextShapeC
 /// Default foreground color for cells that have not specified one.
 pub const DEFAULT_FG: [f32; 4] = [0.78, 0.78, 0.78, 1.0];
 
+/// Default background color for cells that have not specified one.
+/// Matches the renderer's surface clear color so an inverse-video
+/// cell with no explicit background ends up using this as its
+/// post-swap foreground — i.e. the glyph stays invisible on the
+/// window's clear-color backdrop. Conventionally cell bg "default"
+/// IS the window background.
+pub const DEFAULT_BG: [f32; 4] = [0.04, 0.04, 0.06, 1.0];
+
 /// Cursor block fill / stroke color.
 pub const CURSOR_COLOR: [f32; 4] = [0.95, 0.95, 0.95, 0.55];
 
@@ -143,20 +151,43 @@ pub fn populate_panel(
                 break;
             }
             let inverse = cell.flags.contains(CellFlags::INVERSE);
-            let (fg_eff, bg_eff) = if inverse {
-                (cell.bg, cell.fg)
+            // Resolve TermColor::Default to concrete RGBA before the
+            // inverse swap so swapping two Defaults doesn't end up as
+            // a degenerate "swap nothing for nothing". The bg side
+            // stays Option-typed so the non-inverse / no-explicit-bg
+            // path can still skip the bg rect push and let the window
+            // clear-color show through.
+            let fg_concrete: [f32; 4] = if cell.fg == TermColor::Default {
+                DEFAULT_FG
             } else {
-                (cell.fg, cell.bg)
+                cell.fg.to_rgba(palette)
+            };
+            let bg_explicit: Option<[f32; 4]> = if cell.bg == TermColor::Default {
+                None
+            } else {
+                Some(cell.bg.to_rgba(palette))
+            };
+            let (fg_eff_rgba, bg_eff_rgba): ([f32; 4], Option<[f32; 4]>) = if inverse {
+                // After swap: the new fg is whatever was bg, falling
+                // back to DEFAULT_BG so an inverse cell with no
+                // explicit colors still has a visible "block" — ink-
+                // based TUIs (Claude Code, htop, vim's visual mode)
+                // render their faux-cursor as `CSI 7 m SP CSI 27 m`,
+                // which without this fallback would collapse to a
+                // blank cell on the clear-color backdrop.
+                (bg_explicit.unwrap_or(DEFAULT_BG), Some(fg_concrete))
+            } else {
+                (fg_concrete, bg_explicit)
             };
 
             let pos_x_logical = (panel_origin_x_physical + col_x_phys) / sf;
             let pos_y_logical = (panel_origin_y_physical + row_y_phys) / sf;
 
-            if bg_eff != TermColor::Default {
+            if let Some(bg) = bg_eff_rgba {
                 rects.push(RectInstance {
                     pos: [pos_x_logical, pos_y_logical],
                     size: [cell_w_logical, cell_h_logical],
-                    color: bg_eff.to_rgba(palette),
+                    color: bg,
                 });
             }
 
@@ -164,15 +195,15 @@ pub fn populate_panel(
             let has_decoration = cell.flags.underline()
                 || cell.flags.double_underline()
                 || cell.flags.strike();
-            if is_blank && fg_eff == TermColor::Default && !has_decoration {
+            // An INVERSE cell's bg rect is the visible content, so a
+            // blank glyph is fine — we already pushed the rect above.
+            // For non-inverse cells, a blank with default fg and no
+            // decoration produces nothing visible, skip it.
+            if is_blank && !inverse && bg_eff_rgba.is_none() && !has_decoration {
                 continue;
             }
 
-            let mut color = if fg_eff == TermColor::Default {
-                DEFAULT_FG
-            } else {
-                fg_eff.to_rgba(palette)
-            };
+            let mut color = fg_eff_rgba;
             if cell.flags.faint() {
                 color[3] *= 0.5;
             }
