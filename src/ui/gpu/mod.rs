@@ -9,6 +9,7 @@
 
 pub mod app;
 mod chrome;
+mod popup;
 pub mod pty;
 
 pub use app::run;
