@@ -35,7 +35,9 @@ pub use selection::{
     expand_line, expand_word, is_word_boundary, push_selection_rects, selection_to_text,
     CellPoint, Selection, SELECTION_COLOR, WORD_BOUNDARY_CHARS,
 };
-pub use text::{rasterize_glyph, CharGlyph, FontFamily, ShapedLine, ShapedText, TextShapeCache};
+pub use text::{
+    rasterize_glyph, CharGlyph, FaceMetrics, FontFamily, ShapedLine, ShapedText, TextShapeCache,
+};
 
 /// Re-exported cosmic-text types. Consumers wire these through
 /// `TextShapeCache::shape` / `populate_panel` rather than importing

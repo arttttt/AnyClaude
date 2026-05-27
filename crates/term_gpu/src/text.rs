@@ -96,7 +96,44 @@ struct FaceKey {
 #[derive(Clone, Copy)]
 struct FaceInfo {
     font_id: fontdb::ID,
+    /// Ascender in em-units (font units / units_per_em). Multiply by
+    /// `font_size_physical` to get pixels above the baseline.
     ascent_em: f32,
+    /// Absolute descender depth in em-units (always positive).
+    descent_em: f32,
+    /// Recommended line gap in em-units (font's `hhea.lineGap`).
+    line_gap_em: f32,
+    /// Advance width of the canonical "M" glyph in em-units, used to
+    /// derive the monospace cell width. Falls back to 0.6 em when the
+    /// glyph is missing from the face.
+    em_width: f32,
+}
+
+/// Per-face metrics, scaled to the requested physical font size.
+/// Returned by [`TextShapeCache::face_metrics`] so renderers can compute
+/// cell dimensions and baseline placement from the font's own
+/// ascender / descender / line-gap, not an arbitrary multiplier.
+#[derive(Debug, Clone, Copy)]
+pub struct FaceMetrics {
+    pub ascent_physical: f32,
+    pub descent_physical: f32,
+    pub line_gap_physical: f32,
+    pub em_width_physical: f32,
+}
+
+impl FaceMetrics {
+    /// Standard terminal cell height = ascent + descent + line_gap,
+    /// ceil'd to the next integer pixel so the baseline is on a pixel
+    /// boundary. Matches Warp's grid_size_util formula.
+    pub fn cell_height(&self) -> f32 {
+        (self.ascent_physical + self.descent_physical + self.line_gap_physical)
+            .ceil()
+            .max(1.0)
+    }
+
+    pub fn cell_width(&self) -> f32 {
+        self.em_width_physical.round().max(1.0)
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -297,6 +334,28 @@ impl TextShapeCache {
         })
     }
 
+    /// Scaled metrics for the primary face under the given
+    /// `(family, weight, style)` at `font_size * scale_factor`.
+    /// Returns `None` when face resolution fails (no matching face
+    /// in the system font database, or zero units-per-em).
+    pub fn face_metrics(
+        &mut self,
+        font_system: &mut FontSystem,
+        font_size: f32,
+        scale_factor: f32,
+        weight: Weight,
+        style: Style,
+    ) -> Option<FaceMetrics> {
+        let face = self.resolve_face(font_system, weight, style)?;
+        let font_size_physical = font_size * scale_factor;
+        Some(FaceMetrics {
+            ascent_physical: face.ascent_em * font_size_physical,
+            descent_physical: face.descent_em * font_size_physical,
+            line_gap_physical: face.line_gap_em * font_size_physical,
+            em_width_physical: face.em_width * font_size_physical,
+        })
+    }
+
     fn resolve_face(
         &mut self,
         font_system: &mut FontSystem,
@@ -352,7 +411,22 @@ fn resolve_primary_face(
         return None;
     }
     let ascent_em = face.ascender() as f32 / upem;
-    Some(FaceInfo { font_id: id, ascent_em })
+    // `descender()` is signed and conventionally negative — store its
+    // absolute value so callers can add it cleanly to ascent + line_gap.
+    let descent_em = -(face.descender() as f32) / upem;
+    let line_gap_em = face.line_gap() as f32 / upem;
+    let em_width = face
+        .glyph_index('M')
+        .and_then(|g| face.glyph_hor_advance(g))
+        .map(|adv| adv as f32 / upem)
+        .unwrap_or(0.6);
+    Some(FaceInfo {
+        font_id: id,
+        ascent_em,
+        descent_em,
+        line_gap_em,
+        em_width,
+    })
 }
 
 fn shape_text_inline(

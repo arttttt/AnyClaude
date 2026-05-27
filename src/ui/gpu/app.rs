@@ -55,7 +55,6 @@ use crate::ui::settings::{SettingsActor, SettingsDialogState, SettingsIntent};
 const INITIAL_W: f32 = 1200.0;
 const INITIAL_H: f32 = 800.0;
 const FONT_SIZE: f32 = 14.0;
-const LINE_HEIGHT_RATIO: f32 = 1.3;
 const SCROLLBACK_LINES: usize = 1000;
 const INITIAL_GRID_COLS: usize = 80;
 const INITIAL_GRID_ROWS: usize = 24;
@@ -432,7 +431,6 @@ impl GpuApp {
             &mut self.shape_cache,
             FONT_SIZE,
             self.scale_factor,
-            LINE_HEIGHT_RATIO,
         );
         self.cell_metrics = Some(metrics);
         metrics

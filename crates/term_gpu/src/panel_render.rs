@@ -48,39 +48,37 @@ pub struct CellMetrics {
     pub height_physical: f32,
 }
 
-/// Measure a cell's physical pixel dimensions by shaping a reference
-/// "M" glyph. Cached at the call site — callers should invalidate when
-/// font size or scale factor change.
+/// Measure a cell's physical pixel dimensions from the primary
+/// font face's real ascent + descent + line_gap, mirroring Warp's
+/// `grid_size_util` formula. Result: cell rows tile seamlessly
+/// without vertical gaps (so Unicode block art lines up) and text
+/// rows don't overlap (descenders fit within the cell's bottom edge).
+///
+/// Falls back to `font_size * 1.2` when face resolution fails — the
+/// degenerate path picks a sane default rather than panicking.
 pub fn measure_cell_metrics(
     font_system: &mut FontSystem,
     shape_cache: &mut TextShapeCache,
     font_size: f32,
     scale_factor: f32,
-    line_height_ratio: f32,
 ) -> CellMetrics {
-    let shaped = shape_cache.shape(
+    if let Some(metrics) = shape_cache.face_metrics(
         font_system,
-        "M",
         font_size,
         scale_factor,
-        None,
         Weight::NORMAL,
         Style::Normal,
-    );
-    let width_physical = shaped
-        .lines
-        .first()
-        .and_then(|line| line.glyphs.first())
-        .map(|g| g.w)
-        .unwrap_or(font_size * 0.6 * scale_factor)
-        .round()
-        .max(1.0);
-    let height_physical = (font_size * line_height_ratio * scale_factor)
-        .round()
-        .max(1.0);
+    ) {
+        return CellMetrics {
+            width_physical: metrics.cell_width(),
+            height_physical: metrics.cell_height(),
+        };
+    }
+    let fallback_h = (font_size * scale_factor * 1.2).round().max(1.0);
+    let fallback_w = (font_size * scale_factor * 0.6).round().max(1.0);
     CellMetrics {
-        width_physical,
-        height_physical,
+        width_physical: fallback_w,
+        height_physical: fallback_h,
     }
 }
 
@@ -183,6 +181,42 @@ pub fn populate_panel(
             // decoration lines (matches xterm/iTerm behavior).
             let push_glyph = !cell.flags.hidden() && !is_blank;
             if push_glyph {
+                // Native block-char painter: U+2580-259F rasterise via
+                // colored rects spanning specific cell fractions, not
+                // through the font shaper. Guarantees seamless tiling
+                // (no anti-alias fringe, no font-metrics gap) — block
+                // art and Unicode borders line up pixel-perfectly.
+                // Mirrors Warp's `render_native_glyph`.
+                if paint_block_char(
+                    cell.c,
+                    pos_x_logical,
+                    pos_y_logical,
+                    cell_w_logical,
+                    cell_h_logical,
+                    color,
+                    rects,
+                ) {
+                    // Decoration lines (underline / strike) still apply
+                    // — drop through to that block at the end of the
+                    // outer loop iteration without going through the
+                    // font-shaped path.
+                    if cell.flags.underline() {
+                        rects.push(RectInstance {
+                            pos: [pos_x_logical, pos_y_logical + cell_h_logical * 0.78],
+                            size: [cell_w_logical, 1.0],
+                            color,
+                        });
+                    }
+                    if cell.flags.strike() {
+                        rects.push(RectInstance {
+                            pos: [pos_x_logical, pos_y_logical + cell_h_logical * 0.42],
+                            size: [cell_w_logical, 1.0],
+                            color,
+                        });
+                    }
+                    continue;
+                }
+
                 let cell_origin_x_phys = panel_origin_x_physical + col_x_phys;
                 let cell_origin_y_phys = panel_origin_y_physical + row_y_phys;
 
@@ -370,4 +404,127 @@ pub fn build_cursor_rect(
         size: [size_phys[0] / sf, size_phys[1] / sf],
         color: CURSOR_COLOR,
     })
+}
+
+
+/// Paint a Unicode block / shade character (U+2580–U+259F) as
+/// one or more solid rects filling specific fractions of the
+/// cell. Returns `true` when `ch` was handled (caller must skip
+/// the shaped-glyph path); `false` otherwise.
+///
+/// The block char glyphs in monospace fonts are designed to span
+/// `[0, cell_size]` in their respective dimensions, but cosmic-text's
+/// rasterised glyph image is clipped to the visible coverage and
+/// anti-aliased, so adjacent cells leave a faint 1-2px seam between
+/// rows / columns. Painting them as colored rectangles aligned to
+/// integer cell pixels eliminates the seam entirely. Mirrors Warp's
+/// `render_native_glyph` (app/src/terminal/grid_renderer.rs:2008+).
+pub fn paint_block_char(
+    ch: char,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    color: [f32; 4],
+    rects: &mut Vec<RectInstance>,
+) -> bool {
+    // The eighth fractions are precomputed once instead of inside
+    // each match arm so the codegen stays compact.
+    let h1 = h / 8.0;
+    let h2 = h * 2.0 / 8.0;
+    let h3 = h * 3.0 / 8.0;
+    let h4 = h / 2.0;
+    let h5 = h * 5.0 / 8.0;
+    let h6 = h * 6.0 / 8.0;
+    let h7 = h * 7.0 / 8.0;
+    let w1 = w / 8.0;
+    let w2 = w * 2.0 / 8.0;
+    let w3 = w * 3.0 / 8.0;
+    let w4 = w / 2.0;
+    let w5 = w * 5.0 / 8.0;
+    let w6 = w * 6.0 / 8.0;
+    let w7 = w * 7.0 / 8.0;
+
+    // Shade chars (░ ▒ ▓) are full-cell rects with reduced alpha.
+    let shade = match ch {
+        '\u{2591}' => Some(64.0 / 255.0),  // ░
+        '\u{2592}' => Some(128.0 / 255.0), // ▒
+        '\u{2593}' => Some(191.0 / 255.0), // ▓
+        _ => None,
+    };
+    if let Some(alpha) = shade {
+        rects.push(RectInstance {
+            pos: [x, y],
+            size: [w, h],
+            color: [color[0], color[1], color[2], color[3] * alpha],
+        });
+        return true;
+    }
+
+    match ch {
+        // ▀ Upper half (U+2580)
+        '\u{2580}' => rects.push(RectInstance { pos: [x, y], size: [w, h4], color }),
+        // ▁ Lower 1/8 (U+2581)
+        '\u{2581}' => rects.push(RectInstance { pos: [x, y + h7], size: [w, h1], color }),
+        '\u{2582}' => rects.push(RectInstance { pos: [x, y + h6], size: [w, h2], color }),
+        '\u{2583}' => rects.push(RectInstance { pos: [x, y + h5], size: [w, h3], color }),
+        // ▄ Lower half (U+2584)
+        '\u{2584}' => rects.push(RectInstance { pos: [x, y + h4], size: [w, h4], color }),
+        '\u{2585}' => rects.push(RectInstance { pos: [x, y + h3], size: [w, h5], color }),
+        '\u{2586}' => rects.push(RectInstance { pos: [x, y + h2], size: [w, h6], color }),
+        '\u{2587}' => rects.push(RectInstance { pos: [x, y + h1], size: [w, h7], color }),
+        // █ Full block (U+2588)
+        '\u{2588}' => rects.push(RectInstance { pos: [x, y], size: [w, h], color }),
+        '\u{2589}' => rects.push(RectInstance { pos: [x, y], size: [w7, h], color }),
+        '\u{258A}' => rects.push(RectInstance { pos: [x, y], size: [w6, h], color }),
+        '\u{258B}' => rects.push(RectInstance { pos: [x, y], size: [w5, h], color }),
+        // ▌ Left half (U+258C)
+        '\u{258C}' => rects.push(RectInstance { pos: [x, y], size: [w4, h], color }),
+        '\u{258D}' => rects.push(RectInstance { pos: [x, y], size: [w3, h], color }),
+        '\u{258E}' => rects.push(RectInstance { pos: [x, y], size: [w2, h], color }),
+        '\u{258F}' => rects.push(RectInstance { pos: [x, y], size: [w1, h], color }),
+        // ▐ Right half (U+2590)
+        '\u{2590}' => rects.push(RectInstance { pos: [x + w4, y], size: [w4, h], color }),
+        // ▔ Upper 1/8 (U+2594)
+        '\u{2594}' => rects.push(RectInstance { pos: [x, y], size: [w, h1], color }),
+        // ▕ Right 1/8 (U+2595)
+        '\u{2595}' => rects.push(RectInstance { pos: [x + w7, y], size: [w1, h], color }),
+        // Quadrant blocks (U+2596–U+259F)
+        '\u{2596}' => rects.push(RectInstance { pos: [x, y + h4], size: [w4, h4], color }), // ▖
+        '\u{2597}' => rects.push(RectInstance { pos: [x + w4, y + h4], size: [w4, h4], color }), // ▗
+        '\u{2598}' => rects.push(RectInstance { pos: [x, y], size: [w4, h4], color }), // ▘
+        '\u{2599}' => {
+            // ▙ Left half + lower-right quadrant
+            rects.push(RectInstance { pos: [x, y], size: [w4, h], color });
+            rects.push(RectInstance { pos: [x + w4, y + h4], size: [w4, h4], color });
+        }
+        '\u{259A}' => {
+            // ▚ Upper-left + lower-right (anti-diagonal pair)
+            rects.push(RectInstance { pos: [x, y], size: [w4, h4], color });
+            rects.push(RectInstance { pos: [x + w4, y + h4], size: [w4, h4], color });
+        }
+        '\u{259B}' => {
+            // ▛ Upper half + lower-left quadrant
+            rects.push(RectInstance { pos: [x, y], size: [w, h4], color });
+            rects.push(RectInstance { pos: [x, y + h4], size: [w4, h4], color });
+        }
+        '\u{259C}' => {
+            // ▜ Upper half + lower-right quadrant
+            rects.push(RectInstance { pos: [x, y], size: [w, h4], color });
+            rects.push(RectInstance { pos: [x + w4, y + h4], size: [w4, h4], color });
+        }
+        '\u{259D}' => rects.push(RectInstance { pos: [x + w4, y], size: [w4, h4], color }), // ▝
+        '\u{259E}' => {
+            // ▞ Upper-right + lower-left
+            rects.push(RectInstance { pos: [x + w4, y], size: [w4, h4], color });
+            rects.push(RectInstance { pos: [x, y + h4], size: [w4, h4], color });
+        }
+        '\u{259F}' => {
+            // ▟ Right half + lower-left quadrant
+            rects.push(RectInstance { pos: [x + w4, y], size: [w4, h], color });
+            rects.push(RectInstance { pos: [x, y + h4], size: [w4, h4], color });
+        }
+        _ => return false,
+    }
+    true
 }
