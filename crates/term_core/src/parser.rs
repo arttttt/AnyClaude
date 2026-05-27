@@ -784,10 +784,15 @@ impl Parser {
                 self.dispatch_osc(emit);
                 self.state = State::Escape;
             }
-            0x9C => {
-                self.dispatch_osc(emit);
-                self.state = State::Ground;
-            }
+            // NOTE: 0x9C (8-bit C1 ST) is intentionally NOT a terminator
+            // here. In UTF-8 mode (the universal default that Claude Code
+            // and every modern shell use), 0x9C appears as a CONTINUATION
+            // byte inside multibyte sequences — e.g. as the middle byte of
+            // ✳ (U+2733, encoded `e2 9c b3`). Treating it as ST would
+            // slice the payload mid-character, drop the trailing byte at
+            // ground state as an invalid UTF-8 lead, then print the
+            // remaining payload bytes as plain characters in the grid.
+            // OSC senders that genuinely need ST use the 7-bit form `ESC \`.
             _ => {
                 if self.osc_buf.len() < MAX_OSC_BYTES {
                     self.osc_buf.push(byte);
