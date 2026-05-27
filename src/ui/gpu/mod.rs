@@ -8,9 +8,10 @@
 //! the default and removes the flag.
 
 pub mod app;
+mod bootstrap;
 mod chrome;
 mod diagnostic;
 mod popup;
 pub mod pty;
 
-pub use app::run;
+pub use bootstrap::run;
