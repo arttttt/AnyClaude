@@ -410,7 +410,7 @@ impl Parser {
                 self.current_param = (byte - b'0') as u16;
                 self.state = State::CsiParam;
             }
-            b';' => {
+            b';' | b':' => {
                 self.push_param();
                 self.state = State::CsiParam;
             }
@@ -434,7 +434,16 @@ impl Parser {
                     .saturating_mul(10)
                     .saturating_add((byte - b'0') as u16);
             }
-            b';' => self.push_param(),
+            // Both `;` and `:` separate parameters. The colon is ITU
+            // T.416's sub-parameter form (`CSI 4:0 m` curly cancel,
+            // `CSI 38:2:R:G:B m` truecolor). We don't distinguish
+            // sub-params from top-level — treating them as equal is
+            // what Warp does too and Claude Code's ink emitter relies
+            // on it. Falling through to `CsiIgnore` here (the
+            // pre-fix behaviour) made the colon-form `4:0` silently
+            // drop, leaving the previously-set UNDERLINE flag stuck
+            // on for every subsequent cell.
+            b';' | b':' => self.push_param(),
             0x20..=0x2F => {
                 self.push_intermediate(byte);
                 self.state = State::CsiIntermediate;
