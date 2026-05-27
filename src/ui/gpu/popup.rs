@@ -74,6 +74,10 @@ pub(super) fn override_selection_to_backend_id(
 ///
 /// Mirrors the legacy ratatui chrome (`backend_switch::dialog`) layout
 /// 1:1 so users coming from the old UI find the same affordances.
+///
+/// The body is split across per-section helpers
+/// (`draw_active_section` / `draw_override_section`); this function
+/// owns the layout sequence and the popup chrome wrapper.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn draw_backend_switch_popup(
     state: &BackendSwitchState,
@@ -114,8 +118,111 @@ pub(super) fn draw_backend_switch_popup(
 
     let title = "Select Backend";
     let footer_hint = "Tab: Section  ↑/↓: Move  Enter: Select  Del: Clear  Esc: Close";
-    let separator = "  ──────────────────";
 
+    let width = compute_backend_switch_popup_width(font_system, ui_shape_cache, items_and_ids, sf);
+    let height = compute_backend_switch_popup_height(n);
+
+    let x = ((window_w - width) * 0.5).max(0.0);
+    let y = ((window_h - height) * 0.25).max(0.0);
+
+    draw_popup_chrome(x, y, width, height, shadows, rects);
+
+    let content_x = x + POPUP_PADDING;
+    let mut cursor_y = y + POPUP_PADDING + POPUP_LINE_HEIGHT * 0.75;
+
+    draw_popup_title(
+        font_system,
+        swash_cache,
+        atlas,
+        ui_shape_cache,
+        glyphs,
+        title,
+        content_x,
+        cursor_y,
+        sf,
+    );
+    cursor_y += POPUP_LINE_HEIGHT * 2.0; // title row + gap before sections
+
+    cursor_y += draw_active_section(
+        font_system,
+        swash_cache,
+        atlas,
+        ui_shape_cache,
+        glyphs,
+        rects,
+        items_and_ids,
+        backend_sel,
+        active_section == BackendPopupSection::ActiveBackend,
+        active_backend,
+        x,
+        width,
+        content_x,
+        cursor_y,
+        sf,
+    );
+    cursor_y += POPUP_LINE_HEIGHT; // gap
+
+    cursor_y += draw_override_section(
+        font_system,
+        swash_cache,
+        atlas,
+        ui_shape_cache,
+        glyphs,
+        rects,
+        "Subagent Backend",
+        items_and_ids,
+        current_subagent,
+        subagent_sel,
+        active_section == BackendPopupSection::SubagentBackend,
+        x,
+        width,
+        content_x,
+        cursor_y,
+        sf,
+    );
+    cursor_y += POPUP_LINE_HEIGHT; // gap
+
+    cursor_y += draw_override_section(
+        font_system,
+        swash_cache,
+        atlas,
+        ui_shape_cache,
+        glyphs,
+        rects,
+        "Teammate Backend",
+        items_and_ids,
+        current_teammate,
+        teammate_sel,
+        active_section == BackendPopupSection::TeammateBackend,
+        x,
+        width,
+        content_x,
+        cursor_y,
+        sf,
+    );
+    cursor_y += POPUP_LINE_HEIGHT; // gap before footer hint
+
+    draw_popup_footer_hint(
+        font_system,
+        swash_cache,
+        atlas,
+        ui_shape_cache,
+        glyphs,
+        footer_hint,
+        content_x,
+        cursor_y,
+        sf,
+    );
+}
+
+/// Measure the popup width: max of title / footer / section headers /
+/// longest possible item row, clamped to `POPUP_MIN_WIDTH`.
+fn compute_backend_switch_popup_width(
+    font_system: &mut FontSystem,
+    ui_shape_cache: &mut TextShapeCache,
+    items_and_ids: &[(String, String)],
+    sf: f32,
+) -> f32 {
     let measure = |fs: &mut FontSystem,
                    sc: &mut TextShapeCache,
                    s: &str,
@@ -123,7 +230,9 @@ pub(super) fn draw_backend_switch_popup(
                    style: Style|
      -> f32 { measure_label_width(fs, sc, s, POPUP_FONT_SIZE, sf, weight, style) };
 
-    // Width: longest of title / footer / headers / longest formatted item.
+    let title = "Select Backend";
+    let footer_hint = "Tab: Section  ↑/↓: Move  Enter: Select  Del: Clear  Esc: Close";
+
     let mut content_w = measure(
         font_system,
         ui_shape_cache,
@@ -188,31 +297,40 @@ pub(super) fn draw_backend_switch_popup(
     );
     content_w = content_w.max(disabled_w);
 
-    let width = (content_w + POPUP_PADDING * 2.0).max(POPUP_MIN_WIDTH);
+    (content_w + POPUP_PADDING * 2.0).max(POPUP_MIN_WIDTH)
+}
 
-    // Total rows: title + gap + (header + sep + items) per section + gaps + footer.
+/// Compute the popup height in logical pixels for a backend list of
+/// length `n`. Layout: title + gap + 3 sections (header + sep +
+/// items) + 2 inter-section gaps + gap-before-footer + footer hint.
+fn compute_backend_switch_popup_height(n: usize) -> f32 {
     let active_rows = n as f32;
     let override_rows = (n + 1) as f32;
     let total_rows: f32 = 1.0  // title
         + 1.0                  // gap before sections
-        + 1.0 + 1.0 + active_rows   // Active section
+        + 1.0 + 1.0 + active_rows   // Active section (header + sep + items)
         + 1.0                  // gap
         + 1.0 + 1.0 + override_rows // Subagent
         + 1.0                  // gap
         + 1.0 + 1.0 + override_rows // Teammate
         + 1.0                  // gap before footer
-        + 1.0; // footer
-    let height = POPUP_PADDING * 2.0 + total_rows * POPUP_LINE_HEIGHT;
+        + 1.0; // footer hint
+    POPUP_PADDING * 2.0 + total_rows * POPUP_LINE_HEIGHT
+}
 
-    let x = ((window_w - width) * 0.5).max(0.0);
-    let y = ((window_h - height) * 0.25).max(0.0);
-
-    draw_popup_chrome(x, y, width, height, shadows, rects);
-
-    let content_x = x + POPUP_PADDING;
-    let mut cursor_y = y + POPUP_PADDING + POPUP_LINE_HEIGHT * 0.75;
-
-    // Title.
+/// Draw the popup title in bold + bright foreground.
+#[allow(clippy::too_many_arguments)]
+fn draw_popup_title(
+    font_system: &mut FontSystem,
+    swash_cache: &mut SwashCache,
+    atlas: &mut GlyphAtlas,
+    ui_shape_cache: &mut TextShapeCache,
+    glyphs: &mut Vec<GlyphInstance>,
+    title: &str,
+    content_x: f32,
+    cursor_y: f32,
+    sf: f32,
+) {
     push_label(
         font_system,
         swash_cache,
@@ -228,30 +346,28 @@ pub(super) fn draw_backend_switch_popup(
         Style::Normal,
         DEFAULT_FG_FOR_POPUP_SELECTED,
     );
-    cursor_y += POPUP_LINE_HEIGHT;
-    cursor_y += POPUP_LINE_HEIGHT;
+}
 
-    // --- Active Backend section ---
-    push_section_header(
-        font_system,
-        swash_cache,
-        atlas,
-        ui_shape_cache,
-        glyphs,
-        "Active Backend",
-        active_section == BackendPopupSection::ActiveBackend,
-        content_x,
-        cursor_y,
-        sf,
-    );
-    cursor_y += POPUP_LINE_HEIGHT;
+/// Draw the footer hint line at the bottom of the popup body.
+#[allow(clippy::too_many_arguments)]
+fn draw_popup_footer_hint(
+    font_system: &mut FontSystem,
+    swash_cache: &mut SwashCache,
+    atlas: &mut GlyphAtlas,
+    ui_shape_cache: &mut TextShapeCache,
+    glyphs: &mut Vec<GlyphInstance>,
+    text: &str,
+    content_x: f32,
+    cursor_y: f32,
+    sf: f32,
+) {
     push_label(
         font_system,
         swash_cache,
         atlas,
         ui_shape_cache,
         glyphs,
-        separator,
+        text,
         content_x,
         cursor_y,
         POPUP_FONT_SIZE,
@@ -260,10 +376,45 @@ pub(super) fn draw_backend_switch_popup(
         Style::Normal,
         CHROME_TEXT_COLOR,
     );
-    cursor_y += POPUP_LINE_HEIGHT;
+}
+
+/// Draw the Active Backend section: header + separator + one row per
+/// backend with an `[Active]` status suffix on the matching id. Returns
+/// the total vertical advance so the caller can position the next
+/// section.
+#[allow(clippy::too_many_arguments)]
+fn draw_active_section(
+    font_system: &mut FontSystem,
+    swash_cache: &mut SwashCache,
+    atlas: &mut GlyphAtlas,
+    ui_shape_cache: &mut TextShapeCache,
+    glyphs: &mut Vec<GlyphInstance>,
+    rects: &mut Vec<RectInstance>,
+    items_and_ids: &[(String, String)],
+    selection: usize,
+    in_section: bool,
+    active_backend: &str,
+    popup_x: f32,
+    popup_w: f32,
+    content_x: f32,
+    cursor_y: f32,
+    sf: f32,
+) -> f32 {
+    let mut local_y = push_section_header_with_separator(
+        font_system,
+        swash_cache,
+        atlas,
+        ui_shape_cache,
+        glyphs,
+        "Active Backend",
+        in_section,
+        content_x,
+        cursor_y,
+        sf,
+    );
+
     for (idx, (name, id)) in items_and_ids.iter().enumerate() {
-        let in_section = active_section == BackendPopupSection::ActiveBackend;
-        let selected = in_section && idx == backend_sel;
+        let selected = in_section && idx == selection;
         let status = if id == active_backend {
             Some(("Active", CHROME_FLASH_COLOR))
         } else {
@@ -276,140 +427,159 @@ pub(super) fn draw_backend_switch_popup(
             ui_shape_cache,
             glyphs,
             rects,
-            x,
-            width,
+            popup_x,
+            popup_w,
             content_x,
-            cursor_y,
+            local_y,
             sf,
             idx + 1,
             name,
             status,
             selected,
         );
-        cursor_y += POPUP_LINE_HEIGHT;
+        local_y += POPUP_LINE_HEIGHT;
     }
-    cursor_y += POPUP_LINE_HEIGHT;
 
-    // --- Subagent Backend section ---
-    push_section_header(
-        font_system,
-        swash_cache,
-        atlas,
-        ui_shape_cache,
-        glyphs,
-        "Subagent Backend",
-        active_section == BackendPopupSection::SubagentBackend,
-        content_x,
-        cursor_y,
-        sf,
-    );
-    cursor_y += POPUP_LINE_HEIGHT;
-    push_label(
-        font_system,
-        swash_cache,
-        atlas,
-        ui_shape_cache,
-        glyphs,
-        separator,
-        content_x,
-        cursor_y,
-        POPUP_FONT_SIZE,
-        sf,
-        Weight::NORMAL,
-        Style::Normal,
-        CHROME_TEXT_COLOR,
-    );
-    cursor_y += POPUP_LINE_HEIGHT;
-    cursor_y += push_override_section_rows(
-        font_system,
-        swash_cache,
-        atlas,
-        ui_shape_cache,
-        glyphs,
-        rects,
-        items_and_ids,
-        current_subagent,
-        subagent_sel,
-        active_section == BackendPopupSection::SubagentBackend,
-        x,
-        width,
-        content_x,
-        cursor_y,
-        sf,
-    );
-    cursor_y += POPUP_LINE_HEIGHT;
-
-    // --- Teammate Backend section ---
-    push_section_header(
-        font_system,
-        swash_cache,
-        atlas,
-        ui_shape_cache,
-        glyphs,
-        "Teammate Backend",
-        active_section == BackendPopupSection::TeammateBackend,
-        content_x,
-        cursor_y,
-        sf,
-    );
-    cursor_y += POPUP_LINE_HEIGHT;
-    push_label(
-        font_system,
-        swash_cache,
-        atlas,
-        ui_shape_cache,
-        glyphs,
-        separator,
-        content_x,
-        cursor_y,
-        POPUP_FONT_SIZE,
-        sf,
-        Weight::NORMAL,
-        Style::Normal,
-        CHROME_TEXT_COLOR,
-    );
-    cursor_y += POPUP_LINE_HEIGHT;
-    cursor_y += push_override_section_rows(
-        font_system,
-        swash_cache,
-        atlas,
-        ui_shape_cache,
-        glyphs,
-        rects,
-        items_and_ids,
-        current_teammate,
-        teammate_sel,
-        active_section == BackendPopupSection::TeammateBackend,
-        x,
-        width,
-        content_x,
-        cursor_y,
-        sf,
-    );
-    cursor_y += POPUP_LINE_HEIGHT;
-
-    // --- Footer hint ---
-    push_label(
-        font_system,
-        swash_cache,
-        atlas,
-        ui_shape_cache,
-        glyphs,
-        footer_hint,
-        content_x,
-        cursor_y,
-        POPUP_FONT_SIZE,
-        sf,
-        Weight::NORMAL,
-        Style::Normal,
-        CHROME_TEXT_COLOR,
-    );
+    local_y - cursor_y
 }
 
-/// Draw a section header line prefixed with `▸` when this section is
-/// the active one (Tab target) and two spaces otherwise.
+/// Draw a Subagent / Teammate override section: header + separator +
+/// "Disabled" leader (selection index 0) + one row per backend with a
+/// `[Selected]` status suffix on the row matching `current_id`. Returns
+/// the total vertical advance.
 #[allow(clippy::too_many_arguments)]
-fn push_section_header(
+fn draw_override_section(
+    font_system: &mut FontSystem,
+    swash_cache: &mut SwashCache,
+    atlas: &mut GlyphAtlas,
+    ui_shape_cache: &mut TextShapeCache,
+    glyphs: &mut Vec<GlyphInstance>,
+    rects: &mut Vec<RectInstance>,
+    label: &str,
+    items_and_ids: &[(String, String)],
+    current_id: Option<&str>,
+    selection: usize,
+    in_section: bool,
+    popup_x: f32,
+    popup_w: f32,
+    content_x: f32,
+    cursor_y: f32,
+    sf: f32,
+) -> f32 {
+    let mut local_y = push_section_header_with_separator(
+        font_system,
+        swash_cache,
+        atlas,
+        ui_shape_cache,
+        glyphs,
+        label,
+        in_section,
+        content_x,
+        cursor_y,
+        sf,
+    );
+
+    // Row 0 — Disabled.
+    let disabled_selected = in_section && selection == 0;
+    if disabled_selected {
+        rects.push(RectInstance {
+            pos: [popup_x + 1.0, local_y - POPUP_LINE_HEIGHT * 0.75],
+            size: [popup_w - 2.0, POPUP_LINE_HEIGHT],
+            color: POPUP_HIGHLIGHT_COLOR,
+        });
+    }
+    let disabled_color = if disabled_selected {
+        DEFAULT_FG_FOR_POPUP_SELECTED
+    } else {
+        CHROME_TEXT_COLOR
+    };
+    let prefix = if disabled_selected { "  → " } else { "    " };
+    let mut x_cursor = push_label(
+        font_system,
+        swash_cache,
+        atlas,
+        ui_shape_cache,
+        glyphs,
+        prefix,
+        content_x,
+        local_y,
+        POPUP_FONT_SIZE,
+        sf,
+        Weight::NORMAL,
+        Style::Normal,
+        disabled_color,
+    );
+    x_cursor = push_label(
+        font_system,
+        swash_cache,
+        atlas,
+        ui_shape_cache,
+        glyphs,
+        "Disabled (use active backend)",
+        x_cursor,
+        local_y,
+        POPUP_FONT_SIZE,
+        sf,
+        Weight::NORMAL,
+        Style::Normal,
+        disabled_color,
+    );
+    if current_id.is_none() {
+        let _ = push_label(
+            font_system,
+            swash_cache,
+            atlas,
+            ui_shape_cache,
+            glyphs,
+            "  [Active]",
+            x_cursor,
+            local_y,
+            POPUP_FONT_SIZE,
+            sf,
+            Weight::NORMAL,
+            Style::Normal,
+            CHROME_FLASH_COLOR,
+        );
+    }
+    local_y += POPUP_LINE_HEIGHT;
+
+    // Rows 1..=n — backends, idx+1 in the override selection space.
+    for (idx, (name, id)) in items_and_ids.iter().enumerate() {
+        let selection_idx = idx + 1;
+        let selected = in_section && selection == selection_idx;
+        let status = if current_id == Some(id.as_str()) {
+            Some(("Selected", CHROME_FLASH_COLOR))
+        } else {
+            None
+        };
+        push_backend_item(
+            font_system,
+            swash_cache,
+            atlas,
+            ui_shape_cache,
+            glyphs,
+            rects,
+            popup_x,
+            popup_w,
+            content_x,
+            local_y,
+            sf,
+            idx + 1,
+            name,
+            status,
+            selected,
+        );
+        local_y += POPUP_LINE_HEIGHT;
+    }
+
+    local_y - cursor_y
+}
+
+/// Push a section header (`▸ Name` / `  Name`, bold, dim/bright color
+/// per active state) followed by a horizontal-rule separator line.
+/// Returns the next free y in `cursor_y` units.
+#[allow(clippy::too_many_arguments)]
+fn push_section_header_with_separator(
     font_system: &mut FontSystem,
     swash_cache: &mut SwashCache,
     atlas: &mut GlyphAtlas,
@@ -420,7 +590,7 @@ fn push_section_header(
     content_x: f32,
     cursor_y: f32,
     sf: f32,
-) {
+) -> f32 {
     let prefix = if is_active { "▸ " } else { "  " };
     let line = format!("{prefix}{label}");
     let color = if is_active {
@@ -443,6 +613,23 @@ fn push_section_header(
         Style::Normal,
         color,
     );
+    let separator_y = cursor_y + POPUP_LINE_HEIGHT;
+    push_label(
+        font_system,
+        swash_cache,
+        atlas,
+        ui_shape_cache,
+        glyphs,
+        "  ──────────────────",
+        content_x,
+        separator_y,
+        POPUP_FONT_SIZE,
+        sf,
+        Weight::NORMAL,
+        Style::Normal,
+        CHROME_TEXT_COLOR,
+    );
+    separator_y + POPUP_LINE_HEIGHT
 }
 
 /// Draw a single backend item row: optional highlight bar, numbered
@@ -559,127 +746,6 @@ fn push_backend_item(
             row_color,
         );
     }
-}
-
-/// Draw the body of a Subagent / Teammate section: a "Disabled" row
-/// first (selection index 0), then each backend with a `[Selected]`
-/// status when it matches the override's current value. Returns the
-/// total vertical advance (rows × `POPUP_LINE_HEIGHT`) so the caller
-/// can position whatever follows.
-#[allow(clippy::too_many_arguments)]
-fn push_override_section_rows(
-    font_system: &mut FontSystem,
-    swash_cache: &mut SwashCache,
-    atlas: &mut GlyphAtlas,
-    ui_shape_cache: &mut TextShapeCache,
-    glyphs: &mut Vec<GlyphInstance>,
-    rects: &mut Vec<RectInstance>,
-    items_and_ids: &[(String, String)],
-    current_id: Option<&str>,
-    selection: usize,
-    in_section: bool,
-    popup_x: f32,
-    popup_w: f32,
-    content_x: f32,
-    cursor_y: f32,
-    sf: f32,
-) -> f32 {
-    let mut local_y = cursor_y;
-
-    // Row 0 — Disabled.
-    let disabled_selected = in_section && selection == 0;
-    if disabled_selected {
-        rects.push(RectInstance {
-            pos: [popup_x + 1.0, local_y - POPUP_LINE_HEIGHT * 0.75],
-            size: [popup_w - 2.0, POPUP_LINE_HEIGHT],
-            color: POPUP_HIGHLIGHT_COLOR,
-        });
-    }
-    let disabled_color = if disabled_selected {
-        DEFAULT_FG_FOR_POPUP_SELECTED
-    } else {
-        CHROME_TEXT_COLOR
-    };
-    let prefix = if disabled_selected { "  → " } else { "    " };
-    let mut x_cursor = push_label(
-        font_system,
-        swash_cache,
-        atlas,
-        ui_shape_cache,
-        glyphs,
-        prefix,
-        content_x,
-        local_y,
-        POPUP_FONT_SIZE,
-        sf,
-        Weight::NORMAL,
-        Style::Normal,
-        disabled_color,
-    );
-    x_cursor = push_label(
-        font_system,
-        swash_cache,
-        atlas,
-        ui_shape_cache,
-        glyphs,
-        "Disabled (use active backend)",
-        x_cursor,
-        local_y,
-        POPUP_FONT_SIZE,
-        sf,
-        Weight::NORMAL,
-        Style::Normal,
-        disabled_color,
-    );
-    if current_id.is_none() {
-        let _ = push_label(
-            font_system,
-            swash_cache,
-            atlas,
-            ui_shape_cache,
-            glyphs,
-            "  [Active]",
-            x_cursor,
-            local_y,
-            POPUP_FONT_SIZE,
-            sf,
-            Weight::NORMAL,
-            Style::Normal,
-            CHROME_FLASH_COLOR,
-        );
-    }
-    local_y += POPUP_LINE_HEIGHT;
-
-    // Rows 1..=n — backends, idx+1 in the override selection space.
-    for (idx, (name, id)) in items_and_ids.iter().enumerate() {
-        let selection_idx = idx + 1;
-        let selected = in_section && selection == selection_idx;
-        let status = if current_id == Some(id.as_str()) {
-            Some(("Selected", CHROME_FLASH_COLOR))
-        } else {
-            None
-        };
-        push_backend_item(
-            font_system,
-            swash_cache,
-            atlas,
-            ui_shape_cache,
-            glyphs,
-            rects,
-            popup_x,
-            popup_w,
-            content_x,
-            local_y,
-            sf,
-            idx + 1,
-            name,
-            status,
-            selected,
-        );
-        local_y += POPUP_LINE_HEIGHT;
-    }
-
-    local_y - cursor_y
 }
 
 #[allow(clippy::too_many_arguments)]
