@@ -854,51 +854,6 @@ impl GpuApp {
         }
     }
 
-    /// Dump a compact post-mortem snapshot of the GPU UI to stderr.
-    /// Bound to Cmd+Shift+D. Used to diagnose rendering bugs after a
-    /// user-visible artefact: the captured snapshot tells us what the
-    /// emulator actually contains for the cells we draw on screen.
-    fn dump_diagnostic_snapshot(&self) {
-        eprintln!("=== anyclaude diagnostic snapshot ===");
-        eprintln!("grid_size: {} cols x {} rows", self.grid_size.0, self.grid_size.1);
-        eprintln!(
-            "scroll: offset_y={:.2}, max={:.2}",
-            self.scroll.offset_y,
-            self.scroll.max_offset()
-        );
-        let Some(emu) = self.emulator.as_ref() else {
-            eprintln!("(no emulator)");
-            eprintln!("=== end snapshot ===");
-            return;
-        };
-        let snap = emu.snapshot();
-        eprintln!(
-            "cursor: row={}, col={}, visible={}, style={:?}",
-            snap.cursor.row, snap.cursor.col, snap.cursor.visible, snap.cursor.style
-        );
-        eprintln!(
-            "visible_rows: {}, total_rows: {}, visible_start: {}",
-            snap.visible_rows,
-            snap.rows.len(),
-            snap.visible_start()
-        );
-        eprintln!("title: {:?}", snap.title);
-        for (offset, row) in snap.visible_iter().take(4).enumerate() {
-            let chars: String = row.cells.iter().take(60).map(|c| c.c).collect();
-            eprintln!("row[{offset:02}]: {chars:?}");
-            for (i, c) in row.cells.iter().enumerate().take(60) {
-                if c.flags.bits() != 0 {
-                    eprintln!(
-                        "    [{offset:02}][{i:02}]={:?} flags=0x{:04x}",
-                        c.c,
-                        c.flags.bits()
-                    );
-                }
-            }
-        }
-        eprintln!("=== end snapshot ===");
-    }
-
     /// Tear down the running Claude session and start a fresh one with
     /// the same spawn params. Wired to Cmd+R. The terminal state
     /// (emulator, scroll, selection) is reset so the new session
@@ -1561,7 +1516,13 @@ impl ApplicationHandler<UserEvent> for GpuApp {
                             KeyCode::KeyE => self.toggle_settings_popup(),
                             KeyCode::KeyR => self.restart_pty(),
                             KeyCode::KeyD if self.modifiers.shift_key() => {
-                                self.dump_diagnostic_snapshot();
+                                let snap = self.emulator.as_ref().map(|e| e.snapshot());
+                                super::diagnostic::dump_snapshot(
+                                    self.grid_size,
+                                    self.scroll.offset_y,
+                                    self.scroll.max_offset(),
+                                    snap.as_ref(),
+                                );
                             }
                             KeyCode::KeyQ => event_loop.exit(),
                             _ => {}

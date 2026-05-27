@@ -9,6 +9,7 @@
 
 pub mod app;
 mod chrome;
+mod diagnostic;
 mod popup;
 pub mod pty;
 
