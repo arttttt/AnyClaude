@@ -207,6 +207,12 @@ pub struct Grid {
     /// Alt screen state.
     alt_rows: Option<Vec<Row>>,
     alt_cursor: Option<(usize, usize)>,
+    /// SGR template snapshot at the moment `enter_alt_screen` ran,
+    /// restored by `exit_alt_screen`. Without this, attributes set
+    /// in alt-screen rendering (BOLD, UNDERLINE, custom fg/bg) bled
+    /// back into the primary buffer once Claude Code exited its
+    /// welcome / TUI display.
+    alt_sgr: Option<(TermColor, TermColor, CellFlags)>,
 
     /// Modes.
     pub origin_mode: bool,
@@ -257,6 +263,7 @@ impl Grid {
             next_prompt: None,
             alt_rows: None,
             alt_cursor: None,
+            alt_sgr: None,
             origin_mode: false,
             auto_wrap: true,
             bracketed_paste: false,
@@ -659,6 +666,14 @@ impl Grid {
         let alt: Vec<Row> = (0..rows).map(|_| Row::new(cols)).collect();
         self.alt_rows = Some(std::mem::replace(&mut self.rows, alt));
         self.alt_cursor = Some((self.cursor_row, self.cursor_col));
+        // Snapshot the primary SGR template so we can restore it on
+        // exit; reset attrs to defaults for the alt screen so stale
+        // BOLD / UNDERLINE / custom fg / bg from the primary don't
+        // bleed into the freshly-entered alt frame.
+        self.alt_sgr = Some((self.current_fg, self.current_bg, self.current_flags));
+        self.current_fg = TermColor::Default;
+        self.current_bg = TermColor::Default;
+        self.current_flags = CellFlags::empty();
         self.cursor_row = 0;
         self.cursor_col = 0;
     }
@@ -670,6 +685,13 @@ impl Grid {
         if let Some((r, c)) = self.alt_cursor.take() {
             self.cursor_row = r;
             self.cursor_col = c;
+        }
+        // Restore the primary screen's SGR template — symmetric with
+        // the snapshot in `enter_alt_screen`.
+        if let Some((fg, bg, flags)) = self.alt_sgr.take() {
+            self.current_fg = fg;
+            self.current_bg = bg;
+            self.current_flags = flags;
         }
     }
 

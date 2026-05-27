@@ -163,6 +163,14 @@ pub enum SgrAction {
 pub struct Parser {
     state: State,
     params: [u16; MAX_PARAMS],
+    /// Parallel array: `true` when the param at the same index was
+    /// pushed via `:` (sub-parameter, ITU T.416 style) rather than `;`.
+    /// `dispatch_sgr` uses this to distinguish `CSI 4 : 3 m` (curly
+    /// underline — single sub-arg on 4) from `CSI 4 ; 3 m` (set
+    /// underline THEN italic — two top-level args).
+    param_is_sub: [bool; MAX_PARAMS],
+    /// Set on `:`; reads when the NEXT param value is pushed.
+    next_is_sub: bool,
     param_count: usize,
     current_param: u16,
     private_marker: u8,
@@ -182,6 +190,8 @@ impl Parser {
         Self {
             state: State::Ground,
             params: [0; MAX_PARAMS],
+            param_is_sub: [false; MAX_PARAMS],
+            next_is_sub: false,
             param_count: 0,
             current_param: 0,
             private_marker: 0,
@@ -247,6 +257,7 @@ impl Parser {
     fn reset_for_escape(&mut self) {
         self.param_count = 0;
         self.current_param = 0;
+        self.next_is_sub = false;
         self.private_marker = 0;
         self.intermediate_count = 0;
         self.osc_buf.clear();
@@ -410,8 +421,12 @@ impl Parser {
                 self.current_param = (byte - b'0') as u16;
                 self.state = State::CsiParam;
             }
-            b';' | b':' => {
+            b';' => {
                 self.push_param();
+                self.state = State::CsiParam;
+            }
+            b':' => {
+                self.push_param_sub();
                 self.state = State::CsiParam;
             }
             0x20..=0x2F => {
@@ -434,16 +449,15 @@ impl Parser {
                     .saturating_mul(10)
                     .saturating_add((byte - b'0') as u16);
             }
-            // Both `;` and `:` separate parameters. The colon is ITU
-            // T.416's sub-parameter form (`CSI 4:0 m` curly cancel,
-            // `CSI 38:2:R:G:B m` truecolor). We don't distinguish
-            // sub-params from top-level — treating them as equal is
-            // what Warp does too and Claude Code's ink emitter relies
-            // on it. Falling through to `CsiIgnore` here (the
-            // pre-fix behaviour) made the colon-form `4:0` silently
-            // drop, leaving the previously-set UNDERLINE flag stuck
-            // on for every subsequent cell.
-            b';' | b':' => self.push_param(),
+            // `;` is the conventional top-level separator. `:` is
+            // ITU T.416's sub-parameter form — `CSI 4:0 m` cancels
+            // a curly underline; `CSI 38:2:R:G:B m` is colon-form
+            // truecolor. Tracking them separately matters because
+            // `CSI 4:3 m` (curly underline; sub-arg `3`) must NOT
+            // also set ITALIC the way `CSI 4;3 m` (underline THEN
+            // italic) does. Mirrors Warp's vte-style ParamsIter.
+            b';' => self.push_param(),
+            b':' => self.push_param_sub(),
             0x20..=0x2F => {
                 self.push_intermediate(byte);
                 self.state = State::CsiIntermediate;
@@ -478,9 +492,20 @@ impl Parser {
     fn push_param(&mut self) {
         if self.param_count < MAX_PARAMS {
             self.params[self.param_count] = self.current_param;
+            self.param_is_sub[self.param_count] = self.next_is_sub;
             self.param_count += 1;
         }
         self.current_param = 0;
+        self.next_is_sub = false;
+    }
+
+    /// `:` separator — push the current value and mark the NEXT slot
+    /// as a sub-parameter (ITU T.416). The handler for the preceding
+    /// top-level parameter is responsible for consuming sub-params;
+    /// untouched sub-params are skipped by `dispatch_sgr`.
+    fn push_param_sub(&mut self) {
+        self.push_param();
+        self.next_is_sub = true;
     }
 
     fn push_intermediate(&mut self, byte: u8) {
@@ -590,6 +615,15 @@ impl Parser {
         }
         let mut i = 0;
         while i < self.param_count {
+            // Sub-params (`:` separator) are consumed by the
+            // handler for the PRECEDING top-level param. Skip any
+            // stragglers at the top level so they don't get
+            // dispatched as independent SGRs — that's what made
+            // `CSI 4:3 m` falsely also set ITALIC.
+            if self.param_is_sub[i] {
+                i += 1;
+                continue;
+            }
             let p = self.params[i];
             match p {
                 0 => emit(Action::SetAttr(SgrAction::Reset)),
@@ -597,13 +631,48 @@ impl Parser {
                 2 => emit(Action::SetAttr(SgrAction::SetFlag(CellFlags::FAINT))),
                 3 => emit(Action::SetAttr(SgrAction::SetFlag(CellFlags::ITALIC))),
                 4 => {
-                    // 4;2 double underline, 4;0 cancel, plain 4 single.
-                    if i + 1 < self.param_count && self.params[i + 1] == 2 {
+                    // Sub-parameter form (ITU T.416): the next slot,
+                    // when marked as a sub-param of this `4`, picks
+                    // the underline STYLE. 4:0 cancels, 4:2 doubles,
+                    // 4:1 / 4:3 / 4:4 / 4:5 are single / curly /
+                    // dotted / dashed — we collapse the styled
+                    // variants to plain UNDERLINE (matching Warp's
+                    // `[4, ..] => Attr::Underline`).
+                    if i + 1 < self.param_count && self.param_is_sub[i + 1] {
+                        let style = self.params[i + 1];
+                        match style {
+                            0 => emit(Action::SetAttr(SgrAction::ClearFlag(
+                                CellFlags::UNDERLINE | CellFlags::DOUBLE_UNDERLINE,
+                            ))),
+                            2 => emit(Action::SetAttr(SgrAction::SetFlag(
+                                CellFlags::DOUBLE_UNDERLINE,
+                            ))),
+                            _ => {
+                                emit(Action::SetAttr(SgrAction::SetFlag(CellFlags::UNDERLINE)))
+                            }
+                        }
+                        // Skip past the consumed sub-param AND any
+                        // remaining sub-params on this `4` (some
+                        // emitters chain extra sub-args for color).
+                        i += 1;
+                        while i + 1 < self.param_count && self.param_is_sub[i + 1] {
+                            i += 1;
+                        }
+                    } else if i + 1 < self.param_count
+                        && !self.param_is_sub[i + 1]
+                        && self.params[i + 1] == 2
+                    {
+                        // Legacy semicolon-form `CSI 4;2 m` double
+                        // underline — keep recognising it.
                         emit(Action::SetAttr(SgrAction::SetFlag(
                             CellFlags::DOUBLE_UNDERLINE,
                         )));
                         i += 1;
-                    } else if i + 1 < self.param_count && self.params[i + 1] == 0 {
+                    } else if i + 1 < self.param_count
+                        && !self.param_is_sub[i + 1]
+                        && self.params[i + 1] == 0
+                    {
+                        // Legacy semicolon-form `CSI 4;0 m` cancel.
                         emit(Action::SetAttr(SgrAction::ClearFlag(
                             CellFlags::UNDERLINE | CellFlags::DOUBLE_UNDERLINE,
                         )));
