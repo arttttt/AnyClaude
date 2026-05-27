@@ -41,7 +41,7 @@ use mvi::Store;
 use crate::args::build_spawn_params;
 use crate::backend::{AgentBackendState, BackendState};
 use crate::config::{
-    save_claude_settings, ClaudeSettingsManager, Config, ConfigStore, DebugLogLevel,
+    save_claude_settings, Backend, ClaudeSettingsManager, Config, ConfigStore, DebugLogLevel,
     SettingsFieldSnapshot,
 };
 use crate::metrics::{init_global_logger, DebugLogger};
@@ -788,21 +788,58 @@ impl GpuApp {
                 self.request_redraw();
             }
             PhysicalKey::Code(KeyCode::Enter) => {
-                if let BackendSwitchState::Visible {
-                    backend_selection, ..
-                } = *self.backend_switch_store.state()
-                {
-                    let cfg = self.backend_state.get_config();
-                    if let Some(b) = cfg.backends.get(backend_selection) {
-                        let id = b.name.clone();
-                        if let Err(e) = self.backend_state.switch_backend(&id) {
-                            eprintln!("anyclaude: backend switch failed: {e}");
-                        }
-                    }
-                }
+                self.apply_backend_switch_selection();
                 self.close_all_popups();
             }
+            PhysicalKey::Code(KeyCode::Delete | KeyCode::Backspace) => {
+                self.backend_switch_store
+                    .dispatch(BackendSwitchIntent::Clear);
+                self.request_redraw();
+            }
             _ => {}
+        }
+    }
+
+    /// Apply whichever action the active section maps to: the Active
+    /// section calls `switch_backend`; the Subagent / Teammate sections
+    /// write into their `AgentBackendState` (index 0 == Disabled
+    /// → `None`, index N+1 == backend N). Errors are logged but
+    /// non-fatal — the popup still closes.
+    fn apply_backend_switch_selection(&mut self) {
+        let (section, backend_sel, subagent_sel, teammate_sel) =
+            match *self.backend_switch_store.state() {
+                BackendSwitchState::Visible {
+                    section,
+                    backend_selection,
+                    subagent_selection,
+                    teammate_selection,
+                    ..
+                } => (
+                    section,
+                    backend_selection,
+                    subagent_selection,
+                    teammate_selection,
+                ),
+                BackendSwitchState::Hidden => return,
+            };
+        let cfg = self.backend_state.get_config();
+        match section {
+            BackendPopupSection::ActiveBackend => {
+                if let Some(b) = cfg.backends.get(backend_sel) {
+                    let id = b.name.clone();
+                    if let Err(e) = self.backend_state.switch_backend(&id) {
+                        eprintln!("anyclaude: backend switch failed: {e}");
+                    }
+                }
+            }
+            BackendPopupSection::SubagentBackend => {
+                let new_value = override_selection_to_backend_id(&cfg.backends, subagent_sel);
+                self.subagent_backend.set(new_value);
+            }
+            BackendPopupSection::TeammateBackend => {
+                let new_value = override_selection_to_backend_id(&cfg.backends, teammate_sel);
+                self.teammate_backend.set(new_value);
+            }
         }
     }
 
@@ -1665,6 +1702,17 @@ fn schedule_momentum_loop(proxy: EventLoopProxy<UserEvent>, interval: Duration) 
         let _ = futures::executor::block_on(fut);
     });
     abort
+}
+
+/// Map an override-section selection index into the backend id it
+/// represents. Index 0 is the "Disabled" leader (returns `None`);
+/// indices 1..=N map to `backends[i - 1]`. Out-of-range indices fall
+/// back to `None` so a stale state never panics.
+fn override_selection_to_backend_id(backends: &[Backend], selection: usize) -> Option<String> {
+    if selection == 0 {
+        return None;
+    }
+    backends.get(selection - 1).map(|b| b.name.clone())
 }
 
 /// Backend popup with three independent sections — Active, Subagent,
