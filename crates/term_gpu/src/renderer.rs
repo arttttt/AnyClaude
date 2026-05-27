@@ -57,12 +57,18 @@ impl GpuRenderer {
         .expect("request_device failed");
 
         let surface_caps = surface.get_capabilities(&adapter);
+        // Terminal-style rendering wants blending in *gamma space*, not
+        // linear — same convention as iTerm2 / Windows Terminal / Warp.
+        // An sRGB swap-chain would convert our `[f32;4]` instance colors
+        // from linear→sRGB at write-time, making light-on-dark text look
+        // washed-out and dim. Prefer the non-sRGB variant; fall back to
+        // remove_srgb_suffix on whatever the adapter handed back.
         let format = surface_caps
             .formats
             .iter()
             .copied()
-            .find(|f| f.is_srgb())
-            .unwrap_or(surface_caps.formats[0]);
+            .find(|f| !f.is_srgb())
+            .unwrap_or_else(|| surface_caps.formats[0].remove_srgb_suffix());
 
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,

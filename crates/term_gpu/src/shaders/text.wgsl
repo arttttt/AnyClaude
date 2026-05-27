@@ -47,12 +47,14 @@ fn vs_main(@builtin(vertex_index) vi: u32, g: GlyphInput) -> VsOut {
     return out;
 }
 
-// Brightness-scaled contrast enhancement. Lifts the perceived weight of
-// thin glyphs on dark backgrounds. Adapted from Windows Terminal's
-// DirectWrite light-text fix (also used by Warp). k around 0.5..1.0;
-// 0.7 is a good default.
+// Luma-dependent contrast enhancement. Lifts perceived weight of
+// AA-fringe pixels so light-on-dark text doesn't look anemic on a
+// gamma-space (non-sRGB) swap chain. Copied from Warp's
+// glyph_shader.wgsl which sources it from Windows Terminal's
+// DirectWrite light-text fix. k = REC.601 luma of the foreground
+// color; brighter glyphs get a fatter alpha boost.
 fn enhance_contrast(alpha: f32, k: f32) -> f32 {
-    return alpha + alpha * (1.0 - alpha) * k;
+    return alpha * (k + 1.0) / (alpha * k + 1.0);
 }
 
 @fragment
@@ -64,6 +66,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     if is_color {
         return sample;
     }
-    let alpha = enhance_contrast(sample.a, 0.7);
+    let luma = dot(in.color.rgb, vec3<f32>(0.30, 0.59, 0.11));
+    let alpha = enhance_contrast(sample.a, luma);
     return vec4(in.color.rgb, in.color.a * alpha);
 }
