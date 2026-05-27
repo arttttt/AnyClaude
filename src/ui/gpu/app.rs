@@ -134,6 +134,9 @@ enum UserEvent {
     PtyBytesArrived,
     GestureEnded,
     MomentumTick,
+    /// 1Hz heartbeat that keeps Uptime / Reqs / sub / team chrome
+    /// fresh even when the PTY is silent.
+    TickRedraw,
 }
 
 /// Entry point for the GPU UI. Performs the full anyclaude bootstrap
@@ -324,6 +327,9 @@ struct GpuApp {
     scroll_velocity: Option<ScrollVelocity>,
     momentum_abort: Option<AbortHandle>,
     gesture_end_abort: Option<AbortHandle>,
+    /// 1Hz redraw heartbeat — see [`UserEvent::TickRedraw`]. Aborted
+    /// implicitly when the proxy's send_event fails (window closed).
+    periodic_tick_abort: Option<AbortHandle>,
 
     /// Current mouse cursor position in logical pixels (top-left
     /// origin). `None` before the first CursorMoved event.
@@ -424,6 +430,7 @@ impl GpuApp {
             scroll_velocity: None,
             momentum_abort: None,
             gesture_end_abort: None,
+            periodic_tick_abort: None,
             cursor_pos: None,
             dragging_selection: false,
             selection: None,
@@ -1571,6 +1578,8 @@ impl ApplicationHandler<UserEvent> for GpuApp {
             }
         }
 
+        self.periodic_tick_abort = Some(schedule_periodic_redraw(self.proxy.clone()));
+
         window.request_redraw();
     }
 
@@ -1588,6 +1597,11 @@ impl ApplicationHandler<UserEvent> for GpuApp {
             }
             UserEvent::MomentumTick => {
                 self.on_momentum_tick();
+            }
+            UserEvent::TickRedraw => {
+                if let Some(w) = self.window.as_ref() {
+                    w.request_redraw();
+                }
             }
         }
     }
@@ -1709,6 +1723,25 @@ fn schedule_once(
     let (fut, abort) = abortable(async move {
         Delay::new(delay).await;
         let _ = proxy.send_event(event);
+    });
+    std::thread::spawn(move || {
+        let _ = futures::executor::block_on(fut);
+    });
+    abort
+}
+
+/// Spawn an abortable loop that fires `TickRedraw` once per second so
+/// header chrome (Uptime / Reqs / sub / team) refreshes even when the
+/// PTY is idle. The loop exits the moment `send_event` fails — the
+/// usual "window dropped, event loop gone" path.
+fn schedule_periodic_redraw(proxy: EventLoopProxy<UserEvent>) -> AbortHandle {
+    let (fut, abort) = abortable(async move {
+        loop {
+            Delay::new(Duration::from_secs(1)).await;
+            if proxy.send_event(UserEvent::TickRedraw).is_err() {
+                break;
+            }
+        }
     });
     std::thread::spawn(move || {
         let _ = futures::executor::block_on(fut);
