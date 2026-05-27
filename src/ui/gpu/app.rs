@@ -902,6 +902,46 @@ impl GpuApp {
         }
     }
 
+    /// Tear down the running Claude session and start a fresh one with
+    /// the same spawn params. Wired to Cmd+R. The terminal state
+    /// (emulator, scroll, selection) is reset so the new session
+    /// renders into a clean panel.
+    ///
+    /// The old reader thread exits on its own as soon as its master
+    /// PTY is dropped — the spawn flow is fire-and-forget.
+    fn restart_pty(&mut self) {
+        self.pty = None;
+        let (cols, rows) = self.grid_size;
+        self.emulator = Some(create_emulator(cols, rows, SCROLLBACK_LINES));
+        self.scroll = ScrollState::default();
+        self.scroll_velocity = None;
+        self.cancel_momentum();
+        self.cancel_gesture_end();
+        self.selection = None;
+        self.dragging_selection = false;
+        self.last_click = None;
+
+        let proxy = self.proxy.clone();
+        match ChildPty::spawn(
+            cols as u16,
+            rows as u16,
+            self.spawn_command.clone(),
+            self.spawn_args.clone(),
+            self.spawn_env.clone(),
+            move || {
+                let _ = proxy.send_event(UserEvent::PtyBytesArrived);
+            },
+        ) {
+            Ok(pty) => {
+                self.pty = Some(pty);
+            }
+            Err(e) => {
+                eprintln!("anyclaude: failed to restart shell: {e}");
+            }
+        }
+        self.request_redraw();
+    }
+
     /// Copy the session UUID to the clipboard and trigger the
     /// header's "Session ID copied!" flash. Used by header click and
     /// the keyboard shortcut path (potentially later).
@@ -1681,6 +1721,7 @@ impl ApplicationHandler<UserEvent> for GpuApp {
                             KeyCode::KeyB => self.toggle_backend_switch_popup(),
                             KeyCode::KeyH => self.toggle_history_popup(),
                             KeyCode::KeyE => self.toggle_settings_popup(),
+                            KeyCode::KeyR => self.restart_pty(),
                             KeyCode::KeyQ => event_loop.exit(),
                             _ => {}
                         }
