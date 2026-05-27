@@ -65,6 +65,33 @@ impl Actor for BackendSwitchActor {
             }
             BackendSwitchIntent::MoveUp => navigate(scope, -1),
             BackendSwitchIntent::MoveDown => navigate(scope, 1),
+            BackendSwitchIntent::Clear => {
+                scope.reduce(|state| match state {
+                    BackendSwitchState::Visible {
+                        section,
+                        backend_selection,
+                        subagent_selection,
+                        teammate_selection,
+                        backends_count,
+                    } => {
+                        let (subagent_selection, teammate_selection) = match section {
+                            BackendPopupSection::ActiveBackend => {
+                                (subagent_selection, teammate_selection)
+                            }
+                            BackendPopupSection::SubagentBackend => (0, teammate_selection),
+                            BackendPopupSection::TeammateBackend => (subagent_selection, 0),
+                        };
+                        BackendSwitchState::Visible {
+                            section,
+                            backend_selection,
+                            subagent_selection,
+                            teammate_selection,
+                            backends_count,
+                        }
+                    }
+                    other => other,
+                });
+            }
         }
     }
 }

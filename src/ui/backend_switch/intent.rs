@@ -12,6 +12,11 @@ pub enum BackendSwitchIntent {
     NextSection,
     MoveUp,
     MoveDown,
+    /// Reset the current section's selection to "Disabled" (index 0).
+    /// No-op in the Active section — the active backend cannot be
+    /// cleared (the proxy always has one). Wired to Del / Backspace
+    /// while the popup is open.
+    Clear,
 }
 
 impl Intent for BackendSwitchIntent {}
