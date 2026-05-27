@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/term_input", "crates/mvi", "crates/term_gpu", "crates/term_core", "crates/term_layout", "crates/term_clipboard"]
+members = [".", "crates/mvi", "crates/term_gpu", "crates/term_core", "crates/term_layout", "crates/term_clipboard"]
 
 [workspace.lints.rust]
 dead_code = "deny"
@@ -18,16 +18,13 @@ default = []
 workspace = true
 
 [dependencies]
-# PTY & Terminal
+# PTY (spawned by the GPU UI's ChildPty).
 portable-pty = "0.9"
-alacritty_terminal = "0.25"
-crossterm = "0.29"
-signal-hook = "0.4"
-term_input = { path = "crates/term_input" }
+
+# MVI primitives — backbone of every popup state machine.
 mvi = { path = "crates/mvi" }
 
-# GPU UI (Phase 5 in progress — runs alongside the legacy ratatui
-# pipeline. The legacy UI stays until the C10 cutover.)
+# GPU UI stack.
 term_gpu = { path = "crates/term_gpu" }
 term_core = { path = "crates/term_core" }
 term_clipboard = { path = "crates/term_clipboard" }
@@ -37,9 +34,6 @@ winit = "0.30"
 glam = "0.30"
 futures = "0.3"
 futures-timer = "3"
-
-# TUI (legacy — removed in Phase 5 C10)
-ratatui = "0.30"
 
 # Async runtime
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-util", "signal", "time"] }
@@ -69,9 +63,6 @@ parking_lot = "0.12"
 # Utilities
 scopeguard = "1.2"
 libc = "0.2"
-
-# Clipboard
-arboard = { version = "3.6", default-features = true }
 
 # Error handling
 anyhow = "1.0.102"
