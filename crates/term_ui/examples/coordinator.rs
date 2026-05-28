@@ -7,15 +7,25 @@
 //! - **B.1**: AppState + `view(&AppState)` + static render.
 //! - **B.2**: the two-phase reactive frame (R7) — input → `Msg` → `apply` →
 //!   one dirty signal → incremental `reconcile_root`.
-//! - **B.3 (this commit):** the `next_wake` ticker + `frame_now` threading.
-//!   `view(&AppState, frame_now)` samples a fixed per-frame `Instant` (R4
-//!   determinism); a live "uptime" line is DERIVED from it (R12, never stored).
-//!   `next_wake` drives `ControlFlow::WaitUntil`, so the UI updates on a timer
-//!   WITHOUT input — the same mechanism that will later drive caret blink and
-//!   popup animations (their deadlines mined into `next_wake`).
+//! - **B.3**: `frame_now` threading + a `next_tick` ticker. `view(&AppState,
+//!   frame_now)` samples a fixed per-frame `Instant` (R4 determinism); a live
+//!   "uptime" line is DERIVED from it (R12). The ticker drives the UI on a
+//!   schedule WITHOUT input — the same mechanism that will later drive caret
+//!   blink and popup animations.
+//!
+//! **Ticker design (the load-bearing detail):** the next wake is an ABSOLUTE
+//! schedule point (`next_tick`, advanced in fixed `TICK` steps), and it is
+//! POLLED in `about_to_wait` rather than fired off `StartCause::ResumeTimeReached`.
+//! A continuous input stream (key repeat) wakes the loop with `WaitCancelled`
+//! before any deadline, which would perpetually push a `now + TICK` deadline
+//! forward and starve `ResumeTimeReached` — freezing the timer while a key is
+//! held. `about_to_wait` runs after every event batch, so checking the absolute
+//! `next_tick` there fires the tick even under churn. The real coordinator's
+//! `next_wake` mins over anim/blink/momentum deadlines and returns "idle" (→
+//! `ControlFlow::Wait`, no repaints) when nothing is pending.
 //!
 //! Run: `cargo run -p term_ui --example coordinator` (type to edit the input
-//! line; the uptime line ticks on its own).
+//! line; the uptime line ticks on its own — and KEEPS ticking while a key is held).
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -27,7 +37,7 @@ use term_ui::{
     SizeConstraint, Stack, Text, WidgetId,
 };
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, KeyEvent, StartCause, WindowEvent};
+use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowAttributes, WindowId};
@@ -43,9 +53,8 @@ const TICK: Duration = Duration::from_millis(100);
 
 /// The SINGLE source of UI-decision truth (R2): plain data, no GPU handles, no
 /// `Rc`/`RefCell`. `input` changes only through `apply` (R6). `started` is a
-/// timer EPOCH (bucket 1, like the design's caret/animation epochs); the
-/// elapsed "uptime" shown in the view is DERIVED from `frame_now - started`,
-/// never stored (R12).
+/// timer EPOCH (bucket 1, like the design's caret/animation epochs); the elapsed
+/// "uptime" shown in the view is DERIVED from `frame_now - started` (R12).
 struct AppState {
     input: String,
     started: Instant,
@@ -99,14 +108,6 @@ fn key_to_msgs(ev: &KeyEvent) -> Vec<Msg> {
     }
 }
 
-/// When should the loop next wake to repaint? The min of all active deadlines.
-/// Demo: a live uptime line wants ~10 Hz, so the next deadline is `now + TICK`.
-/// The real coordinator mins over animation / caret-blink / momentum deadlines
-/// and returns `None` when fully idle (→ `ControlFlow::Wait`, no repaints).
-fn next_wake(_state: &AppState, now: Instant) -> Option<Instant> {
-    Some(now + TICK)
-}
-
 /// Declarative view: a pure function of `(&AppState, frame_now)` (R5/R6). The
 /// input line is AppState-driven; the uptime line is `frame_now`-derived (R12).
 /// Stable id-path `WidgetId`s (R8).
@@ -127,7 +128,7 @@ fn view(state: &AppState, frame_now: Instant) -> Stack {
             Text::new(format!("> {}", state.input), FONT_SIZE, CYAN).id(WidgetId::from_path(&[0, 1])),
         )
         .child(
-            Text::new(format!("uptime {uptime:.1}s  (ticked by next_wake, no input)"), FONT_SIZE, AMBER)
+            Text::new(format!("uptime {uptime:.1}s  (ticked by next_tick, no input)"), FONT_SIZE, AMBER)
                 .id(WidgetId::from_path(&[0, 2])),
         )
         .child(
@@ -141,16 +142,19 @@ fn view(state: &AppState, frame_now: Instant) -> Stack {
 }
 
 /// The coordinator: resources + the one `AppState` + the PERSISTENT retained
-/// tree + the prior view (to diff) + the single dirty signal.
+/// tree + the prior view (to diff) + the single dirty signal + the ticker's
+/// absolute next-wake instant.
 struct Coordinator {
     state: AppState,
     tree: RetainedTree,
     prev_view: Option<Stack>,
     root: Option<NodeId>,
-    /// The single dirty signal (R6): set by `apply` (input) AND by the timer
-    /// tick (frame_now advanced ⇒ the time-derived view differs); drained by
-    /// `render`.
+    /// The single dirty signal (R6): set by `apply` (input) AND by the ticker
+    /// (a due `next_tick`); drained by `render`.
     dirty: bool,
+    /// Absolute next wake instant for the demo ticker. Advanced in fixed `TICK`
+    /// steps so it never drifts under input churn (see module docs).
+    next_tick: Instant,
     window: Option<Arc<Window>>,
     renderer: Option<GpuRenderer>,
     fonts: FontSystem,
@@ -169,6 +173,7 @@ impl Coordinator {
             prev_view: None,
             root: None,
             dirty: true,
+            next_tick: now + TICK,
             window: None,
             renderer: None,
             fonts: FontSystem::new(),
@@ -244,17 +249,6 @@ impl Coordinator {
 }
 
 impl ApplicationHandler for Coordinator {
-    /// The timer fired (a `WaitUntil` deadline elapsed): mark dirty + repaint.
-    /// This is the time-driven half of the single dirty signal (R6).
-    fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: StartCause) {
-        if matches!(cause, StartCause::ResumeTimeReached { .. }) {
-            self.dirty = true;
-            if let Some(w) = self.window.as_ref() {
-                w.request_redraw();
-            }
-        }
-    }
-
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let attrs = WindowAttributes::default()
             .with_title("term_ui coordinator")
@@ -304,14 +298,23 @@ impl ApplicationHandler for Coordinator {
         }
     }
 
-    /// Schedule the next wake from `next_wake` (the ticker). `WaitUntil` makes
-    /// the loop sleep until the deadline, then fire `new_events`
-    /// (`ResumeTimeReached`); `Wait` (when idle) sleeps until the next input.
+    /// Drive the ticker. Runs after EVERY event batch, so it fires a due tick
+    /// even when input churn (key repeat) starves `ResumeTimeReached`. The wake
+    /// deadline is the ABSOLUTE `next_tick`, advanced in fixed steps — it never
+    /// drifts forward under churn.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        match next_wake(&self.state, Instant::now()) {
-            Some(wake) => event_loop.set_control_flow(ControlFlow::WaitUntil(wake)),
-            None => event_loop.set_control_flow(ControlFlow::Wait),
+        let now = Instant::now();
+        if now >= self.next_tick {
+            self.dirty = true;
+            if let Some(w) = self.window.as_ref() {
+                w.request_redraw();
+            }
+            // Catch up past any missed boundaries (long event batch / sleep).
+            while self.next_tick <= now {
+                self.next_tick += TICK;
+            }
         }
+        event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_tick));
     }
 }
 
