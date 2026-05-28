@@ -3100,6 +3100,15 @@ name = "term_layout"
 version = "0.1.0"
 
 [[package]]
+name = "term_ui"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "term_gpu",
+ "winit",
+]
+
+[[package]]
 name = "termcolor"
 version = "1.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
