@@ -5,17 +5,20 @@
 //! assembles in Phases C/D/E.
 //!
 //! - **B.1**: AppState + `view(&AppState)` + static render.
-//! - **B.2 (this commit):** the two-phase reactive frame (R7). Raw input →
-//!   `Msg` (event phase, no tree/AppState mutation) → `apply(&mut AppState,
-//!   Msg)` (apply phase, the one mutation path, R6) → a single dirty signal →
-//!   `reconcile_root` against the prior view (reconcile phase). The retained
-//!   tree now PERSISTS across frames and is reconciled incrementally, not
-//!   rebuilt. Type to see it; Backspace deletes; Esc clears.
-//! - **B.3** adds the `next_wake` ticker + `frame_now` threading.
+//! - **B.2**: the two-phase reactive frame (R7) — input → `Msg` → `apply` →
+//!   one dirty signal → incremental `reconcile_root`.
+//! - **B.3 (this commit):** the `next_wake` ticker + `frame_now` threading.
+//!   `view(&AppState, frame_now)` samples a fixed per-frame `Instant` (R4
+//!   determinism); a live "uptime" line is DERIVED from it (R12, never stored).
+//!   `next_wake` drives `ControlFlow::WaitUntil`, so the UI updates on a timer
+//!   WITHOUT input — the same mechanism that will later drive caret blink and
+//!   popup animations (their deadlines mined into `next_wake`).
 //!
-//! Run: `cargo run -p term_ui --example coordinator`.
+//! Run: `cargo run -p term_ui --example coordinator` (type to edit the input
+//! line; the uptime line ticks on its own).
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use glam::Vec2;
 use term_gpu::{FontFamily, FontSystem, GpuRenderer, RenderLayer, SwashCache, TextShapeCache};
@@ -24,32 +27,38 @@ use term_ui::{
     SizeConstraint, Stack, Text, WidgetId,
 };
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, KeyEvent, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::event::{ElementState, KeyEvent, StartCause, WindowEvent};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowAttributes, WindowId};
 
 const FONT_SIZE: f32 = 22.0;
 const FG: [f32; 4] = [0.90, 0.90, 0.95, 1.0];
 const CYAN: [f32; 4] = [0.40, 0.85, 0.95, 1.0];
+const AMBER: [f32; 4] = [0.95, 0.75, 0.35, 1.0];
 const DIM: [f32; 4] = [0.55, 0.55, 0.60, 1.0];
 
+/// Demo refresh cadence for the time-derived line (10 Hz).
+const TICK: Duration = Duration::from_millis(100);
+
 /// The SINGLE source of UI-decision truth (R2): plain data, no GPU handles, no
-/// `Rc`/`RefCell`. `input` is the only mutable fact in B.2 and it changes ONLY
-/// through `apply` (R6).
+/// `Rc`/`RefCell`. `input` changes only through `apply` (R6). `started` is a
+/// timer EPOCH (bucket 1, like the design's caret/animation epochs); the
+/// elapsed "uptime" shown in the view is DERIVED from `frame_now - started`,
+/// never stored (R12).
 struct AppState {
     input: String,
+    started: Instant,
 }
 
 impl AppState {
-    fn new() -> Self {
-        Self { input: String::new() }
+    fn new(now: Instant) -> Self {
+        Self { input: String::new(), started: now }
     }
 }
 
 /// Intents — the ONLY vocabulary by which `AppState` changes (R6). Produced in
-/// the event phase from raw input, consumed by `apply` in the apply phase.
-/// Deliberately NOT applied during a tree borrow (R7).
+/// the event phase, consumed by `apply`. Never applied during a tree borrow (R7).
 enum Msg {
     Type(char),
     Backspace,
@@ -57,8 +66,8 @@ enum Msg {
 }
 
 /// Apply phase: the single authoritative mutation (R6). Returns whether the
-/// state actually changed — that boolean IS the dirty signal. Pure w.r.t. the
-/// tree/resources; trivially unit-testable without a GPU (the Phase B+ pattern).
+/// state actually changed — that boolean feeds the one dirty signal. Pure
+/// w.r.t. the tree/resources; unit-testable without a GPU (the Phase C+ pattern).
 fn apply(state: &mut AppState, msg: Msg) -> bool {
     match msg {
         Msg::Type(c) if !c.is_control() => {
@@ -76,7 +85,7 @@ fn apply(state: &mut AppState, msg: Msg) -> bool {
 }
 
 /// Event phase: map a raw key event to intents. No tree borrow, no AppState
-/// mutation here (R7) — it only translates input into `Msg`s.
+/// mutation (R7) — pure translation of input into `Msg`s.
 fn key_to_msgs(ev: &KeyEvent) -> Vec<Msg> {
     if ev.state != ElementState::Pressed {
         return Vec::new();
@@ -90,16 +99,25 @@ fn key_to_msgs(ev: &KeyEvent) -> Vec<Msg> {
     }
 }
 
-/// Declarative view: a pure function of `&AppState` (R5/R6). Stable id-path
-/// `WidgetId`s (R8). Only the middle line's text depends on `input`, so a
-/// keystroke drives a single Text-node `reconcile` (the mutate path).
-fn view(state: &AppState) -> Stack {
+/// When should the loop next wake to repaint? The min of all active deadlines.
+/// Demo: a live uptime line wants ~10 Hz, so the next deadline is `now + TICK`.
+/// The real coordinator mins over animation / caret-blink / momentum deadlines
+/// and returns `None` when fully idle (→ `ControlFlow::Wait`, no repaints).
+fn next_wake(_state: &AppState, now: Instant) -> Option<Instant> {
+    Some(now + TICK)
+}
+
+/// Declarative view: a pure function of `(&AppState, frame_now)` (R5/R6). The
+/// input line is AppState-driven; the uptime line is `frame_now`-derived (R12).
+/// Stable id-path `WidgetId`s (R8).
+fn view(state: &AppState, frame_now: Instant) -> Stack {
+    let uptime = (frame_now - state.started).as_secs_f32();
     Stack::vstack()
         .id(WidgetId::from_path(&[0]))
         .gap(8.0)
         .child(
             Text::new(
-                "term_ui coordinator — Phase B.2  (type · Backspace · Esc clears)",
+                "term_ui coordinator — Phase B.3  (type · Backspace · Esc clears)",
                 FONT_SIZE,
                 FG,
             )
@@ -109,26 +127,29 @@ fn view(state: &AppState) -> Stack {
             Text::new(format!("> {}", state.input), FONT_SIZE, CYAN).id(WidgetId::from_path(&[0, 1])),
         )
         .child(
+            Text::new(format!("uptime {uptime:.1}s  (ticked by next_wake, no input)"), FONT_SIZE, AMBER)
+                .id(WidgetId::from_path(&[0, 2])),
+        )
+        .child(
             Text::new(
-                "event -> Msg -> apply -> dirty -> reconcile_root (incremental)",
+                "event/timer -> dirty -> reconcile_root (incremental) -> measure/place/paint",
                 FONT_SIZE * 0.8,
                 DIM,
             )
-            .id(WidgetId::from_path(&[0, 2])),
+            .id(WidgetId::from_path(&[0, 3])),
         )
 }
 
-/// The coordinator: owns the resources + the one `AppState` + the PERSISTENT
-/// retained tree (bucket-2 cache) + the last frame's view element (to diff
-/// against) + the single dirty signal.
+/// The coordinator: resources + the one `AppState` + the PERSISTENT retained
+/// tree + the prior view (to diff) + the single dirty signal.
 struct Coordinator {
     state: AppState,
     tree: RetainedTree,
-    /// Last frame's view element — `reconcile_root` diffs the new view against
-    /// it (the retained-mode incremental path). `None` until the first build.
     prev_view: Option<Stack>,
     root: Option<NodeId>,
-    /// The single dirty signal (R6): set by `apply`, drained by `render`.
+    /// The single dirty signal (R6): set by `apply` (input) AND by the timer
+    /// tick (frame_now advanced ⇒ the time-derived view differs); drained by
+    /// `render`.
     dirty: bool,
     window: Option<Arc<Window>>,
     renderer: Option<GpuRenderer>,
@@ -141,12 +162,13 @@ struct Coordinator {
 
 impl Coordinator {
     fn new() -> Self {
+        let now = Instant::now();
         Self {
-            state: AppState::new(),
+            state: AppState::new(now),
             tree: RetainedTree::new(),
             prev_view: None,
             root: None,
-            dirty: true, // force the first build
+            dirty: true,
             window: None,
             renderer: None,
             fonts: FontSystem::new(),
@@ -157,10 +179,6 @@ impl Coordinator {
         }
     }
 
-    /// Render one frame. The RECONCILE phase touches the tree only when dirty:
-    /// first frame `build_root`; later dirty frames `reconcile_root` against the
-    /// prior view (incremental, not a rebuild). Layout + paint run every frame
-    /// (idempotent; also handles window resize without a reconcile).
     fn render(&mut self) {
         let Some(renderer) = self.renderer.as_mut() else {
             return;
@@ -169,15 +187,18 @@ impl Coordinator {
             return;
         };
         let sf = self.scale_factor;
+        let frame_now = Instant::now(); // fixed for this frame (R4 determinism)
 
-        // ── Reconcile phase (R7): refresh the retained tree from AppState. ──
+        // ── Reconcile phase (R7): refresh the retained tree from (AppState, ──
+        //    frame_now), only when dirty. First frame builds; later dirty
+        //    frames reconcile incrementally against the prior view (R5).
         if self.root.is_none() {
-            let v = view(&self.state);
+            let v = view(&self.state, frame_now);
             let root = build_root(&mut self.tree, &v);
             self.root = Some(root);
             self.prev_view = Some(v);
         } else if self.dirty {
-            let next = view(&self.state);
+            let next = view(&self.state, frame_now);
             let prev = self.prev_view.take().expect("prev_view present once built");
             reconcile_root(&mut self.tree, self.root.unwrap(), &prev, &next);
             self.prev_view = Some(next);
@@ -185,7 +206,7 @@ impl Coordinator {
         self.dirty = false;
         let root = self.root.unwrap();
 
-        // ── Layout + paint (every frame; cheap, and absorbs window resize). ──
+        // ── Layout + paint (every frame; absorbs window resize). ──
         let logical = Vec2::new(
             renderer.size().width as f32 / sf,
             renderer.size().height as f32 / sf,
@@ -223,6 +244,17 @@ impl Coordinator {
 }
 
 impl ApplicationHandler for Coordinator {
+    /// The timer fired (a `WaitUntil` deadline elapsed): mark dirty + repaint.
+    /// This is the time-driven half of the single dirty signal (R6).
+    fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: StartCause) {
+        if matches!(cause, StartCause::ResumeTimeReached { .. }) {
+            self.dirty = true;
+            if let Some(w) = self.window.as_ref() {
+                w.request_redraw();
+            }
+        }
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let attrs = WindowAttributes::default()
             .with_title("term_ui coordinator")
@@ -269,6 +301,16 @@ impl ApplicationHandler for Coordinator {
             }
             WindowEvent::RedrawRequested => self.render(),
             _ => {}
+        }
+    }
+
+    /// Schedule the next wake from `next_wake` (the ticker). `WaitUntil` makes
+    /// the loop sleep until the deadline, then fire `new_events`
+    /// (`ResumeTimeReached`); `Wait` (when idle) sleeps until the next input.
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        match next_wake(&self.state, Instant::now()) {
+            Some(wake) => event_loop.set_control_flow(ControlFlow::WaitUntil(wake)),
+            None => event_loop.set_control_flow(ControlFlow::Wait),
         }
     }
 }
