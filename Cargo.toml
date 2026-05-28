@@ -30,6 +30,8 @@ term_core = { path = "crates/term_core" }
 term_clipboard = { path = "crates/term_clipboard" }
 # Reusable widget kit (term_ui-based chrome bars); fed by ui::chrome_labels.
 uikit = { path = "crates/uikit" }
+# Retained+reactive engine the chrome_preview example assembles views with.
+term_ui = { path = "crates/term_ui" }
 winit = "0.30"
 # Scroll plumbing: glam::Vec2 backs ScrollVelocity, futures + futures-timer
 # drive the momentum tick loop without polling.
