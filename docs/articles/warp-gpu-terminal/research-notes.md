@@ -2037,3 +2037,159 @@ Together they make "the user shows a screenshot, I find the root
 cause" a one-iteration loop instead of three. The OSC and INVERSE
 fixes both used both: the trace to confirm what claude actually
 sent; the snapshot to confirm what the emulator actually stored.
+
+### REFAC-1..REFAC-5 — splitting the 2.4K-LoC app.rs
+
+**Trigger**: not a bug or missing feature — user feedback. After
+the cutover landed, user said "ты не следовал правилам проекта,
+когда писал код gpu" and asked me to re-read the project's
+feedback memory. Reading my own
+`gpu-terminal-remaining-bugs.md` was the embarrassing part: I'd
+written
+
+> "gpu/app.rs is ~1900 LoC. Approaching the size where extraction
+> into submodules (`gpu/chrome.rs` for draw_header/footer,
+> `gpu/popup.rs` for draw_*_popup, `gpu/bootstrap.rs` for `run()`)
+> would help."
+
+— and over the following two phases (Phase 5 closing pass +
+cutover) I had added ~500 more LoC to the same file. The Cmd+R
+restart method, the diagnostic dump, the popup decomposition, the
+chrome separator rects, the section helpers — all bolted onto
+`GpuApp::redraw` and friends. Reading the rule, then reading my own
+note, then reading the file: the call was overdue.
+
+**What the file was doing**: `src/ui/gpu/app.rs` at 2400 LoC held
+the `GpuApp` struct + its impl, plus free functions for chrome and
+popup rendering, plus the `run()` bootstrap, plus the diagnostic
+dump. The `GpuApp` impl spanned ~70 methods: PTY lifecycle
+(spawn / drain / resize / restart), winit `ApplicationHandler`
+(resumed / window_event / user_event), keyboard handlers, mouse
+press / release / drag, scroll wheel + momentum + follow mode,
+selection, clipboard, popup toggles, popup intent dispatch, plus
+the rendering orchestrator `redraw`. Six responsibilities in one
+struct. SOLID single-responsibility was failing not because any
+single method was wrong, but because the file's table of contents
+needed six headers.
+
+**Decomposition plan** (five atomic commits, each green at `cargo
+check --workspace`):
+
+1. `chrome.rs` (234 LoC) — `draw_header`, `draw_footer`, all
+   chrome constants. Self-contained — chrome only depends on
+   `term_gpu` primitives.
+2. `popup.rs` (979 LoC) — three `draw_*_popup` entry points + all
+   popup helpers + all `POPUP_*` constants +
+   `DEFAULT_FG_FOR_POPUP_SELECTED`. Depends on
+   `super::chrome::{CHROME_TEXT_COLOR, CHROME_FLASH_COLOR}` for
+   palette consistency (status suffixes use the same green as the
+   chrome "Session ID copied!" flash).
+3. `diagnostic.rs` (57 LoC) — the Cmd+Shift+D snapshot dump as a
+   free function, not a `&self` method. Takes borrowed pieces
+   `(grid_size, scroll_offset, scroll_max, Option<&RenderSnapshot>)`.
+   The keyboard handler builds the snapshot once and hands the
+   slices in.
+4. `bootstrap.rs` (172 LoC) — the `run()` entry point. `gpu/mod.rs`
+   re-exports `run` from `bootstrap` instead of from `app`.
+   `GpuApp::new` and `enum UserEvent` become `pub(super)` so
+   `bootstrap` can build them. `app.rs` drops eight unused imports
+   that came with `run` (`EventLoop`, `build_spawn_params`,
+   `ConfigStore`, `DebugLogLevel`, `DebugLogger`,
+   `init_global_logger`, `ProxyServer`, `TeammateShim`).
+5. Decomposition of `draw_backend_switch_popup` itself —
+   `~340 LoC → ~140 LoC`. New helpers:
+   `compute_backend_switch_popup_width`,
+   `compute_backend_switch_popup_height`, `draw_popup_title`,
+   `draw_popup_footer_hint`, `draw_active_section`,
+   `draw_override_section`, `push_section_header_with_separator`.
+   The Subagent/Teammate inline duplication that had been there
+   since Phase 5 closing pass goes away — both sections now call
+   `draw_override_section("Subagent Backend", ...)` and
+   `draw_override_section("Teammate Backend", ...)`.
+
+**Commit ordering matters** — same lesson as the cutover (Phase
+5 §"Cutover" above). The order chosen so `cargo check --workspace`
+passes after every commit was: pull out the most independent piece
+first (chrome — nobody else depends on it after it's gone),
+then popup (depends on chrome's color constants), then diagnostic
+(self-contained), then bootstrap (needs `GpuApp::new` /
+`UserEvent` to flip to `pub(super)` — that visibility change is
+the dependency edge). The popup-function decomposition was last
+because it could happen any time once popup.rs existed.
+
+**The RenderCtx that didn't ship**. The plan briefly included a
+`RenderCtx<'a>` struct grouping the parameter chain that every
+chrome and popup function carries:
+
+```rust
+pub(super) struct RenderCtx<'a> {
+    pub atlas: &'a mut GlyphAtlas,
+    pub font_system: &'a mut FontSystem,
+    pub swash_cache: &'a mut SwashCache,
+    pub ui_shape_cache: &'a mut TextShapeCache,
+    pub rects: &'a mut Vec<RectInstance>,
+    pub glyphs: &'a mut Vec<GlyphInstance>,
+    pub sf: f32,
+}
+```
+
+The justification was "drops `#[allow(clippy::too_many_arguments)]`
+markers". User asked: "зачем нужен RenderCtx". The honest answer
+took some thought:
+
+1. **One callsite would construct it**. `GpuApp::redraw` is the
+   only place these seven things gather. RenderCtx pays off when
+   context passes through many layers; here the layers are inside
+   one module each, already isolated.
+2. **The 4 caches genuinely couple** (cosmic-text rendering
+   pipeline always needs them together) but `glyphs` / `rects` /
+   `sf` don't — they're per-call data the helper needs to read or
+   mutate. Grouping things that don't share a lifetime invariant
+   together is "things that current API touches", not
+   "semantically related state".
+3. **Lifetime + reborrow ceremony**. The overlay layer needs its
+   own `rects` and `glyphs` buffers (separate from the base
+   layer's, so popups can be on top). `RenderCtx<'a>` would need
+   either two struct instances (rebinding `rects`/`glyphs` per
+   layer — wrapper-level allocation gymnastics) or a `&mut`
+   reborrow chain through `redraw`. Both more pain than the
+   linter complaint hides.
+4. **The marker is honest**. `#[allow(clippy::too_many_arguments)]`
+   on `draw_backend_switch_popup` says "this function genuinely
+   takes a lot of inputs because rendering needs a lot of inputs".
+   Wrapping in a struct labels the function differently without
+   changing what it does. The fix for "function takes too many
+   inputs" is "function does less" — which is exactly what REFAC-5
+   ended up doing.
+
+So REFAC-5 became "decompose the function itself" instead of
+"wrap the parameter chain". The orchestrator
+`draw_backend_switch_popup` ended up at ~140 LoC with 15
+parameters (still `#[allow]`'d), but each helper does one thing
+with ~12-14 parameters (also `#[allow]`'d). The remaining
+parameter chains are real domain coupling, not poor design. The
+linter markers stay; they're honest.
+
+**Lessons saved to feedback memory**
+(`feedback_solid_dry_kiss_yagni`, concrete misses #4 and #5):
+
+- When my own architecture notes flag a file's size as a problem,
+  the split is overdue. Don't add to it on the next feature.
+- "Drop a linter marker" is not a sufficient reason to add an
+  abstraction. The marker is a finger pointing at the function;
+  the fix belongs at the function, not at a wrapper that hides
+  the complaint.
+
+**Result**: `src/ui/gpu/app.rs` 2400 → 1470 LoC. The remaining
+`app.rs` is the `GpuApp` struct + `winit::ApplicationHandler` impl
++ PTY lifecycle + scroll / selection / input handlers — a single
+responsibility (event loop runtime for the GPU UI). Chrome,
+popup, diagnostic, bootstrap each live where their responsibility
+is named. User smoke test after the five-commit refactor:
+"работает." — no visual regression, pure restructure.
+
+The total `gpu/` line count grew from 2554 to 3136 LoC because
+the extracted helpers picked up `use` statements, doc comments,
+and signature boilerplate that inline code didn't need. That's
+fine; the optimisation target was per-file responsibility, not
+total LoC.
