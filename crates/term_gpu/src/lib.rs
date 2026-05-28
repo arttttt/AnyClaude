@@ -42,4 +42,9 @@ pub use text::{
 /// Re-exported cosmic-text types. Consumers wire these through
 /// `TextShapeCache::shape` / `populate_panel` rather than importing
 /// cosmic-text directly — keeps the dependency contained.
-pub use cosmic_text::{FontSystem, Style, SwashCache, Weight};
+///
+/// `CacheKey` / `LayoutGlyph` are part of the text surface term_ui builds on
+/// (atlas-independent glyph identity for the R4 gate, and per-glyph cluster/x
+/// offsets for caret mapping); re-exporting them here keeps term_ui from
+/// depending on cosmic-text directly (R9).
+pub use cosmic_text::{CacheKey, FontSystem, LayoutGlyph, Style, SwashCache, Weight};
