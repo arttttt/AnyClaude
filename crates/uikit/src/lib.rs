@@ -13,3 +13,7 @@
 //!
 //! Scope (KISS/YAGNI): Phase C is the chrome bars only. New widgets land here
 //! as their consumers appear, never before.
+
+pub mod chrome;
+
+pub use chrome::{footer_bar, header_bar, Segment};
