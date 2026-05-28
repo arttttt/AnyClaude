@@ -1,6 +1,6 @@
-# term_ui — Design Doc (PROPOSED — awaiting ratification)
+# term_ui — Design Doc (RATIFIED 2026-05-29)
 
-> Status: **PROPOSED — awaiting user ratification.** Adversarial review findings are already resolved inline; the user shreds this before any code is written. All Rust is **illustrative sketch only** — it shows shape and intent, not final API. Warp citations are `path:line` under `/Users/artem/Projects/warp`. term_gpu/term_core citations are real signatures verified in `/Users/artem/Projects/ClaudeWrapper/crates/`. Adversarial review findings (four lenses) are resolved inline; each resolution is tagged **[Resolved: …]** or **[Rejected: …]**.
+> Status: **RATIFIED (2026-05-29).** The invariants R1–R15 (§1) are binding; every term_ui commit + review checks against them. **Implementation status:** Phase A ✅ (`159e3aa` — engine core + the R4 property gate) · Phase B ✅ (`816dba4`/`7d3c62f`/`3d4af45` + ticker fix `f7d9dfe` — the coordinator pattern, proven in `crates/term_ui/examples/coordinator.rs`) · **Phase C next** (port the real header/footer to term_ui views, built in anyclaude `src/` because `term_ui` is a lower crate whose examples can't see domain data — see §15). All Rust is **illustrative sketch only** — it shows shape and intent, not final API. Warp citations are `path:line` under `/Users/artem/Projects/warp`. term_gpu/term_core citations are real signatures verified in `/Users/artem/Projects/ClaudeWrapper/crates/`. Adversarial review findings (four lenses) are resolved inline; each resolution is tagged **[Resolved: …]** or **[Rejected: …]**.
 
 ---
 

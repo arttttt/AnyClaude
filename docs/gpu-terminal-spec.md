@@ -2407,6 +2407,14 @@ behavior.
 known visible bugs. Legacy ratatui path and all its supporting
 modules are deleted (see "Phase 5 cutover" below).
 
+> **Superseded direction (2026-05-29):** the MVI-based UI layer
+> (the `GpuApp` god-object + 3 popup `Store<Actor>`s) is being
+> **replaced** by `term_ui` — a retained+reactive UI kit over one
+> plain `AppState` (no MVI). The MVI mandate is reversed. See
+> **`docs/design/term-ui-design.md`** (ratified; R1–R15) for the full
+> design + phased migration. `GpuApp`/`main.rs` stay live until the
+> migration's final swap.
+
 **Delivered**
 1. winit ApplicationHandler skeleton + wgpu setup (C1).
 2. Shell PTY rendering through `term_gpu::populate_panel` (C2).

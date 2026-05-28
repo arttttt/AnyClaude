@@ -974,3 +974,49 @@ settle.
 - "BSP panels for terminal UI: lessons from tmux"
 - "Integration day: wiring term_core into anyclaude"
 - "Top-anchored vs alacritty: two terminal resize semantics"
+
+## term_ui — additional lessons (2026-05-29)
+
+46. **Consistency beats a half-applied framework.** MVI used for 3
+    popups and bypassed for the whole terminal surface wasn't "partly
+    good" — the split-brain was the worst property. Dropping MVI for one
+    plain `AppState` was chosen because *one consistent model* > a
+    framework applied to a third of the state. When a pattern doesn't fit
+    a chunk of your state (here: continuous/high-frequency scroll/drag vs
+    discrete popups), that misfit is where it silently gets bypassed.
+47. **Simple state + powerful view engine are orthogonal.** Removing the
+    state framework (MVI) and adding a view framework (retained+reactive
+    term_ui) is coherent, not contradictory: the state model got
+    dead-simple (one struct), and the complexity moved to where the
+    demanded capabilities (animation/focus/text-fields/virtualization)
+    actually live — the view engine.
+48. **"Single source of truth" = one writer per fact, not one struct.**
+    The VT emulator (grid/cursor/scrollback) can't be a plain
+    `Clone+PartialEq+Default` value and is written only by PTY bytes, so
+    it stays outside `AppState` as a named bucket (3-T). Strict
+    single-source is about *no fact having two writers*, which survives
+    that exception.
+49. **Validating agent-built code is a semantic audit, not a green
+    suite.** Trace each invariant to real code and judge by intent; then
+    *test the tests* by fault-injection (stub the core, confirm the
+    suite reddens). A green suite over a tautological test proves
+    nothing.
+50. **Trust the working tree, not the agent's report.** A workflow's
+    implementer can drop its socket mid-run (lost final report) while the
+    fix agent still lands the deliverables. Inspect files + run cargo
+    yourself; the returned summary is a claim, the filesystem is the fact.
+51. **Tickers must poll absolute deadlines.** Recomputing `now + delta`
+    each `about_to_wait` and firing off `ResumeTimeReached` starves under
+    input churn (key repeat) — the timer freezes while a key is held.
+    Poll an absolute `next_tick` in `about_to_wait` (runs after every
+    event batch). A runtime interaction no unit test catches — found only
+    by running.
+52. **A lower crate's examples can't see your domain.** term_ui (below
+    anyclaude) can only demo with fake data; the real coordinator + chrome
+    that need `BackendState`/session/PTY must live in anyclaude `src/`,
+    exercised by an anyclaude example. Decide "where does the proof live"
+    by which crate owns the data.
+53. **Announce fault-injection.** A deliberate `if false &&` to test a
+    test looks identical to shitcode for the seconds it exists, and a
+    user message can land in that window ("что за говнокод"). Say what
+    you're injecting and that you'll revert it.

@@ -1195,3 +1195,35 @@ For files containing code ported from Warp:
 // Adapted from warpdotdev/warp (MIT)
 // Source: crates/warpui/src/rendering/atlas/allocator.rs
 ```
+
+## term_ui — replacing MVI (2026-05-29)
+
+| Commit | What |
+|--------|------|
+| `7af116d` | design doc (research → design → 5-lens adversarial review → assemble workflow); R1–R15 spine |
+| `a38eab8` | term_gpu re-exports `CacheKey` + `LayoutGlyph` for term_ui (R9) |
+| `159e3aa` | Phase A — engine core (arena, `Element` trait, splice, Flex-lite, R4 gate, toy) |
+| `816dba4` | Phase B.1 — coordinator skeleton (AppState + view + static render) |
+| `7d3c62f` | Phase B.2 — two-phase reactive frame (Msg/apply/dirty/incremental reconcile) |
+| `3d4af45` | Phase B.3 — `next_wake` ticker + `frame_now` threading |
+| `f7d9dfe` | fix — ticker starvation under held keys |
+
+- **The split-brain that triggered the rewrite:** MVI had 15 `dispatch`
+  calls (the 3 popups) vs ~27 raw `self.<field> =` mutations (the entire
+  terminal surface) + 1 dead `PtyActor`. The user: *"может нафиг этот
+  mvi?"* → dropped entirely for one plain `AppState`.
+- **Four-bucket state doctrine:** (1) `AppState` UI-decision truth · (2)
+  retained tree = derived/cache · (3-S) resource handles · (3-T) emulator
+  content (single-writer = PTY bytes). "Single source" = *one writer per
+  fact*, not *one struct*.
+- **term_ui crate:** ~1.5K LoC (arena / view / splice / layout / paint /
+  geometry / text_helpers) + 18 tests (13 R4 + 5 caret) + 2 examples
+  (`toy`, `coordinator`).
+- **R4 gate proven non-tautological:** stubbing `reconcile` → no-op
+  reddened **6** tests.
+- **Ticker bug:** holding a key froze the timer — key-repeat churn
+  starved `StartCause::ResumeTimeReached` (deadline recomputed as
+  `now + TICK` each `about_to_wait`). Fix: poll an absolute `next_tick`.
+- **Validation rule (the user's, verbatim):** *"не тупо тесты прогнать, а
+  изучить код на соответствие требованиям."* → semantic audit + test-the-
+  tests, judgment kept in the main loop, never delegated.

@@ -1161,3 +1161,58 @@ The branch is ready to merge or rename to default. Phase 6
 polish items remain (font fallback configuration), but nothing
 in the spec requires more architectural restructuring before
 they ship.
+
+## 34. The term_ui pivot — dropping MVI for one AppState + a retained engine (2026-05-29)
+
+The GPU UI worked, but the user pressed on quality: "говнокод",
+`app.rs` still huge, "не ясно, используется ли mvi как должен". The
+honest audit: MVI was used for the 3 popups and **bypassed for the
+whole terminal surface** (~27 raw `self.<field> =` mutations for
+scroll/selection/cursor/follow), plus a fully-written-but-unused
+`PtyActor`. Split-brain. The user asked **"может нафиг этот mvi?"** and,
+valuing one consistent model over a half-applied framework, chose to
+drop it.
+
+The reframe that settled it: MVI's unique benefits (intent log, replay,
+strict unidirectional types) are unused in a single-user terminal; what
+it actually bought here (testable transitions, view/logic separation)
+survives without the `Store/Actor/Intent` ceremony. Decision: **no MVI.
+One plain `AppState` = single source of truth; a retained + reactive,
+GPUI-style-authored kit (`term_ui`) renders `view(&AppState)`.** The
+state model gets simpler; the complexity moves into the view engine,
+where the five demanded capabilities (animation, focus, text fields,
+long-list virtualization, retained scroll) actually live. The one
+principled exception to "single source": the VT emulator's
+grid/cursor/scrollback stay in `term_core` (bucket 3-T) — they can't be
+a plain `Clone+PartialEq+Default` struct and have a single writer (PTY
+bytes). "Single source" was redefined as *one writer per fact*, not
+*one struct*.
+
+**The design doc** (`docs/design/term-ui-design.md`, ratified) was
+produced by a four-phase workflow: parallel research (Warp's `warpui` +
+Zed's GPUI + Linebender's Xilem + our own gpu code), a synthesis pass, a
+five-lens adversarial review, and an assembly that resolved the findings
+inline. Fifteen checkable invariants R1–R15 are its spine.
+
+**Phase A** (engine core: generational arena, `Element` trait, positional
+splice, Flex-lite layout, the R4 "rebuild == incremental" property gate)
+was **built by a workflow** and then **hand-validated** — not "cargo
+test passed" but a semantic audit against R1–R15 plus *testing the
+tests*: stubbing `reconcile` to a no-op reddened 6 R4 cases, proving the
+gate is not a tautology. (The implementer agent's socket dropped
+mid-run; the fix agent still completed the blockers — a reminder to
+trust nothing and audit the working tree, not the agents' reports.)
+
+**Phase B** (the coordinator: one `AppState`, the two-phase `event → Msg
+→ apply → reconcile` frame, a single dirty signal, incremental reconcile,
+`frame_now` threading, a `next_wake` ticker) the user asked me to author
+myself. The decisive bug was found not by tests but by *running it*:
+holding a key froze the timer — key-repeat event churn starved
+`StartCause::ResumeTimeReached` because `about_to_wait` recomputed
+`now + TICK` each call and the deadline kept sliding forward. Fix: poll
+an absolute `next_tick` in `about_to_wait` (which runs after every event
+batch). The lesson generalises — caret blink and animations would starve
+identically; tickers must poll absolute deadlines.
+
+Status at handoff: Phase A + B done and verified; Phase C (port the real
+header/footer to term_ui views, in anyclaude `src/`) is next.

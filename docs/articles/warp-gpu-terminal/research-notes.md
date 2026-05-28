@@ -2193,3 +2193,58 @@ the extracted helpers picked up `use` statements, doc comments,
 and signature boilerplate that inline code didn't need. That's
 fine; the optimisation target was per-file responsibility, not
 total LoC.
+
+## 22. term_ui — building a UI kit, and validating agent-built code
+
+### Build-by-workflow, validate-by-hand
+The working rhythm this session: a workflow builds a phase (implement →
+adversarial review → fix), and the main loop validates the **working
+tree** — never the agents' reports. Phase A's implementer agent dropped
+its socket mid-run (its final report came back as an API error), yet the
+fix agent still landed the R4 gate + toy + caret tests. Only inspecting
+the actual files and running cargo myself revealed the true state (green,
+18 tests). Takeaway: a workflow's returned summary is a claim; the
+filesystem is the fact.
+
+### Validation = semantic audit + test-the-tests
+The user's rule, stated verbatim: *"не тупо тесты прогнать, а изучить код
+на соответствие требованиям."* So validation traced each invariant to
+real code, judged by intent: R2 (no `Rc/RefCell`; flat generational
+arena), R8 (generational ABA-safe `NodeId` vs stable id-path `WidgetId`),
+R7 (no `View::event`), R9 (term_gpu only gained a `CacheKey`/`LayoutGlyph`
+re-export; `label.rs` NOT moved — green-build caveat), §14 (index-based
+passes that re-borrow the arena per child, never holding `&mut Node`
+across a recursion). Then it **tested the tests**: temporarily stubbing
+`Text::reconcile` to a no-op turned 6 R4 cases red, proving the
+"rebuild == incremental" property gate has teeth rather than passing
+vacuously. (For ~30 seconds the live edit read `if false && …` — which
+looks exactly like shitcode, and the user's message landed in that
+window: "что за говнокод / if false". Lesson: announce a fault-injection
+before it crosses with the user mid-flight.)
+
+### The ticker starvation bug (found by running, not by tests)
+Phase B's `next_wake` ticker froze the uptime line whenever a key was
+held. Root cause, winit-specific: `about_to_wait` set
+`ControlFlow::WaitUntil(now + TICK)` from a fresh `now` each call, and the
+tick was fired off `StartCause::ResumeTimeReached`. Key repeat is a
+continuous event stream — every event wakes the loop early
+(`WaitCancelled`), `about_to_wait` pushes the deadline another `TICK`
+forward, and `ResumeTimeReached` never arrives → starvation. (Text keys
+still advanced the clock via their `request_redraw`, but keys producing no
+state change — arrows, Backspace-on-empty — gave no redraw, so the timer
+visibly stuck.) Fix: an **absolute** `next_tick` (advanced in fixed
+steps, never drifting) **polled in `about_to_wait`**, which runs after
+every event batch and so fires a due tick under churn. This is a runtime
+interaction no unit test catches; it is exactly what `verify_before_docs`
+(run it, don't just green the suite) exists to surface. It generalises:
+the real caret-blink / animation / momentum tickers must poll absolute
+deadlines, not recompute `now + delta` off a starvable `StartCause`.
+
+### A lower crate's examples can't see domain
+Phase B's coordinator lived as `crates/term_ui/examples/coordinator.rs`
+with **fake** data. That is the ceiling of a term_ui example: term_ui is
+a lower crate (anyclaude → term_gpu/term_ui, never the reverse), so it
+cannot reach `BackendState` / session id / Reqs / `ChildPty`. Hence the
+*real* coordinator and chrome views (Phase C+) must live in anyclaude
+`src/`, exercised by an anyclaude `examples/` binary — not in a term_ui
+example. This resolved an earlier "where does it live" confusion.
