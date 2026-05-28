@@ -1033,3 +1033,131 @@ ship in the closing pass — font fallback configuration is the
 main one. No more cutover, no more legacy. The next
 deliverable is whatever the user prioritises against an open
 slate.
+
+## 32. Phase 5 module decomposition — splitting the 2.4K-LoC app.rs
+
+User flagged a SOLID violation: "ты не следовал правилам
+проекта, когда писал код gpu". Read the project's feedback
+memory, found my own note inside `gpu-terminal-remaining-bugs.md`
+saying
+
+> "gpu/app.rs is ~1900 LoC. Approaching the size where
+>  extraction into submodules ... would help."
+
+— and over the following Phase 5 work I had added ~500 more LoC
+(closing pass + cutover) directly to that file. The struct
+mixed PTY lifecycle, winit `ApplicationHandler`, chrome
+rendering, popup rendering, bootstrap setup, diagnostic dump,
+clipboard, and selection — every concern lived in one impl.
+
+Five atomic commits split it. Each kept `cargo check
+--workspace` green; per-commit changes ordered so no
+intermediate state needed `#[allow(dead_code)]` or other linter
+band-aids.
+
+**REFAC-1 (`c426c06`) — `chrome.rs` (234 LoC)**. `draw_header`,
+`draw_footer`, and all chrome constants (`HEADER_HEIGHT_LOGICAL`,
+`FOOTER_HEIGHT_LOGICAL`, `CHROME_*`, `SESSION_COPY_FLASH`,
+`APP_VERSION`, `FOOTER_HINTS`, `CHROME_FONT_SIZE`).
+`CHROME_TEXT_COLOR` and `CHROME_FLASH_COLOR` are `pub(super)` so
+popup code in the next commit can use them too without
+duplicating the values.
+
+**REFAC-2 (`25ad48a`) — `popup.rs` (979 LoC)**. Every popup
+helper plus `POPUP_*` constants and `DEFAULT_FG_FOR_POPUP_SELECTED`.
+Three `pub(super)` entry points: `draw_backend_switch_popup`,
+`draw_history_popup`, `draw_settings_popup`. Internal helpers
+(`push_section_header`, `push_backend_item`,
+`push_override_section_rows`, `draw_string_list_popup`,
+`draw_popup_chrome`) stay private. `override_selection_to_backend_id`
+exposed because the keyboard handler in `app.rs` calls it on
+Enter to map selection index → backend id.
+
+**REFAC-3 (`5181d74`) — `diagnostic.rs` (57 LoC)**. The
+Cmd+Shift+D snapshot dump as a free function taking borrowed
+pieces of `GpuApp` state (`grid_size`, `scroll.offset_y`,
+`scroll.max_offset()`, `Option<&RenderSnapshot>`) instead of
+`&self`. The keyboard handler builds the snapshot once and
+hands the slices in. No more `self.dump_diagnostic_snapshot()`
+method; the App stops being responsible for its own dumper.
+
+**REFAC-4 (`a146a72`) — `bootstrap.rs` (172 LoC)**. The
+`run()` entry point with everything it owns: config / settings
+/ debug logger / tokio runtime / proxy server bind / teammate
+shim / spawn-param assembly / event loop construction / hand-
+off to `GpuApp::new`. `gpu/mod.rs` re-exports `run` from
+`bootstrap` instead of from `app`. `GpuApp::new` and
+`enum UserEvent` become `pub(super)` so bootstrap can build
+them. `app.rs` drops eight unused imports that came along with
+`run` (`EventLoop`, `build_spawn_params`, `ConfigStore`,
+`DebugLogLevel`, `DebugLogger`, `init_global_logger`,
+`ProxyServer`, `TeammateShim`).
+
+**REFAC-5 (`da1090f`) — decomposing `draw_backend_switch_popup`**.
+The popup function itself was still ~340 LoC of inline rendering:
+width measurement, height math, popup chrome, title push, three
+section bodies (where Subagent and Teammate were copy-pasted),
+and the footer hint. Replaced with a sequence of purpose-named
+helpers:
+
+- `compute_backend_switch_popup_width` — measurement only.
+- `compute_backend_switch_popup_height` — row math only.
+- `draw_popup_title` — title push.
+- `draw_popup_footer_hint` — footer push.
+- `draw_active_section` — header + sep + items loop with `[Active]`.
+- `draw_override_section` — header + sep + Disabled leader + items
+  loop with `[Selected]`. Replaces both the previous
+  `push_override_section_rows` (just the items) AND the inline
+  header+separator code in the two override branches. The
+  Subagent/Teammate duplication is gone.
+- `push_section_header_with_separator` — shared header+separator
+  rendering used by both section helpers.
+
+`draw_backend_switch_popup` is now ~140 LoC and reads as the
+layout sequence: extract state → measure → place → draw chrome →
+for each of (title, active section, subagent section, teammate
+section, footer hint), draw it.
+
+**The RenderCtx that didn't ship.** Originally REFAC-5 was going
+to introduce a `RenderCtx<'a>` struct grouping `(font_system,
+swash_cache, atlas, ui_shape_cache, glyphs, rects, sf)` — the
+parameter chain that travels through every chrome and popup
+function — so the `#[allow(clippy::too_many_arguments)]` markers
+could be dropped. User asked: "зачем нужен RenderCtx". The
+honest answer was: there's no consumer beyond the linter
+complaint. One callsite (`redraw`) constructs the struct; the
+helpers are already isolated inside their modules; lifetime
+ceremony and overlay-layer reborrow would add more pain than
+the marker. The marker is a finger pointing at the function;
+the fix belongs at the function, not at a wrapper that hides
+it. So REFAC-5 became "decompose the function itself" — and
+the helpers it spawned naturally have shorter parameter
+chains, with the remaining `#[allow]` on the orchestrator and
+on `push_backend_item` honestly noting that the rendering
+domain genuinely couples those parameters.
+
+**Result**: `src/ui/gpu/app.rs` 2400 → 1470 LoC. Each
+submodule has a single responsibility — chrome / popup /
+diagnostic / bootstrap are independently maintainable. The
+remaining `app.rs` is the `GpuApp` struct + `winit::
+ApplicationHandler` impl + PTY lifecycle + scroll / selection
+/ input handlers.
+
+The work was triggered by user feedback, not by me proactively
+splitting the file. Lesson saved to feedback memory: when my
+own architecture notes flag a file's size as a problem, the
+split is overdue — don't add to it on the next feature.
+
+## 33. Branch state at end of REFAC-5
+
+~130 commits on `feat/gpu-terminal`. Five workspace crates
+(unchanged from §31). The binary entry is unchanged:
+`./target/release/anyclaude`. Two user smoke tests this
+session: one after cutover ("работает"), one after refactor
+("работает"). No visual regression — refactor was pure
+restructure.
+
+The branch is ready to merge or rename to default. Phase 6
+polish items remain (font fallback configuration), but nothing
+in the spec requires more architectural restructuring before
+they ship.

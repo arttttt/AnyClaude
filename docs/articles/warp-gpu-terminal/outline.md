@@ -939,6 +939,33 @@ settle.
     survives a 13K-LoC deletion by letting the deletion be one
     "remove the legacy path" logical change, not 25 individual
     file removals.
+44. **When your own architecture notes flag a file's size, the
+    split is overdue.** `gpu/app.rs` had a note in
+    `gpu-terminal-remaining-bugs.md` saying it was approaching
+    the size where extraction into submodules "would help".
+    Over the next two phases (closing pass + cutover) I added
+    ~500 more LoC to it. User caught it: "ты не следовал
+    правилам проекта". The rule isn't subtle — if I wrote
+    "this needs splitting" in memory, the next feature that
+    touches the file is the time to split, not "later". After
+    the user's nudge, five atomic commits (chrome / popup /
+    diagnostic / bootstrap / decomposition of the biggest
+    popup function) brought `app.rs` from 2400 to 1470 LoC and
+    gave each submodule a single responsibility.
+45. **"Drop a linter marker" is not a sufficient reason to add
+    an abstraction.** The decomposition above briefly included
+    a `RenderCtx<'a>` struct to wrap the
+    `(font_system, swash_cache, atlas, ui_shape_cache, glyphs,
+    rects, sf)` parameter chain so
+    `#[allow(clippy::too_many_arguments)]` could go away. User
+    asked "зачем нужен RenderCtx" and the honest answer was
+    "no consumer, just hides the linter complaint" — premature
+    abstraction. The right move was decomposing the *function*
+    itself so each helper genuinely needs fewer arguments, and
+    accepting the remaining `#[allow]` on the orchestrator
+    because the parameter chain is real domain coupling, not
+    poor design. The marker is a finger pointing at the
+    function; the fix belongs at the function.
 
 ## Possible follow-up articles
 

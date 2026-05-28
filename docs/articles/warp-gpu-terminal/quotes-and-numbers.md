@@ -1152,6 +1152,41 @@ hex dump → snapshot → fix" in under an hour.
 User's smoke test on the resulting binary after all four
 commits: **"работает."**
 
+## Phase 5 module decomposition (2026-05-28) — five commits, app.rs split
+
+| Commit | Summary | What was extracted |
+|--------|---------|--------------------|
+| `c426c06` | `refactor(gpu): extract chrome into its own module` | `chrome.rs` (234 LoC): `draw_header`, `draw_footer`, all chrome constants |
+| `25ad48a` | `refactor(gpu): extract popup overlays into their own module` | `popup.rs` (979 LoC): `draw_backend_switch_popup`, `draw_history_popup`, `draw_settings_popup`, all popup constants and helpers |
+| `5181d74` | `refactor(gpu): extract dump_snapshot into its own module` | `diagnostic.rs` (57 LoC): Cmd+Shift+D dump as free function |
+| `a146a72` | `refactor(gpu): extract bootstrap into its own module` | `bootstrap.rs` (172 LoC): `run()` entry point with config / proxy / shim setup |
+| `da1090f` | `refactor(gpu): decompose draw_backend_switch_popup into per-section helpers` | Inside `popup.rs`: split ~340-LoC function into ~140-LoC orchestrator + 6 helpers; killed Subagent/Teammate inline duplication |
+
+### Before / after
+
+| File | Before | After |
+|------|--------|-------|
+| `src/ui/gpu/app.rs` | 2400 LoC | 1470 LoC |
+| `src/ui/gpu/bootstrap.rs` | — | 172 LoC |
+| `src/ui/gpu/chrome.rs` | — | 234 LoC |
+| `src/ui/gpu/diagnostic.rs` | — | 57 LoC |
+| `src/ui/gpu/popup.rs` | — | 1045 LoC |
+| `src/ui/gpu/pty.rs` | 141 LoC | 141 LoC |
+| `src/ui/gpu/mod.rs` | 13 LoC | 17 LoC |
+| **Total gpu/** | 2554 LoC | 3136 LoC |
+
+The total grew by ~580 LoC because the extracted helpers got `use` statements, doc comments, and signature boilerplate that the original inline code didn't need. The win is per-file responsibility, not LoC reduction.
+
+### What didn't ship: RenderCtx
+
+The plan briefly included a `RenderCtx<'a>` struct grouping `(font_system, swash_cache, atlas, ui_shape_cache, glyphs, rects, sf)` so the `#[allow(clippy::too_many_arguments)]` markers on chrome + popup helpers could be dropped. User asked "зачем нужен RenderCtx". The answer was honest: one callsite would construct it (`redraw`), helpers are already isolated inside their modules, the lifetime + reborrow ceremony would add more pain than the linter complaint hides. The marker is a finger pointing at the function; the fix belongs at the function, not at a wrapper. So REFAC-5 became "decompose the function itself" — which it did.
+
+### Triggering feedback
+
+The decomposition wasn't proactive. User explicitly said "ты не следовал правилам проекта, когда писал код gpu" after the cutover and asked me to re-read the project rules. My own architecture memory had flagged `gpu/app.rs` size months earlier; I had nonetheless kept adding to it through the closing pass and the cutover. Lesson saved in `feedback_solid_dry_kiss_yagni` (concrete miss #4): when my own architecture notes flag a file's size as a problem, the split is overdue — don't add to it on the next feature.
+
+User's smoke test after refactor: **"работает."** No visual regression — pure restructure.
+
 ## License attribution snippet
 
 For files containing code ported from Warp:
