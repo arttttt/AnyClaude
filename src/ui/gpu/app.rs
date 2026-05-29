@@ -33,7 +33,7 @@ use winit::event::{
     ElementState, Modifiers, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent,
 };
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
-use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
+use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowAttributes, WindowId};
 
 use crate::backend::{AgentBackendState, BackendState};
@@ -41,11 +41,12 @@ use crate::config::{
     save_claude_settings, ClaudeSettingsManager, Config, SettingsFieldSnapshot,
 };
 use crate::metrics::ObservabilityHub;
+use crate::ui::app_state::AppState;
 use crate::ui::backend_switch::{
     BackendPopupSection, BackendSwitchIntent, BackendSwitchState,
 };
 use crate::ui::gpu::pty::ChildPty;
-use crate::ui::history::{HistoryDialogState, HistoryEntry, HistoryIntent};
+use crate::ui::history::{HistoryEntry, HistoryIntent};
 use crate::ui::settings::{SettingsDialogState, SettingsIntent};
 use crate::ui::term_geometry::{self, LastClick};
 
@@ -111,43 +112,25 @@ pub(super) struct GpuApp {
     // the window's pixel size, which we don't have until then.
     pty: Option<ChildPty>,
     emulator: Option<Box<dyn TerminalEmulator>>,
-    grid_size: (usize, usize),
 
-    modifiers: ModifiersState,
+    /// The single bucket-1 source of UI-decision truth — grid size, scroll +
+    /// momentum, selection / input, session header, and the popup overlays.
+    /// See [`AppState`]. (Resources, the emulator, and timer handles stay out
+    /// here in the coordinator; bucket 3-S / 3-T.)
+    state: AppState,
 
-    scroll: ScrollState,
-    scroll_velocity: Option<ScrollVelocity>,
     momentum_abort: Option<AbortHandle>,
     gesture_end_abort: Option<AbortHandle>,
     /// 1Hz redraw heartbeat — see [`UserEvent::TickRedraw`]. Aborted
     /// implicitly when the proxy's send_event fails (window closed).
     periodic_tick_abort: Option<AbortHandle>,
 
-    /// Current mouse cursor position in logical pixels (top-left
-    /// origin). `None` before the first CursorMoved event.
-    cursor_pos: Option<(f32, f32)>,
-    /// True while the left mouse button is held with a selection in
-    /// flight (a non-mouse-mode click → CursorMoved sequence).
-    dragging_selection: bool,
-    selection: Option<Selection>,
-    last_click: Option<LastClick>,
-
-    clipboard: Box<dyn Clipboard>,
-
-    /// Session UUID. Generated at startup; shown in the header.
-    /// Click on the "Session: …" text copies the full UUID to the
-    /// clipboard with a green flash.
-    session_id: String,
-    /// `Instant` at process start. The header's "Uptime: <n>s" is
-    /// derived from this.
-    start_time: Instant,
-    /// While `Some(deadline)`, the header renders "Session ID copied!"
-    /// in the flash color instead of the dim grey session UUID.
-    session_copied_until: Option<Instant>,
     /// X range of the session click hot-zone (logical pixels) in the
     /// header. Updated every redraw so the click handler can hit-test
-    /// without recomputing the layout.
+    /// without recomputing the layout. (Derived / materialized — bucket 2.)
     session_click_zone: Option<(f32, f32)>,
+
+    clipboard: Box<dyn Clipboard>,
 
     /// Live proxy backend state. Backend popup reads the list from
     /// here and Enter calls `switch_backend`; history popup pulls
@@ -173,14 +156,6 @@ pub(super) struct GpuApp {
     /// popup confirm (Enter). Loaded from Config at startup so the
     /// popup reflects the user's last choice.
     settings_manager: ClaudeSettingsManager,
-
-    /// Popup overlay state. At most one is `Visible` at a time;
-    /// rendering and input routing check `is_visible()` on each. Each is
-    /// a plain state machine driven by an `apply(&mut self, intent)`
-    /// method (the MVI Stores/Actors are gone).
-    backend_switch: BackendSwitchState,
-    history: HistoryDialogState,
-    settings: SettingsDialogState,
 }
 
 
@@ -209,22 +184,16 @@ impl GpuApp {
             cell_metrics: None,
             pty: None,
             emulator: None,
-            grid_size: (INITIAL_GRID_COLS, INITIAL_GRID_ROWS),
-            modifiers: ModifiersState::empty(),
-            scroll: ScrollState::default(),
-            scroll_velocity: None,
+            state: AppState::new(
+                Uuid::new_v4().to_string(),
+                Instant::now(),
+                (INITIAL_GRID_COLS, INITIAL_GRID_ROWS),
+            ),
             momentum_abort: None,
             gesture_end_abort: None,
             periodic_tick_abort: None,
-            cursor_pos: None,
-            dragging_selection: false,
-            selection: None,
-            last_click: None,
-            clipboard: make_clipboard(),
-            session_id: Uuid::new_v4().to_string(),
-            start_time: Instant::now(),
-            session_copied_until: None,
             session_click_zone: None,
+            clipboard: make_clipboard(),
             backend_state,
             subagent_backend,
             teammate_backend,
@@ -233,9 +202,6 @@ impl GpuApp {
             spawn_args,
             spawn_env,
             settings_manager,
-            backend_switch: BackendSwitchState::default(),
-            history: HistoryDialogState::default(),
-            settings: SettingsDialogState::default(),
         }
     }
 
@@ -292,10 +258,10 @@ impl GpuApp {
     /// `resumed` and on `Resized`/`ScaleFactorChanged`.
     fn sync_grid_to_window(&mut self) {
         let (cols, rows) = self.fit_grid();
-        if self.grid_size == (cols, rows) {
+        if self.state.grid_size == (cols, rows) {
             return;
         }
-        self.grid_size = (cols, rows);
+        self.state.grid_size = (cols, rows);
         if let Some(emu) = self.emulator.as_mut() {
             emu.resize(cols, rows);
         }
@@ -319,7 +285,7 @@ impl GpuApp {
             return false;
         }
         self.refresh_scroll_geometry();
-        let was_at_bottom = self.scroll.offset_y <= SCROLL_BOTTOM_EPSILON;
+        let was_at_bottom = self.state.scroll.offset_y <= SCROLL_BOTTOM_EPSILON;
         if let Some(emu) = self.emulator.as_mut() {
             for chunk in chunks {
                 emu.process(&chunk);
@@ -327,7 +293,7 @@ impl GpuApp {
         }
         self.refresh_scroll_geometry();
         if was_at_bottom {
-            self.scroll.offset_y = 0.0;
+            self.state.scroll.offset_y = 0.0;
         }
         true
     }
@@ -347,11 +313,11 @@ impl GpuApp {
         let cell_h_logical = metrics.height_physical / sf;
         let snap = emu.snapshot();
         let visible_h_logical = window.inner_size().height as f32 / sf;
-        self.scroll.total_size_px = snap.rows.len() as f32 * cell_h_logical;
-        self.scroll.visible_px = visible_h_logical;
-        let max = self.scroll.max_offset();
-        if self.scroll.offset_y > max {
-            self.scroll.offset_y = max;
+        self.state.scroll.total_size_px = snap.rows.len() as f32 * cell_h_logical;
+        self.state.scroll.visible_px = visible_h_logical;
+        let max = self.state.scroll.max_offset();
+        if self.state.scroll.offset_y > max {
+            self.state.scroll.offset_y = max;
         }
     }
 
@@ -376,9 +342,9 @@ impl GpuApp {
         self.cancel_gesture_end();
 
         self.refresh_scroll_geometry();
-        self.scroll.scroll_by(dy);
-        self.scroll_velocity = Some(ScrollVelocity::record(
-            self.scroll_velocity,
+        self.state.scroll.scroll_by(dy);
+        self.state.scroll_velocity = Some(ScrollVelocity::record(
+            self.state.scroll_velocity,
             Vec2::new(0.0, dy),
             Instant::now(),
         ));
@@ -388,7 +354,7 @@ impl GpuApp {
                 self.on_gesture_end();
             }
             TouchPhase::Cancelled => {
-                self.scroll_velocity = None;
+                self.state.scroll_velocity = None;
             }
             TouchPhase::Started | TouchPhase::Moved => {
                 if !precise {
@@ -407,13 +373,13 @@ impl GpuApp {
     }
 
     fn on_gesture_end(&mut self) {
-        let Some(v) = self.scroll_velocity else { return };
+        let Some(v) = self.state.scroll_velocity else { return };
         let speed = v.velocity.length();
         if speed < MOMENTUM_THRESHOLD {
-            self.scroll_velocity = None;
+            self.state.scroll_velocity = None;
             return;
         }
-        self.scroll_velocity = Some(ScrollVelocity {
+        self.state.scroll_velocity = Some(ScrollVelocity {
             velocity: v.clamped_for_momentum(),
             last_update: Instant::now(),
         });
@@ -426,23 +392,13 @@ impl GpuApp {
     /// True when any popup is in its `Visible` state. Used to gate
     /// input routing and mouse-click priority.
     fn any_popup_visible(&self) -> bool {
-        self.backend_switch.is_visible()
-            || self.history.is_visible()
-            || self.settings.is_visible()
+        self.state.any_popup_visible()
     }
 
     /// Dispatch `Close` to every popup store. Called by Cmd+B / +H /
     /// +E before opening a new popup, by Esc, and by click-outside.
     fn close_all_popups(&mut self) {
-        if self.backend_switch.is_visible() {
-            self.backend_switch.apply(BackendSwitchIntent::Close);
-        }
-        if self.history.is_visible() {
-            self.history.apply(HistoryIntent::Close);
-        }
-        if self.settings.is_visible() {
-            self.settings.apply(SettingsIntent::Close);
-        }
+        self.state.close_all_popups();
         if let Some(w) = self.window.as_ref() {
             w.request_redraw();
         }
@@ -452,7 +408,7 @@ impl GpuApp {
     /// dispatches the Open intent with the active backend pre-selected
     /// so pressing Enter is a no-op if the user is just inspecting.
     fn toggle_backend_switch_popup(&mut self) {
-        if self.backend_switch.is_visible() {
+        if self.state.backend_switch.is_visible() {
             self.close_all_popups();
             return;
         }
@@ -468,7 +424,7 @@ impl GpuApp {
             .unwrap_or(0);
         // Close any other open popup first.
         self.close_all_popups();
-        self.backend_switch.apply(BackendSwitchIntent::Open {
+        self.state.backend_switch.apply(BackendSwitchIntent::Open {
             backend_selection,
             subagent_selection: 0,
             teammate_selection: 0,
@@ -483,7 +439,7 @@ impl GpuApp {
     /// log is snapshotted into the popup at open time; subsequent
     /// switches only show up after the user reopens.
     fn toggle_history_popup(&mut self) {
-        if self.history.is_visible() {
+        if self.state.history.is_visible() {
             self.close_all_popups();
             return;
         }
@@ -497,7 +453,7 @@ impl GpuApp {
             })
             .collect();
         self.close_all_popups();
-        self.history.apply(HistoryIntent::Load {
+        self.state.history.apply(HistoryIntent::Load {
             entries: history_entries,
         });
         if let Some(w) = self.window.as_ref() {
@@ -510,7 +466,7 @@ impl GpuApp {
     /// rows (marks state dirty), Enter applies and saves, Esc
     /// discards.
     fn toggle_settings_popup(&mut self) {
-        if self.settings.is_visible() {
+        if self.state.settings.is_visible() {
             self.close_all_popups();
             return;
         }
@@ -530,7 +486,7 @@ impl GpuApp {
             return;
         }
         self.close_all_popups();
-        self.settings.apply(SettingsIntent::Load { fields });
+        self.state.settings.apply(SettingsIntent::Load { fields });
         if let Some(w) = self.window.as_ref() {
             w.request_redraw();
         }
@@ -540,7 +496,7 @@ impl GpuApp {
     /// popup state, applies each row to the manager, then calls
     /// `save_claude_settings`. Errors are logged but non-fatal.
     fn apply_settings_and_save(&mut self) {
-        let fields = match &self.settings {
+        let fields = match &self.state.settings {
             SettingsDialogState::Visible { fields, .. } => fields.clone(),
             SettingsDialogState::Hidden => return,
         };
@@ -565,11 +521,11 @@ impl GpuApp {
     /// (switch backend / save settings / dismiss history) and closes
     /// the popup.
     fn handle_popup_key(&mut self, event: &winit::event::KeyEvent) {
-        if self.backend_switch.is_visible() {
+        if self.state.backend_switch.is_visible() {
             self.handle_backend_switch_key(event);
-        } else if self.history.is_visible() {
+        } else if self.state.history.is_visible() {
             self.handle_history_key(event);
-        } else if self.settings.is_visible() {
+        } else if self.state.settings.is_visible() {
             self.handle_settings_key(event);
         }
     }
@@ -577,15 +533,15 @@ impl GpuApp {
     fn handle_backend_switch_key(&mut self, event: &winit::event::KeyEvent) {
         match event.physical_key {
             PhysicalKey::Code(KeyCode::ArrowUp) => {
-                self.backend_switch.apply(BackendSwitchIntent::MoveUp);
+                self.state.backend_switch.apply(BackendSwitchIntent::MoveUp);
                 self.request_redraw();
             }
             PhysicalKey::Code(KeyCode::ArrowDown) => {
-                self.backend_switch.apply(BackendSwitchIntent::MoveDown);
+                self.state.backend_switch.apply(BackendSwitchIntent::MoveDown);
                 self.request_redraw();
             }
             PhysicalKey::Code(KeyCode::Tab) => {
-                self.backend_switch.apply(BackendSwitchIntent::NextSection);
+                self.state.backend_switch.apply(BackendSwitchIntent::NextSection);
                 self.request_redraw();
             }
             PhysicalKey::Code(KeyCode::Enter) => {
@@ -593,7 +549,7 @@ impl GpuApp {
                 self.close_all_popups();
             }
             PhysicalKey::Code(KeyCode::Delete | KeyCode::Backspace) => {
-                self.backend_switch.apply(BackendSwitchIntent::Clear);
+                self.state.backend_switch.apply(BackendSwitchIntent::Clear);
                 self.request_redraw();
             }
             _ => {}
@@ -607,7 +563,7 @@ impl GpuApp {
     /// non-fatal — the popup still closes.
     fn apply_backend_switch_selection(&mut self) {
         let (section, backend_sel, subagent_sel, teammate_sel) =
-            match self.backend_switch {
+            match self.state.backend_switch {
                 BackendSwitchState::Visible {
                     section,
                     backend_selection,
@@ -646,11 +602,11 @@ impl GpuApp {
     fn handle_history_key(&mut self, event: &winit::event::KeyEvent) {
         match event.physical_key {
             PhysicalKey::Code(KeyCode::ArrowUp) => {
-                self.history.apply(HistoryIntent::ScrollUp);
+                self.state.history.apply(HistoryIntent::ScrollUp);
                 self.request_redraw();
             }
             PhysicalKey::Code(KeyCode::ArrowDown) => {
-                self.history.apply(HistoryIntent::ScrollDown);
+                self.state.history.apply(HistoryIntent::ScrollDown);
                 self.request_redraw();
             }
             PhysicalKey::Code(KeyCode::Enter) => {
@@ -663,15 +619,15 @@ impl GpuApp {
     fn handle_settings_key(&mut self, event: &winit::event::KeyEvent) {
         match event.physical_key {
             PhysicalKey::Code(KeyCode::ArrowUp) => {
-                self.settings.apply(SettingsIntent::MoveUp);
+                self.state.settings.apply(SettingsIntent::MoveUp);
                 self.request_redraw();
             }
             PhysicalKey::Code(KeyCode::ArrowDown) => {
-                self.settings.apply(SettingsIntent::MoveDown);
+                self.state.settings.apply(SettingsIntent::MoveDown);
                 self.request_redraw();
             }
             PhysicalKey::Code(KeyCode::Space) => {
-                self.settings.apply(SettingsIntent::Toggle);
+                self.state.settings.apply(SettingsIntent::Toggle);
                 self.request_redraw();
             }
             PhysicalKey::Code(KeyCode::Enter) => {
@@ -697,15 +653,15 @@ impl GpuApp {
     /// PTY is dropped — the spawn flow is fire-and-forget.
     fn restart_pty(&mut self) {
         self.pty = None;
-        let (cols, rows) = self.grid_size;
+        let (cols, rows) = self.state.grid_size;
         self.emulator = Some(create_emulator(cols, rows, SCROLLBACK_LINES));
-        self.scroll = ScrollState::default();
-        self.scroll_velocity = None;
+        self.state.scroll = ScrollState::default();
+        self.state.scroll_velocity = None;
         self.cancel_momentum();
         self.cancel_gesture_end();
-        self.selection = None;
-        self.dragging_selection = false;
-        self.last_click = None;
+        self.state.selection = None;
+        self.state.dragging_selection = false;
+        self.state.last_click = None;
 
         let proxy = self.proxy.clone();
         match ChildPty::spawn(
@@ -733,8 +689,9 @@ impl GpuApp {
     /// the keyboard shortcut path (potentially later).
     fn copy_session_id(&mut self) {
         self.clipboard
-            .write(ClipboardContent::plain_text(self.session_id.clone()));
-        self.session_copied_until = Some(Instant::now() + SESSION_COPY_FLASH);
+            .write(ClipboardContent::plain_text(self.state.session_id.clone()));
+        self.state
+            .mark_session_copied(Instant::now() + SESSION_COPY_FLASH);
         if let Some(w) = self.window.as_ref() {
             w.request_redraw();
         }
@@ -745,7 +702,7 @@ impl GpuApp {
     /// snapshot → `ClipboardContent::plain_text`. Empty selections are
     /// skipped silently.
     fn copy_selection(&mut self) {
-        let Some(sel) = self.selection else { return };
+        let Some(sel) = self.state.selection else { return };
         if sel.is_empty() {
             return;
         }
@@ -837,7 +794,7 @@ impl GpuApp {
             metrics.width_physical,
             metrics.height_physical,
             self.scale_factor,
-            self.scroll.offset_y,
+            self.state.scroll.offset_y,
             total_rows,
             visible_rows,
             cols,
@@ -845,10 +802,10 @@ impl GpuApp {
     }
 
     fn on_cursor_moved(&mut self, x: f32, y: f32) {
-        self.cursor_pos = Some((x, y));
-        if self.dragging_selection {
+        self.state.cursor_pos = Some((x, y));
+        if self.state.dragging_selection {
             if let Some(point) = self.cell_at(x, y) {
-                if let Some(sel) = self.selection.as_mut() {
+                if let Some(sel) = self.state.selection.as_mut() {
                     sel.cursor = point;
                     if let Some(w) = self.window.as_ref() {
                         w.request_redraw();
@@ -859,7 +816,7 @@ impl GpuApp {
     }
 
     fn on_mouse_press(&mut self) {
-        let Some((x, y)) = self.cursor_pos else { return };
+        let Some((x, y)) = self.state.cursor_pos else { return };
         // When a popup is open, a click anywhere dismisses it
         // (matching macOS modal-out behaviour) and is otherwise
         // swallowed — the click never starts a selection in the
@@ -894,32 +851,32 @@ impl GpuApp {
         let snap = self.emulator.as_ref().map(|e| e.snapshot());
         match count {
             1 => {
-                self.selection = Some(Selection::new(point));
-                self.dragging_selection = true;
+                self.state.selection = Some(Selection::new(point));
+                self.state.dragging_selection = true;
             }
             2 => {
                 let (start, end) = snap
                     .as_ref()
                     .map(|s| expand_word(point, s))
                     .unwrap_or((point, point));
-                self.selection = Some(Selection {
+                self.state.selection = Some(Selection {
                     anchor: start,
                     cursor: end,
                 });
                 // No drag after double-click; the user re-clicks to
                 // start a linear selection.
-                self.dragging_selection = false;
+                self.state.dragging_selection = false;
             }
             _ => {
                 let (start, end) = snap
                     .as_ref()
                     .map(|s| expand_line(point, s))
                     .unwrap_or((point, point));
-                self.selection = Some(Selection {
+                self.state.selection = Some(Selection {
                     anchor: start,
                     cursor: end,
                 });
-                self.dragging_selection = false;
+                self.state.dragging_selection = false;
             }
         }
         if let Some(w) = self.window.as_ref() {
@@ -928,12 +885,12 @@ impl GpuApp {
     }
 
     fn on_mouse_release(&mut self) {
-        if self.dragging_selection {
-            self.dragging_selection = false;
+        if self.state.dragging_selection {
+            self.state.dragging_selection = false;
             // A click that didn't drag (anchor == cursor) clears the
             // selection — keeps "click somewhere to deselect" working.
-            if self.selection.map(|s| s.is_empty()).unwrap_or(false) {
-                self.selection = None;
+            if self.state.selection.map(|s| s.is_empty()).unwrap_or(false) {
+                self.state.selection = None;
                 if let Some(w) = self.window.as_ref() {
                     w.request_redraw();
                 }
@@ -941,14 +898,14 @@ impl GpuApp {
         }
     }
 
-    /// Update `self.last_click` based on the new press and return the
+    /// Update `self.state.last_click` based on the new press and return the
     /// 1..=3 click count. Resets to 1 when the click misses the
     /// previous cell or arrives after the threshold.
     fn bump_click_count(&mut self, point: CellPoint) -> u32 {
         let now = Instant::now();
         let new_count =
-            term_geometry::next_click_count(self.last_click, point, now, MULTI_CLICK_THRESHOLD_MS);
-        self.last_click = Some(LastClick {
+            term_geometry::next_click_count(self.state.last_click, point, now, MULTI_CLICK_THRESHOLD_MS);
+        self.state.last_click = Some(LastClick {
             time: now,
             point,
             count: new_count,
@@ -957,19 +914,19 @@ impl GpuApp {
     }
 
     fn on_momentum_tick(&mut self) {
-        let Some(v) = self.scroll_velocity.as_mut() else { return };
+        let Some(v) = self.state.scroll_velocity.as_mut() else { return };
         let now = Instant::now();
         let elapsed = now.duration_since(v.last_update).as_secs_f32();
         v.last_update = now;
         v.velocity = decay_velocity(v.velocity, elapsed);
         if v.velocity.length() < MOMENTUM_MIN_VELOCITY {
             self.cancel_momentum();
-            self.scroll_velocity = None;
+            self.state.scroll_velocity = None;
             return;
         }
         let delta = v.velocity * elapsed;
         self.refresh_scroll_geometry();
-        self.scroll.scroll_by(delta.y);
+        self.state.scroll.scroll_by(delta.y);
         if let Some(w) = self.window.as_ref() {
             w.request_redraw();
         }
@@ -992,7 +949,7 @@ impl GpuApp {
         let sf = self.scale_factor.max(0.0001);
 
         let snapshot = emulator.snapshot();
-        let scroll_offset_y = self.scroll.offset_y;
+        let scroll_offset_y = self.state.scroll.offset_y;
         let mut rects: Vec<RectInstance> = Vec::new();
         let mut glyphs: Vec<GlyphInstance> = Vec::new();
         populate_panel(
@@ -1010,7 +967,7 @@ impl GpuApp {
             &mut rects,
             &mut glyphs,
         );
-        if let Some(sel) = self.selection {
+        if let Some(sel) = self.state.selection {
             push_selection_rects(
                 &sel,
                 &snapshot,
@@ -1032,13 +989,9 @@ impl GpuApp {
             rects.push(cursor_rect);
         }
 
-        // Expire the session-copied flash if its deadline passed so
-        // future frames skip the active-color branch in draw_header.
-        if let Some(deadline) = self.session_copied_until {
-            if Instant::now() >= deadline {
-                self.session_copied_until = None;
-            }
-        }
+        // The copied-flash is DERIVED from the deadline + frame clock (R12) —
+        // no stored boolean, no expiry mutation.
+        let now = Instant::now();
         let active_backend = self.backend_state.get_active_backend();
         let cfg = self.backend_state.get_config();
         let resolve_display = |id: &str| -> Option<String> {
@@ -1076,9 +1029,9 @@ impl GpuApp {
             subagent_label.as_deref(),
             teammate_label.as_deref(),
             total_reqs,
-            &self.session_id,
-            self.start_time,
-            self.session_copied_until.is_some(),
+            &self.state.session_id,
+            self.state.start_time,
+            self.state.session_copied(now),
             window_w_logical,
             sf,
         );
@@ -1102,9 +1055,9 @@ impl GpuApp {
         let mut overlay_shadows: Vec<term_gpu::ShadowInstance> = Vec::new();
         let mut overlay_rects: Vec<RectInstance> = Vec::new();
         let mut overlay_glyphs: Vec<GlyphInstance> = Vec::new();
-        let backend_state_visible = self.backend_switch.is_visible();
-        let history_state_visible = self.history.is_visible();
-        let settings_state_visible = self.settings.is_visible();
+        let backend_state_visible = self.state.backend_switch.is_visible();
+        let history_state_visible = self.state.history.is_visible();
+        let settings_state_visible = self.state.settings.is_visible();
         if backend_state_visible {
             let items_and_ids: Vec<(String, String)> = self
                 .backend_state
@@ -1117,7 +1070,7 @@ impl GpuApp {
             let current_subagent = self.subagent_backend.get();
             let current_teammate = self.teammate_backend.get();
             draw_backend_switch_popup(
-                &self.backend_switch,
+                &self.state.backend_switch,
                 &items_and_ids,
                 &active_backend,
                 current_subagent.as_deref(),
@@ -1135,7 +1088,7 @@ impl GpuApp {
             );
         } else if history_state_visible {
             draw_history_popup(
-                &self.history,
+                &self.state.history,
                 renderer.atlas_mut(),
                 &mut self.font_system,
                 &mut self.swash_cache,
@@ -1149,7 +1102,7 @@ impl GpuApp {
             );
         } else if settings_state_visible {
             draw_settings_popup(
-                &self.settings,
+                &self.state.settings,
                 renderer.atlas_mut(),
                 &mut self.font_system,
                 &mut self.swash_cache,
@@ -1205,7 +1158,7 @@ impl ApplicationHandler<UserEvent> for GpuApp {
         self.renderer = Some(renderer);
 
         let (cols, rows) = self.fit_grid();
-        self.grid_size = (cols, rows);
+        self.state.grid_size = (cols, rows);
         self.emulator = Some(create_emulator(cols, rows, SCROLLBACK_LINES));
 
         let proxy = self.proxy.clone();
@@ -1324,7 +1277,7 @@ impl ApplicationHandler<UserEvent> for GpuApp {
                 // so they work on every keyboard layout: Cmd+C on a
                 // Russian / French / Greek layout would otherwise see
                 // `Key::Character("с"|"ç"|"ψ")` and miss the match.
-                if self.modifiers.super_key() {
+                if self.state.modifiers.super_key() {
                     if let PhysicalKey::Code(code) = event.physical_key {
                         match code {
                             KeyCode::KeyC => self.copy_selection(),
@@ -1333,12 +1286,12 @@ impl ApplicationHandler<UserEvent> for GpuApp {
                             KeyCode::KeyH => self.toggle_history_popup(),
                             KeyCode::KeyE => self.toggle_settings_popup(),
                             KeyCode::KeyR => self.restart_pty(),
-                            KeyCode::KeyD if self.modifiers.shift_key() => {
+                            KeyCode::KeyD if self.state.modifiers.shift_key() => {
                                 let snap = self.emulator.as_ref().map(|e| e.snapshot());
                                 super::diagnostic::dump_snapshot(
-                                    self.grid_size,
-                                    self.scroll.offset_y,
-                                    self.scroll.max_offset(),
+                                    self.state.grid_size,
+                                    self.state.scroll.offset_y,
+                                    self.state.scroll.max_offset(),
                                     snap.as_ref(),
                                 );
                             }
@@ -1350,7 +1303,7 @@ impl ApplicationHandler<UserEvent> for GpuApp {
                 }
                 // Ctrl combos belong to the shell (Ctrl+C / Ctrl+D /
                 // ...) and pass straight through encode_key.
-                let Some(bytes) = encode_key(&event.logical_key, self.modifiers) else {
+                let Some(bytes) = encode_key(&event.logical_key, self.state.modifiers) else {
                     return;
                 };
                 if let Some(pty) = self.pty.as_mut() {
@@ -1369,7 +1322,7 @@ impl ApplicationHandler<UserEvent> for GpuApp {
 
 impl GpuApp {
     fn update_modifiers(&mut self, mods: Modifiers) {
-        self.modifiers = mods.state();
+        self.state.modifiers = mods.state();
     }
 }
 
