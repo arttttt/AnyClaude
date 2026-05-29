@@ -4,6 +4,7 @@ pub mod chrome_labels;
 pub mod gpu;
 pub mod history;
 pub mod input;
+pub mod popup_anim;
 pub mod popup_view;
 pub mod settings;
 pub mod term_geometry;

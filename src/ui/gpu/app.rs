@@ -25,7 +25,7 @@ use term_gpu::{
 };
 use glam::Vec2;
 use term_ui::{
-    apply_overlay_alpha, build_root, ease_out, free_subtree, measure, paint, place, place_centered,
+    apply_overlay_alpha, build_root, free_subtree, measure, paint, place, place_centered,
     reconcile_root, Block, NodeId, PaintOutput, RetainedTree, SizeConstraint, Stack,
 };
 use uuid::Uuid;
@@ -45,6 +45,7 @@ use crate::config::{
 use crate::metrics::ObservabilityHub;
 use crate::ui::app_state::{AppState, ScrollEffect};
 use crate::ui::chrome_labels;
+use crate::ui::popup_anim::{popup_fade_alpha, step_popup_anim, PopupAnim};
 use crate::ui::popup_view;
 use crate::ui::backend_switch::{
     override_selection_to_backend_id, BackendPopupSection, BackendSwitchIntent, BackendSwitchState,
@@ -74,15 +75,6 @@ const MULTI_CLICK_THRESHOLD_MS: u128 = 400;
 
 /// Popup open/close fade duration (seconds).
 const POPUP_FADE_SECS: f32 = 0.12;
-
-/// Open/close fade transition for the popup overlay (R12): only the epoch +
-/// direction are stored; the per-frame alpha is DERIVED from the frame clock,
-/// never persisted.
-#[derive(Debug, Clone, Copy)]
-struct PopupAnim {
-    started_at: Instant,
-    opening: bool,
-}
 
 use super::chrome::{
     CHROME_FONT_SIZE, CHROME_H_PAD, FOOTER_HEIGHT_LOGICAL, HEADER_HEIGHT_LOGICAL,
@@ -1077,30 +1069,14 @@ impl GpuApp {
         } else {
             popup_view::popup_view(&self.state)
         };
-        // Open/close fade (R12): bump the epoch on a visibility EDGE, then derive
-        // this frame's alpha from the frame clock. `popup_animating` keeps the
-        // redraw loop alive (self-requested below) until the fade completes.
+        // Open/close fade (R12): advance the epoch on a visibility EDGE, then
+        // derive this frame's alpha from the frame clock (pure helpers in
+        // `popup_anim`). `popup_animating` keeps the redraw loop alive
+        // (self-requested below) until the fade completes.
         let visible = popup.is_some();
-        match &self.popup_anim {
-            None if visible => {
-                self.popup_anim = Some(PopupAnim { started_at: now, opening: true });
-            }
-            Some(a) if a.opening && !visible => {
-                self.popup_anim = Some(PopupAnim { started_at: now, opening: false });
-            }
-            Some(a) if !a.opening && visible => {
-                self.popup_anim = Some(PopupAnim { started_at: now, opening: true });
-            }
-            _ => {}
-        }
-        let (popup_alpha, popup_animating) = match &self.popup_anim {
-            Some(a) => {
-                let t = (now.duration_since(a.started_at).as_secs_f32() / POPUP_FADE_SECS).min(1.0);
-                let alpha = if a.opening { ease_out(t) } else { 1.0 - ease_out(t) };
-                (alpha, t < 1.0)
-            }
-            None => (1.0, false),
-        };
+        self.popup_anim = step_popup_anim(self.popup_anim, visible, now);
+        let (popup_alpha, popup_animating) =
+            popup_fade_alpha(self.popup_anim, now, POPUP_FADE_SECS);
 
         // Pick the root to paint this frame: the live popup (reconciled into the
         // tree), or — during a fade-OUT, when the store is already Hidden — the
