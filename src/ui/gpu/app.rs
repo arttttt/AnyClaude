@@ -47,7 +47,7 @@ use crate::ui::backend_switch::{
     BackendPopupSection, BackendSwitchIntent, BackendSwitchState,
 };
 use crate::ui::gpu::pty::ChildPty;
-use crate::ui::history::{HistoryActor, HistoryEntry, HistoryIntent};
+use crate::ui::history::{HistoryDialogState, HistoryEntry, HistoryIntent};
 use crate::ui::settings::{SettingsActor, SettingsDialogState, SettingsIntent};
 
 const INITIAL_W: f32 = 1200.0;
@@ -181,7 +181,7 @@ pub(super) struct GpuApp {
     /// the MVI Actor is gone); history/settings still use MVI stores
     /// until their cutover.
     backend_switch: BackendSwitchState,
-    history_store: Store<HistoryActor>,
+    history: HistoryDialogState,
     settings_store: Store<SettingsActor>,
 }
 
@@ -243,7 +243,7 @@ impl GpuApp {
             spawn_env,
             settings_manager,
             backend_switch: BackendSwitchState::default(),
-            history_store: Store::new(HistoryActor, |_effect| {}),
+            history: HistoryDialogState::default(),
             settings_store: Store::new(SettingsActor, |_effect| {}),
         }
     }
@@ -430,7 +430,7 @@ impl GpuApp {
     /// to gate input routing and mouse-click priority.
     fn any_popup_visible(&self) -> bool {
         self.backend_switch.is_visible()
-            || self.history_store.state().is_visible()
+            || self.history.is_visible()
             || self.settings_store.state().is_visible()
     }
 
@@ -440,8 +440,8 @@ impl GpuApp {
         if self.backend_switch.is_visible() {
             self.backend_switch.apply(BackendSwitchIntent::Close);
         }
-        if self.history_store.state().is_visible() {
-            self.history_store.dispatch(HistoryIntent::Close);
+        if self.history.is_visible() {
+            self.history.apply(HistoryIntent::Close);
         }
         if self.settings_store.state().is_visible() {
             self.settings_store.dispatch(SettingsIntent::Close);
@@ -486,7 +486,7 @@ impl GpuApp {
     /// log is snapshotted into the popup at open time; subsequent
     /// switches only show up after the user reopens.
     fn toggle_history_popup(&mut self) {
-        if self.history_store.state().is_visible() {
+        if self.history.is_visible() {
             self.close_all_popups();
             return;
         }
@@ -500,8 +500,8 @@ impl GpuApp {
             })
             .collect();
         self.close_all_popups();
-        self.history_store
-            .dispatch(HistoryIntent::Load { entries: mvi_entries });
+        self.history
+            .apply(HistoryIntent::Load { entries: mvi_entries });
         if let Some(w) = self.window.as_ref() {
             w.request_redraw();
         }
@@ -570,7 +570,7 @@ impl GpuApp {
     fn handle_popup_key(&mut self, event: &winit::event::KeyEvent) {
         if self.backend_switch.is_visible() {
             self.handle_backend_switch_key(event);
-        } else if self.history_store.state().is_visible() {
+        } else if self.history.is_visible() {
             self.handle_history_key(event);
         } else if self.settings_store.state().is_visible() {
             self.handle_settings_key(event);
@@ -649,11 +649,11 @@ impl GpuApp {
     fn handle_history_key(&mut self, event: &winit::event::KeyEvent) {
         match event.physical_key {
             PhysicalKey::Code(KeyCode::ArrowUp) => {
-                self.history_store.dispatch(HistoryIntent::ScrollUp);
+                self.history.apply(HistoryIntent::ScrollUp);
                 self.request_redraw();
             }
             PhysicalKey::Code(KeyCode::ArrowDown) => {
-                self.history_store.dispatch(HistoryIntent::ScrollDown);
+                self.history.apply(HistoryIntent::ScrollDown);
                 self.request_redraw();
             }
             PhysicalKey::Code(KeyCode::Enter) => {
@@ -1122,7 +1122,7 @@ impl GpuApp {
         let mut overlay_rects: Vec<RectInstance> = Vec::new();
         let mut overlay_glyphs: Vec<GlyphInstance> = Vec::new();
         let backend_state_visible = self.backend_switch.is_visible();
-        let history_state_visible = self.history_store.state().is_visible();
+        let history_state_visible = self.history.is_visible();
         let settings_state_visible = self.settings_store.state().is_visible();
         if backend_state_visible {
             let items_and_ids: Vec<(String, String)> = self
@@ -1154,7 +1154,7 @@ impl GpuApp {
             );
         } else if history_state_visible {
             draw_history_popup(
-                self.history_store.state(),
+                &self.history,
                 renderer.atlas_mut(),
                 &mut self.font_system,
                 &mut self.swash_cache,
