@@ -12,7 +12,7 @@
 //! exactly; the two converge when the legacy chrome is deleted at cutover
 //! (Phase E/F), at which point these constants fold into a single palette.
 
-use term_ui::{Block, BlockStyle, CrossAxis, Insets, Sizing, Stack};
+use term_ui::{Block, BlockStyle, CrossAxis, Insets, Sizing, Stack, WidgetId};
 use uikit::{footer_bar, header_bar, Segment};
 
 /// Dim grey for chrome labels and the inter-segment separator.
@@ -66,8 +66,17 @@ pub fn header_segments(
     } else {
         Segment::new(format!("Session: {session_id}"), CHROME_TEXT_COLOR)
     };
-    segs.push(session);
+    // Tag the session run so the coordinator can hit-test it (click-to-copy).
+    segs.push(session.id(session_widget_id()));
     segs
+}
+
+/// Stable widget id for the click-to-copy "Session: …" header run. The
+/// coordinator resolves this against the laid-out chrome tree each frame to
+/// recover the label's bounds. (The chrome view assigns no other WidgetIds, so
+/// the path just needs to be distinct.)
+pub fn session_widget_id() -> WidgetId {
+    WidgetId::from_path(&[0x5E55])
 }
 
 /// Build the footer segments as `(left, right)`: the hotkey hints flush-left,

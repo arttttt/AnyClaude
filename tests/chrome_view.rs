@@ -4,7 +4,9 @@
 //! width) headlessly via measure/place; the visual result is verified live
 //! once it's wired into the coordinator (E.6b).
 
-use anyclaude::ui::chrome_labels::{chrome_view, footer_segments, header_segments};
+use anyclaude::ui::chrome_labels::{
+    chrome_view, footer_segments, header_segments, session_widget_id,
+};
 use glam::Vec2;
 use term_gpu::{FontFamily, FontSystem, TextShapeCache};
 use term_ui::{build_root, measure, place, RetainedTree, SizeConstraint};
@@ -61,4 +63,34 @@ fn header_pins_top_footer_pins_bottom_both_full_width() {
         "header fence spans full width through the bg Block, got {}",
         fence_b.size.x
     );
+}
+
+#[test]
+fn session_run_is_hit_testable_in_the_header() {
+    let header_h = 30.0;
+    let header = header_segments("anthropic", Some("opus"), None, 3, 42, "sid-abc", false);
+    let (left, right) = footer_segments("0.5.0");
+    let view = chrome_view(&header, &left, &right, 14.0, header_h, 28.0, 12.0);
+
+    let mut tree = RetainedTree::new();
+    let mut fonts = FontSystem::new();
+    let mut shape = TextShapeCache::with_family(FontFamily::SansSerif);
+    let root = build_root(&mut tree, &view);
+    measure(
+        &mut tree,
+        root,
+        SizeConstraint::tight(Vec2::new(900.0, 400.0)),
+        &mut fonts,
+        &mut shape,
+        1.0,
+    );
+    place(&mut tree, root, Vec2::ZERO);
+
+    // The session run is tagged so the coordinator can resolve its bounds.
+    let nid = tree
+        .resolve_widget(session_widget_id())
+        .expect("session run resolves to a node");
+    let b = tree.node(nid).bounds;
+    assert!(b.origin.y < header_h, "session label is in the header band, y={}", b.origin.y);
+    assert!(b.size.x > 0.0, "session label has a clickable width");
 }

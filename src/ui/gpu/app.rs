@@ -991,9 +991,17 @@ impl GpuApp {
         );
         overlay_rects.extend_from_slice(&self.chrome_scratch.rects);
         overlay_glyphs.extend_from_slice(&self.chrome_scratch.glyphs);
-        // The session-click hit-zone is re-derived from the term_ui tree in
-        // E.6c; temporarily unwired here (click-to-copy disabled this step).
-        self.session_click_zone = None;
+        // Re-derive the session-click hot-zone (x-range) from the laid-out
+        // chrome tree: the "Session: …" run is tagged with a stable WidgetId,
+        // so we resolve its node + bounds. `on_mouse_press` hit-tests against
+        // it (the header-band y-gate handles the vertical extent).
+        self.session_click_zone = self
+            .chrome_tree
+            .resolve_widget(chrome_labels::session_widget_id())
+            .map(|nid| {
+                let b = self.chrome_tree.node(nid).bounds;
+                (b.origin.x, b.right())
+            });
         let backend_state_visible = self.state.backend_switch.is_visible();
         let history_state_visible = self.state.history.is_visible();
         let settings_state_visible = self.state.settings.is_visible();

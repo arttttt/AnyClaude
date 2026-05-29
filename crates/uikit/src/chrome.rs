@@ -9,23 +9,32 @@
 //! constraint). A 1px hairline fences the bar against the content region:
 //! `header_bar` fences its BOTTOM edge, `footer_bar` its TOP edge.
 
-use term_ui::{Block, BlockStyle, CrossAxis, Insets, Sizing, Stack, Text};
+use term_ui::{Block, BlockStyle, CrossAxis, Insets, Sizing, Stack, Text, WidgetId};
 
 /// Thickness of the chrome / content fence line, in logical pixels.
 const FENCE_PX: f32 = 1.0;
 
 /// One pre-formatted run of chrome text: the string and its colour. The
 /// presenter decides both (e.g. the Session run flips to a flash colour when a
-/// copy just happened); this kit only lays it out and paints it.
+/// copy just happened); this kit only lays it out and paints it. An optional
+/// `widget_id` makes the run hit-testable — the consumer tags a clickable run
+/// (e.g. the session id) and resolves its bounds from the laid-out tree.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Segment {
     pub text: String,
     pub color: [f32; 4],
+    pub widget_id: Option<WidgetId>,
 }
 
 impl Segment {
     pub fn new(text: impl Into<String>, color: [f32; 4]) -> Self {
-        Self { text: text.into(), color }
+        Self { text: text.into(), color, widget_id: None }
+    }
+
+    /// Tag this run with a stable `WidgetId` so the caller can hit-test it.
+    pub fn id(mut self, widget_id: WidgetId) -> Self {
+        self.widget_id = Some(widget_id);
+        self
     }
 }
 
@@ -84,7 +93,11 @@ fn segment_row(
         if i > 0 {
             row = row.child(Text::new(separator, font_size, sep_color));
         }
-        row = row.child(Text::new(seg.text.clone(), font_size, seg.color));
+        let mut text = Text::new(seg.text.clone(), font_size, seg.color);
+        if let Some(wid) = seg.widget_id {
+            text = text.id(wid);
+        }
+        row = row.child(text);
     }
     row
 }
