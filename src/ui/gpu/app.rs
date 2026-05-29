@@ -32,7 +32,7 @@ use uuid::Uuid;
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition};
 use winit::event::{
-    ElementState, Modifiers, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent,
+    ElementState, MouseButton, MouseScrollDelta, WindowEvent,
 };
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
 use winit::keyboard::{KeyCode, PhysicalKey};
@@ -43,7 +43,7 @@ use crate::config::{
     save_claude_settings, ClaudeSettingsManager, Config, SettingsFieldSnapshot,
 };
 use crate::metrics::ObservabilityHub;
-use crate::ui::app_state::{AppState, ScrollEffect};
+use crate::ui::app_state::{ApplyCtx, AppState, Effect, Msg};
 use crate::ui::chrome_labels;
 use crate::ui::popup_anim::{popup_fade_alpha, step_popup_anim, PopupAnim};
 use crate::ui::popup_view;
@@ -371,40 +371,39 @@ impl GpuApp {
         }
     }
 
-    /// Apply a wheel delta: refresh scroll geometry, run the pure `AppState`
-    /// reducer, then perform the effects it returns (timers + redraw).
-    fn on_wheel(&mut self, dy: f32, phase: TouchPhase, precise: bool) {
-        self.refresh_scroll_geometry();
-        let effects = self.state.on_wheel(dy, phase, precise, Instant::now());
-        self.perform_scroll_effects(effects);
+    /// Translate a `Msg` to its state transition and perform the resulting
+    /// effects: build the read-only `ApplyCtx`, call `AppState::apply`, then run
+    /// each `Effect`. This is the single coordinator-side entry for the event
+    /// loop — every winit / user event funnels through here. (Mouse press builds
+    /// its own ctx carrying the emulator snapshot; see `on_mouse_press`.)
+    fn dispatch(&mut self, msg: Msg) {
+        let ctx = ApplyCtx { now: Instant::now(), snapshot: None };
+        let effects = self.state.apply(msg, &ctx);
+        self.perform_effects(effects);
     }
 
-    fn on_gesture_end(&mut self) {
-        let effects = self.state.on_gesture_end(Instant::now());
-        self.perform_scroll_effects(effects);
-    }
-
-    /// Perform the side effects a scroll transition asked for. Timer handles +
-    /// redraw live here (bucket 3-S); the reducer stayed pure on `AppState`.
-    fn perform_scroll_effects(&mut self, effects: Vec<ScrollEffect>) {
+    /// Perform the side effects `apply` returned. The one place a state
+    /// transition reaches a resource — timers, redraw, PTY / clipboard /
+    /// renderer; the reducer stayed pure on `AppState` (bucket 3-S).
+    fn perform_effects(&mut self, effects: Vec<Effect>) {
         for effect in effects {
             match effect {
-                ScrollEffect::CancelMomentum => self.cancel_momentum(),
-                ScrollEffect::CancelGestureEnd => self.cancel_gesture_end(),
-                ScrollEffect::ScheduleMomentum => {
+                Effect::CancelMomentum => self.cancel_momentum(),
+                Effect::CancelGestureEnd => self.cancel_gesture_end(),
+                Effect::ScheduleMomentum => {
                     self.momentum_abort = Some(schedule_momentum_loop(
                         self.proxy.clone(),
                         MOMENTUM_FRAME_INTERVAL,
                     ));
                 }
-                ScrollEffect::ScheduleGestureEnd => {
+                Effect::ScheduleGestureEnd => {
                     self.gesture_end_abort = Some(schedule_once(
                         self.proxy.clone(),
                         GESTURE_END_TIMEOUT,
                         UserEvent::GestureEnded,
                     ));
                 }
-                ScrollEffect::Redraw => self.request_redraw(),
+                Effect::Redraw => self.request_redraw(),
             }
         }
     }
@@ -871,12 +870,6 @@ impl GpuApp {
         }
     }
 
-    fn on_momentum_tick(&mut self) {
-        self.refresh_scroll_geometry();
-        let effects = self.state.on_momentum_tick(Instant::now());
-        self.perform_scroll_effects(effects);
-    }
-
     /// Render one frame: clear, populate cells, push cursor, draw
     /// header chrome, present.
     fn redraw(&mut self) {
@@ -1225,10 +1218,11 @@ impl ApplicationHandler<UserEvent> for GpuApp {
                 }
             }
             UserEvent::GestureEnded => {
-                self.on_gesture_end();
+                self.dispatch(Msg::GestureEnd);
             }
             UserEvent::MomentumTick => {
-                self.on_momentum_tick();
+                self.refresh_scroll_geometry();
+                self.dispatch(Msg::MomentumTick);
             }
             UserEvent::TickRedraw => {
                 if let Some(w) = self.window.as_ref() {
@@ -1264,14 +1258,15 @@ impl ApplicationHandler<UserEvent> for GpuApp {
                 }
             }
             WindowEvent::ModifiersChanged(mods) => {
-                self.update_modifiers(mods);
+                self.dispatch(Msg::ModifiersChanged(mods.state()));
             }
             WindowEvent::MouseWheel { delta, phase, .. } => {
                 let (precise, dy) = match delta {
                     MouseScrollDelta::PixelDelta(p) => (true, p.y as f32),
                     MouseScrollDelta::LineDelta(_, v) => (false, v * NUM_PIXELS_PER_LINE),
                 };
-                self.on_wheel(dy, phase, precise);
+                self.refresh_scroll_geometry();
+                self.dispatch(Msg::Wheel { dy, phase, precise });
             }
             WindowEvent::CursorMoved { position, .. } => {
                 let PhysicalPosition { x, y } = position;
@@ -1348,12 +1343,6 @@ impl ApplicationHandler<UserEvent> for GpuApp {
             }
             _ => {}
         }
-    }
-}
-
-impl GpuApp {
-    fn update_modifiers(&mut self, mods: Modifiers) {
-        self.state.modifiers = mods.state();
     }
 }
 

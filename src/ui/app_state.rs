@@ -60,11 +60,13 @@ pub struct AppState {
     pub settings: SettingsDialogState,
 }
 
-/// Side effect a scroll transition asks the coordinator to perform. The state
-/// reducer is pure (mutates `scroll`/`scroll_velocity` only); timer handles and
-/// redraws live in the coordinator (bucket 3-S), so they come back as data.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ScrollEffect {
+/// A side effect [`AppState::apply`] asks the coordinator to perform. `apply` is
+/// pure on `AppState` (+ a read-only [`ApplyCtx`]); everything that touches a
+/// resource — timers, redraw, PTY / clipboard / renderer writes — comes back as
+/// one of these for `GpuApp::perform_effects` to run (bucket 3-S). Variants are
+/// added as each event category is migrated onto the loop (E.8).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Effect {
     Redraw,
     /// Start the momentum-tick loop (coordinator owns the abort handle).
     ScheduleMomentum,
@@ -77,7 +79,49 @@ pub enum ScrollEffect {
     CancelGestureEnd,
 }
 
+/// An input event translated to a pure message. The coordinator does any
+/// read-only resource resolution needed to build a `Msg` (resolving a cell,
+/// reading the backend list, …) so the message carries plain data; [`AppState::
+/// apply`] then performs the state transition and returns [`Effect`]s. Variants
+/// land as each event category is migrated (E.8).
+pub enum Msg {
+    /// A wheel / trackpad scroll delta. The coordinator refreshes scroll bounds
+    /// (`scroll.total_size_px` / `visible_px`) before dispatching.
+    Wheel { dy: f32, phase: TouchPhase, precise: bool },
+    /// A scroll gesture ended (or its silence-timeout fallback fired).
+    GestureEnd,
+    /// One momentum-decay frame. Coordinator refreshes scroll bounds first.
+    MomentumTick,
+    /// The keyboard modifier state changed.
+    ModifiersChanged(ModifiersState),
+}
+
+/// Read-only context the coordinator supplies to [`AppState::apply`]: the frame
+/// clock, plus (for selection) the current emulator snapshot. Resource WRITES
+/// never happen through this — they come back as [`Effect`]s.
+pub struct ApplyCtx<'a> {
+    pub now: Instant,
+    /// The emulator's current content, for selection word / line expansion.
+    /// `None` when no emulator is live or the transition doesn't need it.
+    pub snapshot: Option<&'a RenderSnapshot>,
+}
+
 impl AppState {
+    /// The single state-transition entry point: route a [`Msg`] to its
+    /// transition and return the [`Effect`]s the coordinator must perform. Pure
+    /// on `AppState` + the read-only `ctx`; every side effect comes back as data.
+    pub fn apply(&mut self, msg: Msg, ctx: &ApplyCtx) -> Vec<Effect> {
+        match msg {
+            Msg::Wheel { dy, phase, precise } => self.on_wheel(dy, phase, precise, ctx.now),
+            Msg::GestureEnd => self.on_gesture_end(ctx.now),
+            Msg::MomentumTick => self.on_momentum_tick(ctx.now),
+            Msg::ModifiersChanged(m) => {
+                self.modifiers = m;
+                Vec::new()
+            }
+        }
+    }
+
     /// Construct the initial state. `session_id`/`start_time` are passed in
     /// (born at process start) so this stays deterministic and unit-testable.
     pub fn new(session_id: String, start_time: Instant, grid_size: (usize, usize)) -> Self {
@@ -145,8 +189,8 @@ impl AppState {
         phase: TouchPhase,
         precise: bool,
         now: Instant,
-    ) -> Vec<ScrollEffect> {
-        let mut fx = vec![ScrollEffect::CancelMomentum, ScrollEffect::CancelGestureEnd];
+    ) -> Vec<Effect> {
+        let mut fx = vec![Effect::CancelMomentum, Effect::CancelGestureEnd];
         self.scroll.scroll_by(dy);
         self.scroll_velocity =
             Some(ScrollVelocity::record(self.scroll_velocity, Vec2::new(0.0, dy), now));
@@ -155,17 +199,17 @@ impl AppState {
             TouchPhase::Cancelled => self.scroll_velocity = None,
             TouchPhase::Started | TouchPhase::Moved => {
                 if !precise {
-                    fx.push(ScrollEffect::ScheduleGestureEnd);
+                    fx.push(Effect::ScheduleGestureEnd);
                 }
             }
         }
-        fx.push(ScrollEffect::Redraw);
+        fx.push(Effect::Redraw);
         fx
     }
 
     /// A gesture ended: kick momentum if the recorded velocity is fast enough,
     /// otherwise drop it. Pure on `AppState`.
-    pub fn on_gesture_end(&mut self, now: Instant) -> Vec<ScrollEffect> {
+    pub fn on_gesture_end(&mut self, now: Instant) -> Vec<Effect> {
         let Some(v) = self.scroll_velocity else {
             return Vec::new();
         };
@@ -177,12 +221,12 @@ impl AppState {
             velocity: v.clamped_for_momentum(),
             last_update: now,
         });
-        vec![ScrollEffect::ScheduleMomentum]
+        vec![Effect::ScheduleMomentum]
     }
 
     /// One momentum frame: decay the velocity, scroll by it, and stop once it
     /// falls below the cutoff. Caller refreshes scroll bounds first.
-    pub fn on_momentum_tick(&mut self, now: Instant) -> Vec<ScrollEffect> {
+    pub fn on_momentum_tick(&mut self, now: Instant) -> Vec<Effect> {
         let Some(v) = self.scroll_velocity.as_mut() else {
             return Vec::new();
         };
@@ -191,11 +235,11 @@ impl AppState {
         v.velocity = decay_velocity(v.velocity, elapsed);
         if v.velocity.length() < MOMENTUM_MIN_VELOCITY {
             self.scroll_velocity = None;
-            return vec![ScrollEffect::CancelMomentum];
+            return vec![Effect::CancelMomentum];
         }
         let delta = v.velocity * elapsed;
         self.scroll.scroll_by(delta.y);
-        vec![ScrollEffect::Redraw]
+        vec![Effect::Redraw]
     }
 
     // ── selection (E.5) ──────────────────────────────────────────────────

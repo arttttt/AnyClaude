@@ -5,7 +5,7 @@
 
 use std::time::{Duration, Instant};
 
-use anyclaude::ui::app_state::{AppState, ScrollEffect};
+use anyclaude::ui::app_state::{AppState, Effect};
 use anyclaude::ui::backend_switch::BackendSwitchIntent;
 use anyclaude::ui::history::HistoryIntent;
 use anyclaude::ui::settings::SettingsIntent;
@@ -104,9 +104,9 @@ fn wheel_cancels_then_redraws_and_records_velocity() {
     assert_eq!(
         fx,
         vec![
-            ScrollEffect::CancelMomentum,
-            ScrollEffect::CancelGestureEnd,
-            ScrollEffect::Redraw
+            Effect::CancelMomentum,
+            Effect::CancelGestureEnd,
+            Effect::Redraw
         ]
     );
     assert!(s.scroll_velocity.is_some(), "wheel records velocity");
@@ -116,14 +116,14 @@ fn wheel_cancels_then_redraws_and_records_velocity() {
 fn non_precise_wheel_arms_gesture_end_fallback() {
     let mut s = scrollable();
     let fx = s.on_wheel(120.0, TouchPhase::Moved, false, Instant::now());
-    assert!(fx.contains(&ScrollEffect::ScheduleGestureEnd));
+    assert!(fx.contains(&Effect::ScheduleGestureEnd));
 }
 
 #[test]
 fn cancelled_wheel_drops_velocity() {
     let mut s = scrollable();
     let fx = s.on_wheel(120.0, TouchPhase::Cancelled, true, Instant::now());
-    assert!(!fx.contains(&ScrollEffect::ScheduleMomentum));
+    assert!(!fx.contains(&Effect::ScheduleMomentum));
     assert!(s.scroll_velocity.is_none());
 }
 
@@ -137,7 +137,7 @@ fn gesture_end_kicks_momentum_only_when_fast() {
         velocity: Vec2::new(0.0, 1.0e6),
         last_update: now,
     });
-    assert_eq!(fast.on_gesture_end(now), vec![ScrollEffect::ScheduleMomentum]);
+    assert_eq!(fast.on_gesture_end(now), vec![Effect::ScheduleMomentum]);
     assert!(fast.scroll_velocity.is_some());
 
     // Slow (zero) → no momentum, velocity dropped.
@@ -161,7 +161,7 @@ fn momentum_tick_redraws_while_fast_and_stops_when_slow() {
         last_update: base,
     });
     let fx = moving.on_momentum_tick(base + Duration::from_millis(16));
-    assert_eq!(fx, vec![ScrollEffect::Redraw]);
+    assert_eq!(fx, vec![Effect::Redraw]);
     assert!(moving.scroll_velocity.is_some());
 
     // Below cutoff → cancel momentum, drop velocity, no redraw.
@@ -171,7 +171,7 @@ fn momentum_tick_redraws_while_fast_and_stops_when_slow() {
         last_update: base,
     });
     let fx = stopping.on_momentum_tick(base + Duration::from_millis(16));
-    assert_eq!(fx, vec![ScrollEffect::CancelMomentum]);
+    assert_eq!(fx, vec![Effect::CancelMomentum]);
     assert!(stopping.scroll_velocity.is_none());
 
     // No velocity → no-op.
