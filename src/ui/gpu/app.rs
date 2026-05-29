@@ -12,19 +12,17 @@ use std::time::{Duration, Instant};
 
 use futures::future::{abortable, AbortHandle};
 use futures_timer::Delay;
-use glam::Vec2;
 use term_clipboard::{
     get_image_filepaths_from_paths, pick_best_image, save_image_to_temp,
     should_insert_text_on_paste, Clipboard, ClipboardContent,
 };
 use term_core::{create_emulator, AnsiPalette, MouseMode, TerminalEmulator};
 use term_gpu::{
-    build_cursor_rect, decay_velocity, encode_key, encode_paste, expand_line, expand_word,
-    measure_cell_metrics, populate_panel, push_selection_rects, selection_to_text,
-    shell_quote_path, CellMetrics, CellPoint, FontFamily, FontSystem, GlyphInstance, GpuRenderer,
-    PanelRect, RectInstance, RenderLayer, ScrollState, ScrollVelocity, Selection, SwashCache,
-    TextShapeCache, GESTURE_END_TIMEOUT, MOMENTUM_FRAME_INTERVAL, MOMENTUM_MIN_VELOCITY,
-    MOMENTUM_THRESHOLD, NUM_PIXELS_PER_LINE,
+    build_cursor_rect, encode_key, encode_paste, expand_line, expand_word, measure_cell_metrics,
+    populate_panel, push_selection_rects, selection_to_text, shell_quote_path, CellMetrics,
+    CellPoint, FontFamily, FontSystem, GlyphInstance, GpuRenderer, PanelRect, RectInstance,
+    RenderLayer, ScrollState, Selection, SwashCache, TextShapeCache, GESTURE_END_TIMEOUT,
+    MOMENTUM_FRAME_INTERVAL, NUM_PIXELS_PER_LINE,
 };
 use uuid::Uuid;
 use winit::application::ApplicationHandler;
@@ -41,7 +39,7 @@ use crate::config::{
     save_claude_settings, ClaudeSettingsManager, Config, SettingsFieldSnapshot,
 };
 use crate::metrics::ObservabilityHub;
-use crate::ui::app_state::AppState;
+use crate::ui::app_state::{AppState, ScrollEffect};
 use crate::ui::backend_switch::{
     BackendPopupSection, BackendSwitchIntent, BackendSwitchState,
 };
@@ -334,60 +332,42 @@ impl GpuApp {
         }
     }
 
-    /// Apply a wheel delta. Trackpad `TouchPhase::Ended` kicks momentum
-    /// immediately; for non-precise wheels (mice) a silence timeout
-    /// falls back to the same path.
+    /// Apply a wheel delta: refresh scroll geometry, run the pure `AppState`
+    /// reducer, then perform the effects it returns (timers + redraw).
     fn on_wheel(&mut self, dy: f32, phase: TouchPhase, precise: bool) {
-        // A new wheel event interrupts any in-flight momentum + pending kickoff.
-        self.cancel_momentum();
-        self.cancel_gesture_end();
-
         self.refresh_scroll_geometry();
-        self.state.scroll.scroll_by(dy);
-        self.state.scroll_velocity = Some(ScrollVelocity::record(
-            self.state.scroll_velocity,
-            Vec2::new(0.0, dy),
-            Instant::now(),
-        ));
+        let effects = self.state.on_wheel(dy, phase, precise, Instant::now());
+        self.perform_scroll_effects(effects);
+    }
 
-        match phase {
-            TouchPhase::Ended => {
-                self.on_gesture_end();
-            }
-            TouchPhase::Cancelled => {
-                self.state.scroll_velocity = None;
-            }
-            TouchPhase::Started | TouchPhase::Moved => {
-                if !precise {
+    fn on_gesture_end(&mut self) {
+        let effects = self.state.on_gesture_end(Instant::now());
+        self.perform_scroll_effects(effects);
+    }
+
+    /// Perform the side effects a scroll transition asked for. Timer handles +
+    /// redraw live here (bucket 3-S); the reducer stayed pure on `AppState`.
+    fn perform_scroll_effects(&mut self, effects: Vec<ScrollEffect>) {
+        for effect in effects {
+            match effect {
+                ScrollEffect::CancelMomentum => self.cancel_momentum(),
+                ScrollEffect::CancelGestureEnd => self.cancel_gesture_end(),
+                ScrollEffect::ScheduleMomentum => {
+                    self.momentum_abort = Some(schedule_momentum_loop(
+                        self.proxy.clone(),
+                        MOMENTUM_FRAME_INTERVAL,
+                    ));
+                }
+                ScrollEffect::ScheduleGestureEnd => {
                     self.gesture_end_abort = Some(schedule_once(
                         self.proxy.clone(),
                         GESTURE_END_TIMEOUT,
                         UserEvent::GestureEnded,
                     ));
                 }
+                ScrollEffect::Redraw => self.request_redraw(),
             }
         }
-
-        if let Some(w) = self.window.as_ref() {
-            w.request_redraw();
-        }
-    }
-
-    fn on_gesture_end(&mut self) {
-        let Some(v) = self.state.scroll_velocity else { return };
-        let speed = v.velocity.length();
-        if speed < MOMENTUM_THRESHOLD {
-            self.state.scroll_velocity = None;
-            return;
-        }
-        self.state.scroll_velocity = Some(ScrollVelocity {
-            velocity: v.clamped_for_momentum(),
-            last_update: Instant::now(),
-        });
-        self.momentum_abort = Some(schedule_momentum_loop(
-            self.proxy.clone(),
-            MOMENTUM_FRAME_INTERVAL,
-        ));
     }
 
     /// True when any popup is in its `Visible` state. Used to gate
@@ -888,22 +868,9 @@ impl GpuApp {
     }
 
     fn on_momentum_tick(&mut self) {
-        let Some(v) = self.state.scroll_velocity.as_mut() else { return };
-        let now = Instant::now();
-        let elapsed = now.duration_since(v.last_update).as_secs_f32();
-        v.last_update = now;
-        v.velocity = decay_velocity(v.velocity, elapsed);
-        if v.velocity.length() < MOMENTUM_MIN_VELOCITY {
-            self.cancel_momentum();
-            self.state.scroll_velocity = None;
-            return;
-        }
-        let delta = v.velocity * elapsed;
         self.refresh_scroll_geometry();
-        self.state.scroll.scroll_by(delta.y);
-        if let Some(w) = self.window.as_ref() {
-            w.request_redraw();
-        }
+        let effects = self.state.on_momentum_tick(Instant::now());
+        self.perform_scroll_effects(effects);
     }
 
     /// Render one frame: clear, populate cells, push cursor, draw
