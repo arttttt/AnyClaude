@@ -252,6 +252,19 @@ pub fn place(tree: &mut RetainedTree, id: NodeId, origin: Vec2) {
     }
 }
 
+/// PLACE a self-sized subtree CENTERED within `viewport` (logical px). Reads the
+/// node's `measured` size (set by a prior [`measure`] under a LOOSE viewport
+/// constraint — so the subtree sized to its intrinsic content rather than being
+/// clamped to fill the viewport) and places it at the centered origin. The
+/// origin is clamped to `>= 0`, so a subtree larger than the viewport pins to
+/// the top-left instead of spilling off the top/left edge. This is the overlay
+/// centering lever (popups); the plain [`place`] takes an explicit origin.
+pub fn place_centered(tree: &mut RetainedTree, id: NodeId, viewport: Vec2) {
+    let measured = tree.node(id).measured;
+    let origin = ((viewport - measured) * 0.5).max(Vec2::ZERO);
+    place(tree, id, origin);
+}
+
 fn place_stack(
     tree: &mut RetainedTree,
     id: NodeId,

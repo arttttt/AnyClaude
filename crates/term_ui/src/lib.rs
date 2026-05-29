@@ -35,7 +35,7 @@ pub use geometry::{
     Axis, Bounds, CrossAxis, Insets, MainAxis, SizeConstraint, Sizing,
 };
 pub use id::{NodeId, WidgetId};
-pub use layout::{line_height, measure, measure_text, place};
+pub use layout::{line_height, measure, measure_text, place, place_centered};
 pub use paint::{
     block_shadow, paint, paint_cpu, CpuPaint, GlyphRecord, PaintOutput, RectRecord,
 };
