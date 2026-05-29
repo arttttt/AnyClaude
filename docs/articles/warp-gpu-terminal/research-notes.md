@@ -2248,3 +2248,41 @@ cannot reach `BackendState` / session id / Reqs / `ChildPty`. Hence the
 *real* coordinator and chrome views (Phase C+) must live in anyclaude
 `src/`, exercised by an anyclaude `examples/` binary — not in a term_ui
 example. This resolved an earlier "where does it live" confusion.
+
+### Phase C: the layering split (generic kit vs domain presenter)
+The decision that gave Phase C its shape: the chrome got split across two
+layers along a single seam — *does this know what the words mean?*
+- A new `uikit` crate is the **reusable, domain-agnostic** layer:
+  `Segment {text, color}` + `header_bar`/`footer_bar`, composed over
+  term_ui. It knows how to *lay out* a labelled strip, never what the
+  labels *say*. It depends only on term_ui (term_gpu/glam are test-only),
+  so it stays strictly below the binary.
+- `ui::chrome_labels` in anyclaude `src/` is the **domain presenter**:
+  it owns the "backend:/sub:/team:/Reqs:/Uptime:/Session:" vocabulary and
+  the copied-flash colour, mapping runtime primitives → `Vec<Segment>`.
+  It takes primitives only (no `BackendState`/PTY), so it is a pure,
+  GPU-free function — five integration tests pin its text/colour/order.
+
+This *diverged* from the literal plan ("a `header_labels` pure fn in the
+kit"): a reusable kit that spelled "backend:" / "Reqs:" would be polluted
+with one app's semantics. The seam (`uikit` = how to lay out, presenter =
+what to say) is the SOLID payoff the whole MVI-drop was chasing —
+expressed as a crate boundary the compiler enforces (uikit literally
+*can't* import anyclaude).
+
+Two **YAGNI wins** confirmed the kit was the right size. The design
+sketch had pencilled a `RichRow` widget for styled chrome spans; it was
+never needed — plain `Stack`/`Text`/`Spacer` compose the row. And the 1px
+fence between chrome and content is not a new primitive either: it's a
+`Block` (background fill) wrapping an empty `Spacer`, pinned by the parent
+to `Sizing::Fixed(1.0)` on the main axis and widened by `CrossAxis::
+Stretch` to the full width — a full-width hairline out of two existing
+parts. The footer right-aligns its version the same frugal way, with a
+`Spacer::fill()`. The "right widget" turned out to be *no new widget*.
+
+What Phase C did **not** do — recorded so the status isn't overclaimed:
+the session-click hitbox and scroll/momentum from the original §15 sketch
+are deferred. Both need R7 event routing and the *real* coordinator that
+replaces `GpuApp`; `examples/chrome_preview.rs` is a fake-data rehearsal
+of that coordinator, not the thing itself. The chrome *views* are done
+and verified; wiring them to live input/scroll comes with the coordinator.

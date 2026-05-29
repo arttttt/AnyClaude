@@ -1020,3 +1020,19 @@ settle.
     test looks identical to shitcode for the seconds it exists, and a
     user message can land in that window ("что за говнокод"). Say what
     you're injecting and that you'll revert it.
+54. **Keep app vocabulary out of the reusable layer.** A widget kit may
+    know *how to lay out* a labelled strip; it must not know that the
+    label says "backend:" or "Reqs:". Split along that seam — a generic
+    `uikit` (Segments + bars) vs a domain presenter in the binary (the
+    words) — and make it a crate boundary so the compiler enforces it.
+    The reusable kit literally can't import the app.
+55. **The right widget is often no new widget.** The design sketch wanted
+    a `RichRow`; plain `Stack`/`Text`/`Spacer` composed it. A full-width
+    1px fence is a `Block` (bg-fill) over an empty `Spacer`, pinned
+    `Fixed(1)` + `Stretch` — not a new primitive. Right-align is one
+    `Spacer::fill()`. Compose before you add.
+56. **Don't overclaim the phase.** Shipping the chrome *views* is not
+    shipping the hitbox + scroll that the same phase sketch listed — those
+    need event routing and the real coordinator. A fake-data preview
+    rehearses the coordinator; it isn't it. Record what was deferred in
+    the same breath as what was done, or "Phase C ✅" quietly lies.

@@ -1207,6 +1207,10 @@ For files containing code ported from Warp:
 | `7d3c62f` | Phase B.2 — two-phase reactive frame (Msg/apply/dirty/incremental reconcile) |
 | `3d4af45` | Phase B.3 — `next_wake` ticker + `frame_now` threading |
 | `f7d9dfe` | fix — ticker starvation under held keys |
+| `135fcb2` | Phase C.0 — scaffold the domain-agnostic `uikit` crate |
+| `2e64e82` | Phase C.1 — generic `header_bar`/`footer_bar` over term_ui (+ 4 layout tests) |
+| `360dafa` | Phase C.2 — `ui::chrome_labels` domain presenter (+ 5 tests) |
+| `1dcf6f2` | Phase C.3 — `examples/chrome_preview.rs` (real chrome, coordinator pattern) |
 
 - **The split-brain that triggered the rewrite:** MVI had 15 `dispatch`
   calls (the 3 popups) vs ~27 raw `self.<field> =` mutations (the entire
@@ -1227,3 +1231,15 @@ For files containing code ported from Warp:
 - **Validation rule (the user's, verbatim):** *"не тупо тесты прогнать, а
   изучить код на соответствие требованиям."* → semantic audit + test-the-
   tests, judgment kept in the main loop, never delegated.
+- **Phase C layering split:** `uikit` crate (138 LoC, **0** domain
+  references) = generic `Segment`+bars; `ui::chrome_labels` (75 LoC, in
+  the binary) = the "backend:/Reqs:/Session:" words. The compiler enforces
+  the seam — `uikit` literally can't import anyclaude.
+- **YAGNI wins in C:** the sketched `RichRow` widget was **never built**
+  (plain `Stack`/`Text`/`Spacer` sufficed); the 1px fence is a
+  `Block`-over-`Spacer` (`Fixed(1)`+`Stretch`), not a new primitive; the
+  footer right-aligns with `Spacer::fill()`. **9** new tests (4 bar
+  layout + 5 presenter), all GPU-free.
+- **Deferred from C (not overclaimed):** session-click hitbox +
+  scroll/momentum — they need R7 event routing and the real coordinator
+  that replaces `GpuApp`; `chrome_preview` is a fake-data rehearsal of it.

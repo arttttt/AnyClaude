@@ -1214,5 +1214,23 @@ an absolute `next_tick` in `about_to_wait` (which runs after every event
 batch). The lesson generalises — caret blink and animations would starve
 identically; tickers must poll absolute deadlines.
 
-Status at handoff: Phase A + B done and verified; Phase C (port the real
-header/footer to term_ui views, in anyclaude `src/`) is next.
+**Phase C** (port the real header/footer to declarative term_ui views) I
+authored myself too. The interesting outcome was the *layering*, not the
+rendering. A new `uikit` crate holds the **generic, domain-agnostic**
+bars — `Segment {text, color}` + `header_bar`/`footer_bar` over term_ui —
+and the "backend:/sub:/Reqs:/Session:" vocabulary went into an
+`ui::chrome_labels` presenter in anyclaude `src/`, *not* the kit (a
+reusable kit must not spell its app's words). Two YAGNI wins fell out:
+the design sketch's planned `RichRow` widget was never needed — plain
+`Stack`/`Text`/`Spacer` compose the row, the 1px fence is just a
+`Block`-over-`Spacer` pinned `Fixed(1)` + `Stretch`, and the footer
+right-aligns its version with `Spacer::fill()`. It is proven in
+`examples/chrome_preview.rs` — the real chrome through a real
+`GpuRenderer` on the Phase B coordinator pattern — and was user-verified.
+The session-click hitbox and scroll/momentum were *deferred*: they need
+R7 event routing and the real coordinator that replaces `GpuApp`, which a
+fake-data preview can't stand in for.
+
+Status at handoff: Phase A + B + C (chrome views) done and verified;
+Phase D (port the 3 popups to plain `AppState` + pure fns, delete their
+actors) is next.
