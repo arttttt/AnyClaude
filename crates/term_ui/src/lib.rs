@@ -17,6 +17,7 @@
 //! term_ui layers on term_gpu and consumes its instance/text surface; it
 //! re-implements none of it (R9).
 
+pub mod anim;
 pub mod arena;
 pub mod geometry;
 pub mod id;
@@ -28,6 +29,7 @@ pub mod view;
 
 // ── public surface (kept reachable so new types don't trip dead_code) ──
 
+pub use anim::{apply_overlay_alpha, ease_in_out, ease_out, lerp, linear};
 pub use arena::{
     BlockShadow, BlockStyle, Node, NodeKind, RetainedTree, StackStyle, TextStyle,
 };
