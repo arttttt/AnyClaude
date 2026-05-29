@@ -151,7 +151,6 @@ dependencies = [
  "glam",
  "http-body-util",
  "libc",
- "mvi",
  "parking_lot",
  "portable-pty",
  "reqwest",
@@ -1699,10 +1698,6 @@ dependencies = [
  "wasi",
  "windows-sys 0.61.2",
 ]
-
-[[package]]
-name = "mvi"
-version = "0.1.0"
 
 [[package]]
 name = "naga"
