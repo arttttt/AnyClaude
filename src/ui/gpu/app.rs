@@ -23,6 +23,11 @@ use term_gpu::{
     FontSystem, GlyphInstance, GpuRenderer, PanelRect, RectInstance, RenderLayer, ScrollState,
     SwashCache, TextShapeCache, GESTURE_END_TIMEOUT, MOMENTUM_FRAME_INTERVAL, NUM_PIXELS_PER_LINE,
 };
+use glam::Vec2;
+use term_ui::{
+    build_root, measure, paint, place, reconcile_root, NodeId, PaintOutput, RetainedTree,
+    SizeConstraint, Stack,
+};
 use uuid::Uuid;
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition};
@@ -39,6 +44,7 @@ use crate::config::{
 };
 use crate::metrics::ObservabilityHub;
 use crate::ui::app_state::{AppState, ScrollEffect};
+use crate::ui::chrome_labels;
 use crate::ui::backend_switch::{
     BackendPopupSection, BackendSwitchIntent, BackendSwitchState,
 };
@@ -66,7 +72,7 @@ const SCROLL_BOTTOM_EPSILON: f32 = 0.5;
 const MULTI_CLICK_THRESHOLD_MS: u128 = 400;
 
 use super::chrome::{
-    draw_footer, draw_header, CHROME_H_PAD, FOOTER_HEIGHT_LOGICAL, HEADER_HEIGHT_LOGICAL,
+    CHROME_FONT_SIZE, CHROME_H_PAD, FOOTER_HEIGHT_LOGICAL, HEADER_HEIGHT_LOGICAL,
     SESSION_COPY_FLASH,
 };
 use super::popup::{
@@ -106,6 +112,14 @@ pub(super) struct GpuApp {
     /// Separate from `shape_cache` because cache instances are family-
     /// scoped — terminal cells are Monospace, chrome is SansSerif.
     ui_shape_cache: TextShapeCache,
+
+    /// Retained term_ui tree for the chrome overlay (header + footer). Built
+    /// from `chrome_labels::chrome_view(&AppState)` each frame and reconciled
+    /// against the prior view (bucket 2 — derived from AppState).
+    chrome_tree: RetainedTree,
+    chrome_root: Option<NodeId>,
+    chrome_prev: Option<Stack>,
+    chrome_scratch: PaintOutput,
 
     // Lazily initialised in `resumed`: spawning the shell needs to know
     // the window's pixel size, which we don't have until then.
@@ -179,6 +193,10 @@ impl GpuApp {
             swash_cache: SwashCache::new(),
             shape_cache: TextShapeCache::with_family(FontFamily::Monospace),
             ui_shape_cache: TextShapeCache::with_family(FontFamily::SansSerif),
+            chrome_tree: RetainedTree::new(),
+            chrome_root: None,
+            chrome_prev: None,
+            chrome_scratch: PaintOutput::default(),
             palette: AnsiPalette::default_dark(),
             cell_metrics: None,
             pty: None,
@@ -916,35 +934,66 @@ impl GpuApp {
         let window_size = window.inner_size();
         let window_w_logical = window_size.width as f32 / sf;
         let window_h_logical = window_size.height as f32 / sf;
-        self.session_click_zone = draw_header(
-            renderer.atlas_mut(),
-            &mut self.font_system,
-            &mut self.swash_cache,
-            &mut self.ui_shape_cache,
-            &mut overlay_rects,
-            &mut overlay_glyphs,
+        // Chrome (header + footer) is a term_ui view now: build it from the
+        // current AppState, reconcile against last frame, lay it out to the
+        // full window, and paint it into the overlay layer.
+        let header = chrome_labels::header_segments(
             &active_backend,
             subagent_label.as_deref(),
             teammate_label.as_deref(),
             total_reqs,
+            self.state.uptime_secs(now),
             &self.state.session_id,
-            self.state.start_time,
             self.state.session_copied(now),
-            window_w_logical,
+        );
+        let (footer_left, footer_right) = chrome_labels::footer_segments(env!("CARGO_PKG_VERSION"));
+        let chrome = chrome_labels::chrome_view(
+            &header,
+            &footer_left,
+            &footer_right,
+            CHROME_FONT_SIZE,
+            HEADER_HEIGHT_LOGICAL,
+            FOOTER_HEIGHT_LOGICAL,
+            CHROME_H_PAD,
+        );
+        let chrome_root = match self.chrome_root {
+            Some(root) => {
+                let prev = self
+                    .chrome_prev
+                    .take()
+                    .expect("chrome_prev present once built");
+                reconcile_root(&mut self.chrome_tree, root, &prev, &chrome);
+                root
+            }
+            None => build_root(&mut self.chrome_tree, &chrome),
+        };
+        self.chrome_root = Some(chrome_root);
+        self.chrome_prev = Some(chrome);
+        measure(
+            &mut self.chrome_tree,
+            chrome_root,
+            SizeConstraint::tight(Vec2::new(window_w_logical, window_h_logical)),
+            &mut self.font_system,
+            &mut self.ui_shape_cache,
             sf,
         );
-
-        draw_footer(
+        place(&mut self.chrome_tree, chrome_root, Vec2::ZERO);
+        self.chrome_scratch.clear();
+        paint(
+            &self.chrome_tree,
+            chrome_root,
+            &mut self.chrome_scratch,
             renderer.atlas_mut(),
             &mut self.font_system,
             &mut self.swash_cache,
             &mut self.ui_shape_cache,
-            &mut overlay_rects,
-            &mut overlay_glyphs,
-            window_w_logical,
-            window_h_logical,
             sf,
         );
+        overlay_rects.extend_from_slice(&self.chrome_scratch.rects);
+        overlay_glyphs.extend_from_slice(&self.chrome_scratch.glyphs);
+        // The session-click hit-zone is re-derived from the term_ui tree in
+        // E.6c; temporarily unwired here (click-to-copy disabled this step).
+        self.session_click_zone = None;
         let backend_state_visible = self.state.backend_switch.is_visible();
         let history_state_visible = self.state.history.is_visible();
         let settings_state_visible = self.state.settings.is_visible();
