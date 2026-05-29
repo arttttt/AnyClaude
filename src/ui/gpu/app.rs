@@ -76,9 +76,7 @@ use super::chrome::{
     CHROME_FONT_SIZE, CHROME_H_PAD, FOOTER_HEIGHT_LOGICAL, HEADER_HEIGHT_LOGICAL,
     SESSION_COPY_FLASH,
 };
-use super::popup::{
-    draw_backend_switch_popup, draw_settings_popup, override_selection_to_backend_id,
-};
+use super::popup::{draw_backend_switch_popup, override_selection_to_backend_id};
 
 /// User event delivered to the winit loop. Drives redraws in response
 /// to PTY output and scroll momentum without polling.
@@ -1092,20 +1090,6 @@ impl GpuApp {
                     &active_backend,
                     current_subagent.as_deref(),
                     current_teammate.as_deref(),
-                    renderer.atlas_mut(),
-                    &mut self.font_system,
-                    &mut self.swash_cache,
-                    &mut self.ui_shape_cache,
-                    &mut overlay_shadows,
-                    &mut overlay_rects,
-                    &mut overlay_glyphs,
-                    window_w_logical,
-                    window_h_logical,
-                    sf,
-                );
-            } else if self.state.settings.is_visible() {
-                draw_settings_popup(
-                    &self.state.settings,
                     renderer.atlas_mut(),
                     &mut self.font_system,
                     &mut self.swash_cache,

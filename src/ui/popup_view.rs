@@ -13,8 +13,10 @@
 use term_ui::{Block, BlockShadow, BlockStyle, CrossAxis, Insets, Sizing, Stack, Text};
 use uikit::{fixed_row_window, popup_list, Segment};
 
+use crate::config::SettingsFieldSnapshot;
 use crate::ui::app_state::AppState;
 use crate::ui::history::{HistoryEntry, MAX_VISIBLE_ROWS};
+use crate::ui::settings::SettingsDialogState;
 
 // ── popup palette (logical px / linear RGBA). Mirrors `gpu::popup` +
 //    `gpu::chrome` until `gpu/popup.rs` is deleted (E.7.8), at which point these
@@ -56,6 +58,9 @@ pub fn popup_view(state: &AppState) -> Option<Block> {
     {
         return Some(history_view(entries, *scroll_offset));
     }
+    if let SettingsDialogState::Visible { fields, focused, .. } = &state.settings {
+        return Some(settings_view(fields, *focused));
+    }
     None
 }
 
@@ -79,9 +84,10 @@ fn popup_box(body: Stack) -> Block {
     )
 }
 
-/// A BOLD dim title row, one line tall.
-fn title_row(title: &str) -> Text {
-    Text::new(title, POPUP_FONT_SIZE, POPUP_TEXT_COLOR).weight(WEIGHT_BOLD)
+/// A BOLD title row, one line tall, in `color` (dim for the list popups, bright
+/// for the backend switch).
+fn title_row(title: &str, color: [f32; 4]) -> Text {
+    Text::new(title, POPUP_FONT_SIZE, color).weight(WEIGHT_BOLD)
 }
 
 /// History popup: a read-only, newest-first list of backend switches, windowed
@@ -105,7 +111,7 @@ fn history_view(entries: &[HistoryEntry], scroll_offset: usize) -> Block {
 
     let mut body = Stack::vstack()
         .cross(CrossAxis::Stretch)
-        .child_sized(title_row("History"), Sizing::Fixed(POPUP_LINE_HEIGHT))
+        .child_sized(title_row("History", POPUP_TEXT_COLOR), Sizing::Fixed(POPUP_LINE_HEIGHT))
         .spacer(Sizing::Fixed(POPUP_LINE_HEIGHT * 0.5));
 
     if items.is_empty() {
@@ -137,5 +143,30 @@ fn history_view(entries: &[HistoryEntry], scroll_offset: usize) -> Block {
         POPUP_HIGHLIGHT_COLOR,
         POPUP_FONT_SIZE,
     ));
+    popup_box(body)
+}
+
+/// Settings popup: the title doubles as the hint line, then one toggle row per
+/// field formatted `"[x]  {label}"` / `"[ ]  {label}"` (the checkbox is a glyph
+/// prefix, exactly as the legacy popup), with the focused row highlighted.
+/// Settings lists are short, so there is no virtualization (YAGNI).
+fn settings_view(fields: &[SettingsFieldSnapshot], focused: usize) -> Block {
+    let rows: Vec<Segment> = fields
+        .iter()
+        .enumerate()
+        .map(|(i, f)| {
+            let mark = if f.value { "[x]" } else { "[ ]" };
+            let color = if i == focused { POPUP_SELECTED_COLOR } else { POPUP_TEXT_COLOR };
+            Segment::new(format!("{mark}  {}", f.label), color)
+        })
+        .collect();
+    let body = Stack::vstack()
+        .cross(CrossAxis::Stretch)
+        .child_sized(
+            title_row("Settings  ·  Space toggle · Enter save · Esc cancel", POPUP_TEXT_COLOR),
+            Sizing::Fixed(POPUP_LINE_HEIGHT),
+        )
+        .spacer(Sizing::Fixed(POPUP_LINE_HEIGHT * 0.5))
+        .child(popup_list(&rows, focused, POPUP_LINE_HEIGHT, POPUP_HIGHLIGHT_COLOR, POPUP_FONT_SIZE));
     popup_box(body)
 }
