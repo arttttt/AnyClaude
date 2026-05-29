@@ -22,7 +22,6 @@ use term_gpu::{
 use super::chrome::{CHROME_FLASH_COLOR, CHROME_TEXT_COLOR};
 use crate::config::Backend;
 use crate::ui::backend_switch::{BackendPopupSection, BackendSwitchState};
-use crate::ui::history::HistoryDialogState;
 use crate::ui::settings::SettingsDialogState;
 
 /// Popup background color (dark grey with full alpha — opaque so the
@@ -746,58 +745,6 @@ fn push_backend_item(
             row_color,
         );
     }
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(super) fn draw_history_popup(
-    state: &HistoryDialogState,
-    atlas: &mut GlyphAtlas,
-    font_system: &mut FontSystem,
-    swash_cache: &mut SwashCache,
-    ui_shape_cache: &mut TextShapeCache,
-    shadows: &mut Vec<ShadowInstance>,
-    rects: &mut Vec<RectInstance>,
-    glyphs: &mut Vec<GlyphInstance>,
-    window_w: f32,
-    window_h: f32,
-    sf: f32,
-) {
-    let (entries, scroll_offset) = match state {
-        HistoryDialogState::Visible {
-            entries,
-            scroll_offset,
-        } => (entries, *scroll_offset),
-        HistoryDialogState::Hidden => return,
-    };
-    let items: Vec<String> = entries
-        .iter()
-        .rev()
-        .map(|e| {
-            let secs = e
-                .timestamp
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-            let from = e.from_backend.as_deref().unwrap_or("(initial)");
-            format!("{secs}  ·  {from}  →  {}", e.to_backend)
-        })
-        .collect();
-    draw_string_list_popup(
-        "History",
-        &items,
-        scroll_offset.min(items.len().saturating_sub(1)),
-        Some("(no history yet)"),
-        atlas,
-        font_system,
-        swash_cache,
-        ui_shape_cache,
-        shadows,
-        rects,
-        glyphs,
-        window_w,
-        window_h,
-        sf,
-    );
 }
 
 #[allow(clippy::too_many_arguments)]

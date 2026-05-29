@@ -25,8 +25,8 @@ use term_gpu::{
 };
 use glam::Vec2;
 use term_ui::{
-    build_root, measure, paint, place, reconcile_root, NodeId, PaintOutput, RetainedTree,
-    SizeConstraint, Stack,
+    build_root, free_subtree, measure, paint, place, place_centered, reconcile_root, Block,
+    NodeId, PaintOutput, RetainedTree, SizeConstraint, Stack,
 };
 use uuid::Uuid;
 use winit::application::ApplicationHandler;
@@ -45,6 +45,7 @@ use crate::config::{
 use crate::metrics::ObservabilityHub;
 use crate::ui::app_state::{AppState, ScrollEffect};
 use crate::ui::chrome_labels;
+use crate::ui::popup_view;
 use crate::ui::backend_switch::{
     BackendPopupSection, BackendSwitchIntent, BackendSwitchState,
 };
@@ -76,8 +77,7 @@ use super::chrome::{
     SESSION_COPY_FLASH,
 };
 use super::popup::{
-    draw_backend_switch_popup, draw_history_popup, draw_settings_popup,
-    override_selection_to_backend_id,
+    draw_backend_switch_popup, draw_settings_popup, override_selection_to_backend_id,
 };
 
 /// User event delivered to the winit loop. Drives redraws in response
@@ -120,6 +120,17 @@ pub(super) struct GpuApp {
     chrome_root: Option<NodeId>,
     chrome_prev: Option<Stack>,
     chrome_scratch: PaintOutput,
+
+    /// Retained term_ui tree for the popup overlay (history / settings / backend
+    /// switch). Built from [`popup_view`] when a popup is open, centred with
+    /// `place_centered`, and painted into the overlay on top of the chrome. A
+    /// tree distinct from the chrome so the two reconcile independently. Every
+    /// popup view is a `Block` (the popup box), so `popup_prev` is `Block`.
+    /// (bucket 2 — derived from AppState.)
+    popup_tree: RetainedTree,
+    popup_root: Option<NodeId>,
+    popup_prev: Option<Block>,
+    popup_scratch: PaintOutput,
 
     // Lazily initialised in `resumed`: spawning the shell needs to know
     // the window's pixel size, which we don't have until then.
@@ -197,6 +208,10 @@ impl GpuApp {
             chrome_root: None,
             chrome_prev: None,
             chrome_scratch: PaintOutput::default(),
+            popup_tree: RetainedTree::new(),
+            popup_root: None,
+            popup_prev: None,
+            popup_scratch: PaintOutput::default(),
             palette: AnsiPalette::default_dark(),
             cell_metrics: None,
             pty: None,
@@ -1002,65 +1017,107 @@ impl GpuApp {
                 let b = self.chrome_tree.node(nid).bounds;
                 (b.origin.x, b.right())
             });
-        let backend_state_visible = self.state.backend_switch.is_visible();
-        let history_state_visible = self.state.history.is_visible();
-        let settings_state_visible = self.state.settings.is_visible();
-        if backend_state_visible {
-            let items_and_ids: Vec<(String, String)> = self
-                .backend_state
-                .get_config()
-                .backends
-                .iter()
-                .map(|b| (b.display_name.clone(), b.name.clone()))
-                .collect();
-            let active_backend = self.backend_state.get_active_backend();
-            let current_subagent = self.subagent_backend.get();
-            let current_teammate = self.teammate_backend.get();
-            draw_backend_switch_popup(
-                &self.state.backend_switch,
-                &items_and_ids,
-                &active_backend,
-                current_subagent.as_deref(),
-                current_teammate.as_deref(),
+        // Popup overlay. History renders via the term_ui SECOND TREE: build it
+        // from `popup_view`, reconcile against last frame, measure it with a
+        // min-width floor, centre it with `place_centered`, and paint it into the
+        // overlay on top of the chrome. Backend switch + settings still use the
+        // immediate-mode `gpu::popup` draw path (ported to the second tree in
+        // later E.7 steps). Popups are mutually exclusive, so at most one branch
+        // contributes overlay instances.
+        if let Some(view) = popup_view::popup_view(&self.state) {
+            let popup_root = match self.popup_root {
+                Some(root) => {
+                    let prev = self
+                        .popup_prev
+                        .take()
+                        .expect("popup_prev present once built");
+                    reconcile_root(&mut self.popup_tree, root, &prev, &view);
+                    root
+                }
+                None => build_root(&mut self.popup_tree, &view),
+            };
+            self.popup_root = Some(popup_root);
+            self.popup_prev = Some(view);
+            measure(
+                &mut self.popup_tree,
+                popup_root,
+                SizeConstraint::new(
+                    Vec2::new(popup_view::POPUP_MIN_WIDTH, 0.0),
+                    Vec2::new(window_w_logical, window_h_logical),
+                ),
+                &mut self.font_system,
+                &mut self.ui_shape_cache,
+                sf,
+            );
+            place_centered(
+                &mut self.popup_tree,
+                popup_root,
+                Vec2::new(window_w_logical, window_h_logical),
+            );
+            self.popup_scratch.clear();
+            paint(
+                &self.popup_tree,
+                popup_root,
+                &mut self.popup_scratch,
                 renderer.atlas_mut(),
                 &mut self.font_system,
                 &mut self.swash_cache,
                 &mut self.ui_shape_cache,
-                &mut overlay_shadows,
-                &mut overlay_rects,
-                &mut overlay_glyphs,
-                window_w_logical,
-                window_h_logical,
                 sf,
             );
-        } else if history_state_visible {
-            draw_history_popup(
-                &self.state.history,
-                renderer.atlas_mut(),
-                &mut self.font_system,
-                &mut self.swash_cache,
-                &mut self.ui_shape_cache,
-                &mut overlay_shadows,
-                &mut overlay_rects,
-                &mut overlay_glyphs,
-                window_w_logical,
-                window_h_logical,
-                sf,
-            );
-        } else if settings_state_visible {
-            draw_settings_popup(
-                &self.state.settings,
-                renderer.atlas_mut(),
-                &mut self.font_system,
-                &mut self.swash_cache,
-                &mut self.ui_shape_cache,
-                &mut overlay_shadows,
-                &mut overlay_rects,
-                &mut overlay_glyphs,
-                window_w_logical,
-                window_h_logical,
-                sf,
-            );
+            overlay_shadows.extend_from_slice(&self.popup_scratch.shadows);
+            overlay_rects.extend_from_slice(&self.popup_scratch.rects);
+            overlay_glyphs.extend_from_slice(&self.popup_scratch.glyphs);
+        } else {
+            // No term_ui popup this frame — release the retained tree so the next
+            // open rebuilds fresh, then fall through to the immediate-mode popups.
+            if let Some(root) = self.popup_root.take() {
+                free_subtree(&mut self.popup_tree, root);
+            }
+            self.popup_prev = None;
+            if self.state.backend_switch.is_visible() {
+                let items_and_ids: Vec<(String, String)> = self
+                    .backend_state
+                    .get_config()
+                    .backends
+                    .iter()
+                    .map(|b| (b.display_name.clone(), b.name.clone()))
+                    .collect();
+                let active_backend = self.backend_state.get_active_backend();
+                let current_subagent = self.subagent_backend.get();
+                let current_teammate = self.teammate_backend.get();
+                draw_backend_switch_popup(
+                    &self.state.backend_switch,
+                    &items_and_ids,
+                    &active_backend,
+                    current_subagent.as_deref(),
+                    current_teammate.as_deref(),
+                    renderer.atlas_mut(),
+                    &mut self.font_system,
+                    &mut self.swash_cache,
+                    &mut self.ui_shape_cache,
+                    &mut overlay_shadows,
+                    &mut overlay_rects,
+                    &mut overlay_glyphs,
+                    window_w_logical,
+                    window_h_logical,
+                    sf,
+                );
+            } else if self.state.settings.is_visible() {
+                draw_settings_popup(
+                    &self.state.settings,
+                    renderer.atlas_mut(),
+                    &mut self.font_system,
+                    &mut self.swash_cache,
+                    &mut self.ui_shape_cache,
+                    &mut overlay_shadows,
+                    &mut overlay_rects,
+                    &mut overlay_glyphs,
+                    window_w_logical,
+                    window_h_logical,
+                    sf,
+                );
+            }
         }
         // The overlay always carries the chrome bars (and a popup when one is
         // open), so it is never empty.
