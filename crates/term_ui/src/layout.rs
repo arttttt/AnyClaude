@@ -229,11 +229,21 @@ pub fn place(tree: &mut RetainedTree, id: NodeId, origin: Vec2) {
     match kind {
         NodeKind::Text(_) | NodeKind::Spacer(_) => {}
         NodeKind::Block(style) => {
+            // A Block stretches its single child to its inner content box. When
+            // a parent sized the Block larger than its child (a Fixed/Stretch
+            // slot — e.g. a full-width chrome bar wrapping a left-aligned row),
+            // the child fills the whole area, so a child stack's own
+            // CrossAxis::Stretch reaches the Block's edges. When the Block is
+            // sized to its child (the default), `inner` equals the child's own
+            // measured size, so this is a no-op.
+            let inner = (measured - style.padding.total() - Vec2::splat(style.border_width * 2.0))
+                .max(Vec2::ZERO);
             let children = tree.take_children(id);
             if let Some(&child) = children.first() {
                 let inner_origin = origin
                     + style.padding.top_left()
                     + Vec2::splat(style.border_width);
+                tree.node_mut(child).measured = inner;
                 place(tree, child, inner_origin);
             }
             tree.restore_children(id, children);

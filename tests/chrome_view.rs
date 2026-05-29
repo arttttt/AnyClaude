@@ -48,4 +48,17 @@ fn header_pins_top_footer_pins_bottom_both_full_width() {
     );
     assert!((footer_b.size.y - footer_h).abs() < 0.5, "footer height");
     assert!((footer_b.size.x - w).abs() < 0.5, "footer full width");
+
+    // Regression guard: the header's 1px fence must reach the window edge even
+    // though it's nested header-Block → header_bar VStack → fence. (The bg
+    // Block must stretch its child so the bar's CrossAxis::Stretch fence is
+    // full-width, not just text-width.)
+    let header_bar = tree.node(kids[0]).children[0]; // the VStack inside the bg Block
+    let fence = *tree.node(header_bar).children.last().unwrap();
+    let fence_b = tree.node(fence).bounds;
+    assert!(
+        (fence_b.size.x - w).abs() < 0.5,
+        "header fence spans full width through the bg Block, got {}",
+        fence_b.size.x
+    );
 }
