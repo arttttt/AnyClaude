@@ -1036,3 +1036,21 @@ settle.
     need event routing and the real coordinator. A fake-data preview
     rehearses the coordinator; it isn't it. Record what was deferred in
     the same breath as what was done, or "Phase C ✅" quietly lies.
+57. **A reducer is already a pure function — unceremoniously.** Killing
+    MVI wasn't a rewrite: each `Actor::handle_intent` was a pure `state →
+    state`, so it became an inherent `apply(&mut self, intent)` mutated in
+    place. Drop the framework traits, delete the `Actor` struct, swap
+    `store.dispatch(i)`/`store.state()` for `state.apply(i)`/the field.
+    The "framework" was a wrapper over a function you already had.
+58. **Scope a cutover to bound its risk.** Touching the live 1.5K-line
+    `GpuApp` is riskier than building beside it, so the popup cutover was
+    *state-only*: migrate the state + delete the actors now, but keep the
+    existing immediate-mode rendering (view-ification defers to the
+    coordinator). Delete only `actor.rs`, de-MVI `state`/`intent` in
+    place. Smallest diff that still achieves the goal (no MVI).
+59. **Migrating code turns plan-guesses into facts.** The plan budgeted a
+    TextField + caret + blink for "popup input"; reading the popups to
+    migrate them showed every one is nav-plus-toggle with no text field —
+    pure YAGNI, skipped. The same read found a fully-tested
+    dirty-discard flow never wired to the live key. You learn the system
+    by porting it; let that correct the plan.

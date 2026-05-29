@@ -2286,3 +2286,42 @@ are deferred. Both need R7 event routing and the *real* coordinator that
 replaces `GpuApp`; `examples/chrome_preview.rs` is a fake-data rehearsal
 of that coordinator, not the thing itself. The chrome *views* are done
 and verified; wiring them to live input/scroll comes with the coordinator.
+
+### Phase D: killing MVI without a rewrite
+The three popups were the last MVI holdouts. The conversion turned out to
+be almost mechanical: each `Actor::handle_intent` is a pure `state →
+state` function, so it became an inherent `apply(&mut self, intent)` on
+the state enum — the *same* logic, just mutated in place instead of
+returned. The `mvi::{State,Intent,Actor}` trait impls dropped away, the
+`Actor` structs were deleted, and `GpuApp` swapped three `Store<…>`
+fields for three plain-state fields (`store.dispatch(i)` → `state.apply(i)`,
+`store.state()` → the field). Choosing an inherent *method* over
+term_ui's free `apply(&mut AppState, Msg)` was deliberate: there are three
+separate popup state machines, and a method avoids three colliding free
+`apply`s — they fold into one free reducer only when they migrate into
+`AppState` proper (E).
+
+Two judgement calls are worth recording. First, the user picked the
+**cutover** path (migrate the live `GpuApp`, delete the actors now) over
+the additive one — so this was the first phase to *modify* the live app,
+not build beside it. To bound that risk it was scoped to a **state-only**
+cutover: the popup *rendering* stays the existing immediate-mode
+`draw_*_popup`, reading the new plain state; the term_ui-view-ification +
+opacity transitions defer to the coordinator in E. (Same deferral as C's
+hitbox/scroll — and for the same reason: real popup views want the real
+coordinator, not `GpuApp`'s overlay.) And only `actor.rs` was deleted per
+popup; `state.rs`/`intent.rs` were kept, de-MVI'd in place — less diff,
+less risk on a 1.5K-line `GpuApp`, than the design sketch's "delete
+state/intent/mod too."
+
+Second, the migration surfaced facts the plan had guessed at. The §15
+sketch budgeted a `TextField` + caret + 530 ms blink for "any popup
+input" — but every popup is navigation + boolean toggle, **no text field
+exists**, so that whole block was YAGNI and skipped (the TextField stays
+unbuilt until a text-input consumer appears). And the settings
+`RequestClose`/`confirm_discard` dirty-discard flow is fully unit-tested
+yet **never wired to the live Escape** (`close_all_popups` dispatches a
+plain `Close`) — a latent, never-reachable feature. It was ported
+faithfully and left as-is, flagged for the coordinator phase that will
+own Esc routing. Reading the code to migrate it is what turned two
+planning assumptions into facts.

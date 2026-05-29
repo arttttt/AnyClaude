@@ -1211,6 +1211,9 @@ For files containing code ported from Warp:
 | `2e64e82` | Phase C.1 — generic `header_bar`/`footer_bar` over term_ui (+ 4 layout tests) |
 | `360dafa` | Phase C.2 — `ui::chrome_labels` domain presenter (+ 5 tests) |
 | `1dcf6f2` | Phase C.3 — `examples/chrome_preview.rs` (real chrome, coordinator pattern) |
+| `2a761dd` | Phase D.1 — backend_switch off MVI → plain `apply()` (+ `tests/backend_switch.rs`, 5) |
+| `699b8d7` | Phase D.2 — history off MVI (fold actor+state → `tests/history.rs`, 8) |
+| `dcdadad` | Phase D.3 — settings off MVI; drop `use mvi::Store` from app.rs (`tests/settings.rs`, 14) |
 
 - **The split-brain that triggered the rewrite:** MVI had 15 `dispatch`
   calls (the 3 popups) vs ~27 raw `self.<field> =` mutations (the entire
@@ -1243,3 +1246,15 @@ For files containing code ported from Warp:
 - **Deferred from C (not overclaimed):** session-click hitbox +
   scroll/momentum — they need R7 event routing and the real coordinator
   that replaces `GpuApp`; `chrome_preview` is a fake-data rehearsal of it.
+- **Phase D — MVI killed for the popups:** each `Actor::handle_intent`
+  became an inherent `apply(&mut self, intent)` (same logic, in place);
+  `GpuApp` swapped 3 `Store<…>` fields for 3 plain-state fields. Only
+  `actor.rs` deleted per popup (state/intent kept, de-MVI'd) — minimal
+  churn on the live app. **27** ported tests (5 + 8 + 14). First phase to
+  modify the live `GpuApp` (the user picked cutover over additive).
+- **What the migration revealed (not the plan):** no popup has a text
+  field → the planned TextField/caret/blink was YAGNI, skipped. The
+  settings `RequestClose` dirty-discard flow is tested but **never wired
+  to the live Esc** — a latent feature, left flagged for E.
+- **`mvi` after D:** exactly one consumer left — the dead `PtyActor`
+  (`src/ui/pty/*`, 27 tests). Crate deletion is now a clean Phase F.

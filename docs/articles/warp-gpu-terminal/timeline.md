@@ -1231,6 +1231,26 @@ The session-click hitbox and scroll/momentum were *deferred*: they need
 R7 event routing and the real coordinator that replaces `GpuApp`, which a
 fake-data preview can't stand in for.
 
-Status at handoff: Phase A + B + C (chrome views) done and verified;
-Phase D (port the 3 popups to plain `AppState` + pure fns, delete their
-actors) is next.
+**Phase D** killed MVI for the three popups (backend-switch, history,
+settings). Each MVI `Actor::handle_intent` became an inherent
+`apply(&mut self, intent)` on the state enum — the same reduce logic,
+mutated in place — the `mvi::{State,Intent,Actor}` impls dropped, the
+Actors deleted, and `GpuApp` migrated from three `Store<…>` fields to
+three plain-state fields (`dispatch` → `apply`). The user chose the
+*cutover* path (touch the live `GpuApp`, delete the actors now) over the
+additive one, so this was the first phase to modify the live app rather
+than build beside it — done as a **state-only** cutover (the popup
+*rendering* stays the existing immediate draw; its term_ui-view-ification
+defers to the coordinator in E, the same deferral C made for its
+hitbox/scroll). Two findings worth keeping: every popup is
+navigation-plus-toggle with **no text input**, so the planned
+TextField/caret work was pure YAGNI and skipped; and the settings
+`RequestClose` dirty-discard flow turned out to be unit-tested but never
+wired to the live Escape — a latent feature to resolve when the
+coordinator owns Esc routing. `mvi` now has exactly one consumer left,
+the dead `PtyActor`, so the crate's deletion is a clean Phase F. All
+~600 project tests stayed green; verified live.
+
+Status at handoff: Phase A + B + C (chrome views) + D (popups off MVI)
+done and verified; Phase E (dissolve `GpuApp` into the real coordinator,
+land all the deferred term_ui views) is next, then F deletes `mvi`.
