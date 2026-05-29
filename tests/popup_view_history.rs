@@ -103,15 +103,26 @@ fn box_carries_a_drop_shadow() {
 }
 
 #[test]
-fn highlight_lands_on_the_scroll_cursor_row() {
-    // scroll_offset = 6, window starts at 6 → the highlighted row is window-relative 0.
-    let state = app_with_history(20, 6);
-    let (tree, root) = laid_out(&state);
-    let list = body_children(&tree, root)[2];
-    let rows = tree.node(list).children.clone();
-    assert!(matches!(tree.node(rows[0]).kind, NodeKind::Block(_)), "top visible row is the highlight");
-    for &r in &rows[1..] {
-        assert!(matches!(tree.node(r).kind, NodeKind::Text(_)), "other rows are plain text");
+fn highlight_lands_on_the_top_visible_row() {
+    // The reducer clamps scroll_offset to [0, len - MAX_VISIBLE_ROWS], so the
+    // window always starts AT scroll_offset (window.start == scroll_offset) and
+    // selected_rel = scroll_offset - window.start is always 0 — the highlight is
+    // the top visible row. Check both the max valid offset and offset 0.
+    for offset in [6, 0] {
+        let state = app_with_history(20, offset);
+        let (tree, root) = laid_out(&state);
+        let list = body_children(&tree, root)[2];
+        let rows = tree.node(list).children.clone();
+        assert!(
+            matches!(tree.node(rows[0]).kind, NodeKind::Block(_)),
+            "offset {offset}: top visible row is the highlight"
+        );
+        for &r in &rows[1..] {
+            assert!(
+                matches!(tree.node(r).kind, NodeKind::Text(_)),
+                "offset {offset}: other rows are plain text"
+            );
+        }
     }
 }
 

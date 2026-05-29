@@ -98,12 +98,21 @@ fn three_section_headers_with_arrow_on_the_active_section() {
 }
 
 #[test]
-fn exactly_one_highlight_in_the_active_section() {
+fn highlight_is_in_the_active_section_at_the_selected_row() {
     let (tree, root) = laid_out();
-    assert_eq!(
-        highlight_count(&tree, root),
-        1,
-        "only the active (Subagent) section's selected row is highlighted"
+    // root Block → body Stack → [title, gap, active, gap, subagent, gap, teammate, gap, footer].
+    let body = tree.node(root).children[0];
+    let body_kids = tree.node(body).children.clone();
+    let (active, subagent, teammate) = (body_kids[2], body_kids[4], body_kids[6]);
+    assert_eq!(highlight_count(&tree, active), 0, "inactive Active section: no highlight");
+    assert_eq!(highlight_count(&tree, teammate), 0, "inactive Teammate section: no highlight");
+    assert_eq!(highlight_count(&tree, subagent), 1, "active Subagent section: exactly one highlight");
+    // Subagent section children: [header, separator, row0(Disabled), row1, row2, row3].
+    // subagent_selection = 2 → the selected row is row2, at child index 2 + 2 = 4.
+    let sub_kids = tree.node(subagent).children.clone();
+    assert!(
+        matches!(tree.node(sub_kids[4]).kind, NodeKind::Block(_)),
+        "the highlight Block is on the selection=2 row, not a different row"
     );
 }
 
@@ -114,7 +123,10 @@ fn status_suffixes_are_green() {
     // Active backend "b1" carries [Active]; the subagent Disabled leader (no
     // override set) also carries [Active] — both green.
     let active_green = t.iter().filter(|(text, c)| text == "Active" && *c == GREEN).count();
-    assert!(active_green >= 1, "[Active] status is green, found {active_green}");
+    assert_eq!(
+        active_green, 2,
+        "exactly two green [Active] runs: active backend b1 + the subagent Disabled leader (no override)"
+    );
     // Teammate override -> "b2" carries [Selected], green.
     assert!(
         t.iter().any(|(text, c)| text == "Selected" && *c == GREEN),

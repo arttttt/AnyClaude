@@ -132,6 +132,7 @@ fn confirm_discard_appends_an_amber_prompt_row() {
     match &tree.node(prompt).kind {
         NodeKind::Text(s) => {
             assert!(s.text.contains("Discard unsaved changes"), "prompt row text: {}", s.text);
+            assert_eq!(s.color, [0.95, 0.7, 0.3, 1.0], "prompt row is amber");
         }
         other => panic!("expected the discard prompt Text, got {other:?}"),
     }
