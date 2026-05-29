@@ -1,8 +1,10 @@
 //! Popup presenter: maps the popup stores (history / settings / backend switch)
 //! into `term_ui` overlay views, which the coordinator renders into a SECOND
-//! retained tree on top of the chrome (E.7). It mirrors the words, colours, and
-//! row geometry of the legacy immediate-mode `gpu::popup` draw fns; the two
-//! converge when `gpu/popup.rs` is deleted at the end of the popup port (E.7.8).
+//! retained tree on top of the chrome (E.7). It carries the words, colours, and
+//! row geometry from the now-deleted immediate-mode `gpu::popup` draw fns and is
+//! the single home for the popup palette. (The settings discard-confirm prompt
+//! row is an intentional restoration of the original settings UI — it had no
+//! counterpart in the intermediate immediate-mode popup.)
 //!
 //! Each popup is a [`popup_box`] — an opaque background, a 1px border, a drop
 //! shadow, and uniform padding — wrapping a vertical body. The coordinator
@@ -19,9 +21,8 @@ use crate::ui::backend_switch::{BackendPopupSection, BackendSwitchState};
 use crate::ui::history::{HistoryEntry, MAX_VISIBLE_ROWS};
 use crate::ui::settings::SettingsDialogState;
 
-// ── popup palette (logical px / linear RGBA). Mirrors `gpu::popup` +
-//    `gpu::chrome` until `gpu/popup.rs` is deleted (E.7.8), at which point these
-//    become the single home. ──
+// ── popup palette (logical px / linear RGBA) — the single home now that the
+//    immediate-mode `gpu::popup` is gone. ──
 const POPUP_BG_COLOR: [f32; 4] = [0.12, 0.12, 0.14, 1.0];
 const POPUP_HIGHLIGHT_COLOR: [f32; 4] = [0.22, 0.30, 0.42, 1.0];
 const POPUP_BORDER_COLOR: [f32; 4] = [0.30, 0.30, 0.35, 1.0];

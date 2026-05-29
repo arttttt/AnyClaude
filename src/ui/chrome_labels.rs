@@ -8,15 +8,13 @@
 //! domain-agnostic. It takes primitives only (no `BackendState`, no PTY), so it
 //! is a pure, GPU-free function that the integration tests exercise directly.
 //!
-//! The text mirrors the live `ui::gpu::chrome::{draw_header, draw_footer}`
-//! exactly; the two converge when the legacy chrome is deleted at cutover
-//! (Phase E/F), at which point these constants fold into a single palette.
+//! The immediate-mode `draw_header` / `draw_footer` are gone (Phase E.6), so the
+//! chrome words + palette live solely here.
 
 use term_ui::{Block, BlockStyle, CrossAxis, Insets, Sizing, Stack, WidgetId};
 use uikit::{footer_bar, header_bar, Segment};
 
 /// Dim grey for chrome labels and the inter-segment separator.
-// TODO(cutover): unify with `ui::gpu::chrome::CHROME_TEXT_COLOR` (Phase E/F).
 pub const CHROME_TEXT_COLOR: [f32; 4] = [0.55, 0.55, 0.55, 1.0];
 
 /// Opaque background fill for the chrome bars — matches the window clear
@@ -25,11 +23,9 @@ pub const CHROME_TEXT_COLOR: [f32; 4] = [0.55, 0.55, 0.55, 1.0];
 pub const CHROME_BG: [f32; 4] = [0.04, 0.04, 0.06, 1.0];
 
 /// Green flash for the "Session ID copied!" confirmation.
-// TODO(cutover): unify with `ui::gpu::chrome::CHROME_FLASH_COLOR` (Phase E/F).
 pub const CHROME_FLASH_COLOR: [f32; 4] = [0.4, 0.85, 0.4, 1.0];
 
 /// 1px fence between chrome and the terminal panel.
-// TODO(cutover): unify with `ui::gpu::chrome::CHROME_SEPARATOR_COLOR` (Phase E/F).
 pub const CHROME_SEPARATOR_COLOR: [f32; 4] = [0.25, 0.25, 0.27, 1.0];
 
 /// Separator drawn between header segments.
