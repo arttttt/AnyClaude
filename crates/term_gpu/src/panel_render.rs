@@ -295,6 +295,7 @@ pub fn populate_panel(
                                 uv_min: placed.uv_min,
                                 uv_max: placed.uv_max,
                                 color,
+                                layer: placed.layer,
                             });
                         }
                         fast_path_handled = true;
@@ -335,6 +336,7 @@ pub fn populate_panel(
                                 uv_min: placed.uv_min,
                                 uv_max: placed.uv_max,
                                 color,
+                                layer: placed.layer,
                             });
                         }
                     }

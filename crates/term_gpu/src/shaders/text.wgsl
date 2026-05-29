@@ -10,7 +10,7 @@ struct Uniforms {
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
-@group(1) @binding(0) var atlas_tex: texture_2d<f32>;
+@group(1) @binding(0) var atlas_tex: texture_2d_array<f32>;
 @group(1) @binding(1) var atlas_samp: sampler;
 
 struct GlyphInput {
@@ -19,12 +19,14 @@ struct GlyphInput {
     @location(2) uv_min: vec2<f32>,
     @location(3) uv_max: vec2<f32>,
     @location(4) color: vec4<f32>,
+    @location(5) layer: u32,        // atlas array layer
 };
 
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
     @location(0) uv: vec2<f32>,
     @location(1) color: vec4<f32>,
+    @location(2) @interpolate(flat) layer: u32,
 };
 
 const QUAD: array<vec2<f32>, 6> = array(
@@ -44,6 +46,7 @@ fn vs_main(@builtin(vertex_index) vi: u32, g: GlyphInput) -> VsOut {
     out.pos = vec4(ndc.x, -ndc.y, 0.0, 1.0);
     out.uv = mix(g.uv_min, g.uv_max, q);
     out.color = g.color;
+    out.layer = g.layer;
     return out;
 }
 
@@ -59,7 +62,7 @@ fn enhance_contrast(alpha: f32, k: f32) -> f32 {
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    let sample = textureSample(atlas_tex, atlas_samp, in.uv);
+    let sample = textureSample(atlas_tex, atlas_samp, in.uv, i32(in.layer));
     // Mono glyphs store coverage in the alpha channel and zero RGB; colour
     // glyphs (emoji) store premultiplied RGBA. Branch on RGB sum.
     let is_color = sample.r + sample.g + sample.b > 0.0;

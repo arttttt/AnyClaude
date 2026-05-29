@@ -58,6 +58,8 @@ pub struct GlyphInstance {
     pub uv_min: [f32; 2],
     pub uv_max: [f32; 2],
     pub color: [f32; 4],
+    /// Texture-array layer this glyph's atlas slot lives in.
+    pub layer: u32,
 }
 
 impl GlyphInstance {
@@ -66,7 +68,7 @@ impl GlyphInstance {
         unsafe { std::slice::from_raw_parts(slice.as_ptr() as *const u8, size_of_val(slice)) }
     }
 
-    pub const ATTRIBS: [wgpu::VertexAttribute; 5] = [
+    pub const ATTRIBS: [wgpu::VertexAttribute; 6] = [
         wgpu::VertexAttribute {
             offset: 0,
             shader_location: 0,
@@ -91,6 +93,11 @@ impl GlyphInstance {
             offset: 32,
             shader_location: 4,
             format: wgpu::VertexFormat::Float32x4,
+        },
+        wgpu::VertexAttribute {
+            offset: 48,
+            shader_location: 5,
+            format: wgpu::VertexFormat::Uint32,
         },
     ];
 

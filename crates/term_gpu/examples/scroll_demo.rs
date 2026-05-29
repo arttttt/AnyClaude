@@ -253,6 +253,7 @@ fn shape_text_into(
                 uv_min: placed.uv_min,
                 uv_max: placed.uv_max,
                 color: draw.color,
+                layer: placed.layer,
             });
         }
     }

@@ -391,6 +391,7 @@ fn populate_frame(
                             uv_min: placed.uv_min,
                             uv_max: placed.uv_max,
                             color,
+                            layer: placed.layer,
                         });
                     }
                 }

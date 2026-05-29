@@ -63,6 +63,7 @@ pub fn push_label(
                 uv_min: placed.uv_min,
                 uv_max: placed.uv_max,
                 color,
+                layer: placed.layer,
             });
             let glyph_right_phys = origin_x_phys + glyph.x + glyph.w;
             if glyph_right_phys > max_right_phys {
