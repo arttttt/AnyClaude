@@ -3,3 +3,4 @@ pub mod chrome_labels;
 pub mod gpu;
 pub mod history;
 pub mod settings;
+pub mod term_geometry;

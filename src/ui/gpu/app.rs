@@ -47,6 +47,7 @@ use crate::ui::backend_switch::{
 use crate::ui::gpu::pty::ChildPty;
 use crate::ui::history::{HistoryDialogState, HistoryEntry, HistoryIntent};
 use crate::ui::settings::{SettingsDialogState, SettingsIntent};
+use crate::ui::term_geometry::{self, LastClick};
 
 const INITIAL_W: f32 = 1200.0;
 const INITIAL_H: f32 = 800.0;
@@ -183,13 +184,6 @@ pub(super) struct GpuApp {
 }
 
 
-#[derive(Debug, Clone, Copy)]
-struct LastClick {
-    time: Instant,
-    point: CellPoint,
-    count: u32,
-}
-
 impl GpuApp {
     pub(super) fn new(
         proxy: EventLoopProxy<UserEvent>,
@@ -271,8 +265,12 @@ impl GpuApp {
         let sf = self.scale_factor.max(0.0001);
         let w_logical = size.width as f32 / sf;
         let h_logical = size.height as f32 / sf;
-        let h = (h_logical - HEADER_HEIGHT_LOGICAL - FOOTER_HEIGHT_LOGICAL).max(0.0);
-        PanelRect::new(0.0, HEADER_HEIGHT_LOGICAL, w_logical, h)
+        term_geometry::terminal_panel_rect(
+            w_logical,
+            h_logical,
+            HEADER_HEIGHT_LOGICAL,
+            FOOTER_HEIGHT_LOGICAL,
+        )
     }
 
     /// Compute the grid size (cols × rows) that fits inside the
@@ -282,10 +280,12 @@ impl GpuApp {
     fn fit_grid(&mut self) -> (usize, usize) {
         let metrics = self.cell_metrics();
         let panel = self.terminal_panel_rect();
-        let sf = self.scale_factor.max(0.0001);
-        let cols = ((panel.w * sf / metrics.width_physical).floor() as usize).max(1);
-        let rows = ((panel.h * sf / metrics.height_physical).floor() as usize).max(1);
-        (cols, rows)
+        term_geometry::fit_grid(
+            panel,
+            metrics.width_physical,
+            metrics.height_physical,
+            self.scale_factor,
+        )
     }
 
     /// Resync emulator + PTY to the current window size. Called from
@@ -826,27 +826,22 @@ impl GpuApp {
         let metrics = self.cell_metrics();
         let panel = self.terminal_panel_rect();
         let emu = self.emulator.as_ref()?;
-        let sf = self.scale_factor.max(0.0001);
-        let cell_w_logical = metrics.width_physical / sf;
-        let cell_h_logical = metrics.height_physical / sf;
-        if cell_w_logical <= 0.0 || cell_h_logical <= 0.0 {
-            return None;
-        }
-        // Mouse coords are window-relative; translate into the
-        // terminal area so the row math matches `populate_panel`.
-        let local_x = (x - panel.x).max(0.0);
-        let local_y = (y - panel.y).max(0.0);
         let snap = emu.snapshot();
         let total_rows = snap.rows.len();
         let visible_rows = snap.visible_rows;
-        let baseline_offset = total_rows.saturating_sub(visible_rows) as f32 * cell_h_logical;
-        let row_unclamped =
-            ((local_y + baseline_offset - self.scroll.offset_y) / cell_h_logical).floor();
-        let row = row_unclamped.clamp(0.0, total_rows.saturating_sub(1) as f32) as usize;
         let cols = snap.rows.first().map(|r| r.cells.len()).unwrap_or(0);
-        let col_unclamped = (local_x / cell_w_logical).floor();
-        let col = col_unclamped.clamp(0.0, cols.saturating_sub(1) as f32) as usize;
-        Some(CellPoint { row, col })
+        term_geometry::cell_at(
+            x,
+            y,
+            panel,
+            metrics.width_physical,
+            metrics.height_physical,
+            self.scale_factor,
+            self.scroll.offset_y,
+            total_rows,
+            visible_rows,
+            cols,
+        )
     }
 
     fn on_cursor_moved(&mut self, x: f32, y: f32) {
@@ -951,19 +946,8 @@ impl GpuApp {
     /// previous cell or arrives after the threshold.
     fn bump_click_count(&mut self, point: CellPoint) -> u32 {
         let now = Instant::now();
-        let new_count = match self.last_click {
-            Some(lc)
-                if lc.point == point
-                    && now.duration_since(lc.time).as_millis() <= MULTI_CLICK_THRESHOLD_MS =>
-            {
-                if lc.count >= 3 {
-                    1
-                } else {
-                    lc.count + 1
-                }
-            }
-            _ => 1,
-        };
+        let new_count =
+            term_geometry::next_click_count(self.last_click, point, now, MULTI_CLICK_THRESHOLD_MS);
         self.last_click = Some(LastClick {
             time: now,
             point,
