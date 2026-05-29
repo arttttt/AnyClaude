@@ -25,11 +25,3 @@ pub(super) const CHROME_FONT_SIZE: f32 = 14.0;
 
 /// How long the "Session ID copied!" flash stays visible after a copy click.
 pub(super) const SESSION_COPY_FLASH: Duration = Duration::from_millis(1500);
-
-/// Dim foreground for chrome labels. Used by the popup overlay so its inactive
-/// section labels match the chrome palette.
-pub(super) const CHROME_TEXT_COLOR: [f32; 4] = [0.55, 0.55, 0.55, 1.0];
-
-/// Highlight (green) used by the popup overlay for `[Active]` / `[Selected]`
-/// status suffixes (same green the session-copied flash uses).
-pub(super) const CHROME_FLASH_COLOR: [f32; 4] = [0.4, 0.85, 0.4, 1.0];

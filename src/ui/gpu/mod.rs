@@ -11,7 +11,6 @@ pub mod app;
 mod bootstrap;
 mod chrome;
 mod diagnostic;
-mod popup;
 pub mod pty;
 
 pub use bootstrap::run;

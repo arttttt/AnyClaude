@@ -47,7 +47,7 @@ use crate::ui::app_state::{AppState, ScrollEffect};
 use crate::ui::chrome_labels;
 use crate::ui::popup_view;
 use crate::ui::backend_switch::{
-    BackendPopupSection, BackendSwitchIntent, BackendSwitchState,
+    override_selection_to_backend_id, BackendPopupSection, BackendSwitchIntent, BackendSwitchState,
 };
 use crate::ui::gpu::pty::ChildPty;
 use crate::ui::history::{HistoryEntry, HistoryIntent};
@@ -76,7 +76,6 @@ use super::chrome::{
     CHROME_FONT_SIZE, CHROME_H_PAD, FOOTER_HEIGHT_LOGICAL, HEADER_HEIGHT_LOGICAL,
     SESSION_COPY_FLASH,
 };
-use super::popup::{draw_backend_switch_popup, override_selection_to_backend_id};
 
 /// User event delivered to the winit loop. Drives redraws in response
 /// to PTY output and scroll momentum without polling.
@@ -1015,14 +1014,37 @@ impl GpuApp {
                 let b = self.chrome_tree.node(nid).bounds;
                 (b.origin.x, b.right())
             });
-        // Popup overlay. History renders via the term_ui SECOND TREE: build it
-        // from `popup_view`, reconcile against last frame, measure it with a
-        // min-width floor, centre it with `place_centered`, and paint it into the
-        // overlay on top of the chrome. Backend switch + settings still use the
-        // immediate-mode `gpu::popup` draw path (ported to the second tree in
-        // later E.7 steps). Popups are mutually exclusive, so at most one branch
-        // contributes overlay instances.
-        if let Some(view) = popup_view::popup_view(&self.state) {
+        // Popup overlay — all three popups render via the term_ui SECOND TREE.
+        // The backend switch needs runtime data AppState doesn't carry (the
+        // backend list + active/override ids), so it is built here via
+        // popup_view::backend_view; history + settings come straight from
+        // AppState via popup_view::popup_view. Whichever is open is reconciled
+        // into the popup tree, measured with a min-width floor, centred with
+        // place_centered, and painted into the overlay on top of the chrome (its
+        // term_ui Block drop shadow flows through too). Popups are mutually
+        // exclusive, so at most one is ever built.
+        let popup: Option<Block> = if self.state.backend_switch.is_visible() {
+            let items_and_ids: Vec<(String, String)> = self
+                .backend_state
+                .get_config()
+                .backends
+                .iter()
+                .map(|b| (b.display_name.clone(), b.name.clone()))
+                .collect();
+            let active_backend = self.backend_state.get_active_backend();
+            let current_subagent = self.subagent_backend.get();
+            let current_teammate = self.teammate_backend.get();
+            Some(popup_view::backend_view(
+                &self.state.backend_switch,
+                &items_and_ids,
+                &active_backend,
+                current_subagent.as_deref(),
+                current_teammate.as_deref(),
+            ))
+        } else {
+            popup_view::popup_view(&self.state)
+        };
+        if let Some(view) = popup {
             let popup_root = match self.popup_root {
                 Some(root) => {
                     let prev = self
@@ -1067,41 +1089,12 @@ impl GpuApp {
             overlay_rects.extend_from_slice(&self.popup_scratch.rects);
             overlay_glyphs.extend_from_slice(&self.popup_scratch.glyphs);
         } else {
-            // No term_ui popup this frame — release the retained tree so the next
-            // open rebuilds fresh, then fall through to the immediate-mode popups.
+            // No popup open — release the retained tree so the next open
+            // rebuilds fresh.
             if let Some(root) = self.popup_root.take() {
                 free_subtree(&mut self.popup_tree, root);
             }
             self.popup_prev = None;
-            if self.state.backend_switch.is_visible() {
-                let items_and_ids: Vec<(String, String)> = self
-                    .backend_state
-                    .get_config()
-                    .backends
-                    .iter()
-                    .map(|b| (b.display_name.clone(), b.name.clone()))
-                    .collect();
-                let active_backend = self.backend_state.get_active_backend();
-                let current_subagent = self.subagent_backend.get();
-                let current_teammate = self.teammate_backend.get();
-                draw_backend_switch_popup(
-                    &self.state.backend_switch,
-                    &items_and_ids,
-                    &active_backend,
-                    current_subagent.as_deref(),
-                    current_teammate.as_deref(),
-                    renderer.atlas_mut(),
-                    &mut self.font_system,
-                    &mut self.swash_cache,
-                    &mut self.ui_shape_cache,
-                    &mut overlay_shadows,
-                    &mut overlay_rects,
-                    &mut overlay_glyphs,
-                    window_w_logical,
-                    window_h_logical,
-                    sf,
-                );
-            }
         }
         // The overlay always carries the chrome bars (and a popup when one is
         // open), so it is never empty.
