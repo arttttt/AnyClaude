@@ -36,8 +36,6 @@ use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
 use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
 use winit::window::{Window, WindowAttributes, WindowId};
 
-use mvi::Store;
-
 use crate::backend::{AgentBackendState, BackendState};
 use crate::config::{
     save_claude_settings, ClaudeSettingsManager, Config, SettingsFieldSnapshot,
@@ -48,7 +46,7 @@ use crate::ui::backend_switch::{
 };
 use crate::ui::gpu::pty::ChildPty;
 use crate::ui::history::{HistoryDialogState, HistoryEntry, HistoryIntent};
-use crate::ui::settings::{SettingsActor, SettingsDialogState, SettingsIntent};
+use crate::ui::settings::{SettingsDialogState, SettingsIntent};
 
 const INITIAL_W: f32 = 1200.0;
 const INITIAL_H: f32 = 800.0;
@@ -176,13 +174,12 @@ pub(super) struct GpuApp {
     settings_manager: ClaudeSettingsManager,
 
     /// Popup overlay state. At most one is `Visible` at a time;
-    /// rendering and input routing check `is_visible()` on each. The
-    /// backend-switch popup is a plain state machine (`apply` method —
-    /// the MVI Actor is gone); history/settings still use MVI stores
-    /// until their cutover.
+    /// rendering and input routing check `is_visible()` on each. Each is
+    /// a plain state machine driven by an `apply(&mut self, intent)`
+    /// method (the MVI Stores/Actors are gone).
     backend_switch: BackendSwitchState,
     history: HistoryDialogState,
-    settings_store: Store<SettingsActor>,
+    settings: SettingsDialogState,
 }
 
 
@@ -244,7 +241,7 @@ impl GpuApp {
             settings_manager,
             backend_switch: BackendSwitchState::default(),
             history: HistoryDialogState::default(),
-            settings_store: Store::new(SettingsActor, |_effect| {}),
+            settings: SettingsDialogState::default(),
         }
     }
 
@@ -426,12 +423,12 @@ impl GpuApp {
         ));
     }
 
-    /// True when any popup MVI store is in its `Visible` state. Used
-    /// to gate input routing and mouse-click priority.
+    /// True when any popup is in its `Visible` state. Used to gate
+    /// input routing and mouse-click priority.
     fn any_popup_visible(&self) -> bool {
         self.backend_switch.is_visible()
             || self.history.is_visible()
-            || self.settings_store.state().is_visible()
+            || self.settings.is_visible()
     }
 
     /// Dispatch `Close` to every popup store. Called by Cmd+B / +H /
@@ -443,8 +440,8 @@ impl GpuApp {
         if self.history.is_visible() {
             self.history.apply(HistoryIntent::Close);
         }
-        if self.settings_store.state().is_visible() {
-            self.settings_store.dispatch(SettingsIntent::Close);
+        if self.settings.is_visible() {
+            self.settings.apply(SettingsIntent::Close);
         }
         if let Some(w) = self.window.as_ref() {
             w.request_redraw();
@@ -491,7 +488,7 @@ impl GpuApp {
             return;
         }
         let entries = self.backend_state.get_switch_log();
-        let mvi_entries: Vec<HistoryEntry> = entries
+        let history_entries: Vec<HistoryEntry> = entries
             .into_iter()
             .map(|e| HistoryEntry {
                 timestamp: e.timestamp,
@@ -500,8 +497,9 @@ impl GpuApp {
             })
             .collect();
         self.close_all_popups();
-        self.history
-            .apply(HistoryIntent::Load { entries: mvi_entries });
+        self.history.apply(HistoryIntent::Load {
+            entries: history_entries,
+        });
         if let Some(w) = self.window.as_ref() {
             w.request_redraw();
         }
@@ -512,7 +510,7 @@ impl GpuApp {
     /// rows (marks state dirty), Enter applies and saves, Esc
     /// discards.
     fn toggle_settings_popup(&mut self) {
-        if self.settings_store.state().is_visible() {
+        if self.settings.is_visible() {
             self.close_all_popups();
             return;
         }
@@ -532,18 +530,17 @@ impl GpuApp {
             return;
         }
         self.close_all_popups();
-        self.settings_store
-            .dispatch(SettingsIntent::Load { fields });
+        self.settings.apply(SettingsIntent::Load { fields });
         if let Some(w) = self.window.as_ref() {
             w.request_redraw();
         }
     }
 
     /// Persist the settings popup's edits to disk. Reads the current
-    /// MVI state, applies each row to the manager, then calls
+    /// popup state, applies each row to the manager, then calls
     /// `save_claude_settings`. Errors are logged but non-fatal.
     fn apply_settings_and_save(&mut self) {
-        let fields = match self.settings_store.state() {
+        let fields = match &self.settings {
             SettingsDialogState::Visible { fields, .. } => fields.clone(),
             SettingsDialogState::Hidden => return,
         };
@@ -572,7 +569,7 @@ impl GpuApp {
             self.handle_backend_switch_key(event);
         } else if self.history.is_visible() {
             self.handle_history_key(event);
-        } else if self.settings_store.state().is_visible() {
+        } else if self.settings.is_visible() {
             self.handle_settings_key(event);
         }
     }
@@ -666,15 +663,15 @@ impl GpuApp {
     fn handle_settings_key(&mut self, event: &winit::event::KeyEvent) {
         match event.physical_key {
             PhysicalKey::Code(KeyCode::ArrowUp) => {
-                self.settings_store.dispatch(SettingsIntent::MoveUp);
+                self.settings.apply(SettingsIntent::MoveUp);
                 self.request_redraw();
             }
             PhysicalKey::Code(KeyCode::ArrowDown) => {
-                self.settings_store.dispatch(SettingsIntent::MoveDown);
+                self.settings.apply(SettingsIntent::MoveDown);
                 self.request_redraw();
             }
             PhysicalKey::Code(KeyCode::Space) => {
-                self.settings_store.dispatch(SettingsIntent::Toggle);
+                self.settings.apply(SettingsIntent::Toggle);
                 self.request_redraw();
             }
             PhysicalKey::Code(KeyCode::Enter) => {
@@ -1114,16 +1111,16 @@ impl GpuApp {
             sf,
         );
 
-        // Build an optional overlay layer for whichever popup MVI
-        // store is currently `Visible`. At most one popup is shown at
-        // a time (close_all_popups before opening) so the dispatch
-        // is sequential — first match wins.
+        // Build an optional overlay layer for whichever popup is
+        // currently `Visible`. At most one popup is shown at a time
+        // (close_all_popups before opening) so the checks are
+        // sequential — first match wins.
         let mut overlay_shadows: Vec<term_gpu::ShadowInstance> = Vec::new();
         let mut overlay_rects: Vec<RectInstance> = Vec::new();
         let mut overlay_glyphs: Vec<GlyphInstance> = Vec::new();
         let backend_state_visible = self.backend_switch.is_visible();
         let history_state_visible = self.history.is_visible();
-        let settings_state_visible = self.settings_store.state().is_visible();
+        let settings_state_visible = self.settings.is_visible();
         if backend_state_visible {
             let items_and_ids: Vec<(String, String)> = self
                 .backend_state
@@ -1168,7 +1165,7 @@ impl GpuApp {
             );
         } else if settings_state_visible {
             draw_settings_popup(
-                self.settings_store.state(),
+                &self.settings,
                 renderer.atlas_mut(),
                 &mut self.font_system,
                 &mut self.swash_cache,
