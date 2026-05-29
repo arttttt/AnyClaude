@@ -25,8 +25,8 @@ use term_gpu::{
 };
 use glam::Vec2;
 use term_ui::{
-    build_root, free_subtree, measure, paint, place, place_centered, reconcile_root, Block,
-    NodeId, PaintOutput, RetainedTree, SizeConstraint, Stack,
+    apply_overlay_alpha, build_root, ease_out, free_subtree, measure, paint, place, place_centered,
+    reconcile_root, Block, NodeId, PaintOutput, RetainedTree, SizeConstraint, Stack,
 };
 use uuid::Uuid;
 use winit::application::ApplicationHandler;
@@ -71,6 +71,18 @@ const SCROLL_BOTTOM_EPSILON: f32 = 0.5;
 /// cell for them to count as a double / triple click. macOS's system
 /// default is ~500 ms; 400 ms is a comfortable middle ground.
 const MULTI_CLICK_THRESHOLD_MS: u128 = 400;
+
+/// Popup open/close fade duration (seconds).
+const POPUP_FADE_SECS: f32 = 0.12;
+
+/// Open/close fade transition for the popup overlay (R12): only the epoch +
+/// direction are stored; the per-frame alpha is DERIVED from the frame clock,
+/// never persisted.
+#[derive(Debug, Clone, Copy)]
+struct PopupAnim {
+    started_at: Instant,
+    opening: bool,
+}
 
 use super::chrome::{
     CHROME_FONT_SIZE, CHROME_H_PAD, FOOTER_HEIGHT_LOGICAL, HEADER_HEIGHT_LOGICAL,
@@ -128,6 +140,9 @@ pub(super) struct GpuApp {
     popup_root: Option<NodeId>,
     popup_prev: Option<Block>,
     popup_scratch: PaintOutput,
+    /// Open/close fade epoch for the popup overlay (bucket 3-S). `None` when no
+    /// fade is in flight; the alpha is derived from this + the frame clock.
+    popup_anim: Option<PopupAnim>,
 
     // Lazily initialised in `resumed`: spawning the shell needs to know
     // the window's pixel size, which we don't have until then.
@@ -209,6 +224,7 @@ impl GpuApp {
             popup_root: None,
             popup_prev: None,
             popup_scratch: PaintOutput::default(),
+            popup_anim: None,
             palette: AnsiPalette::default_dark(),
             cell_metrics: None,
             pty: None,
@@ -1061,8 +1077,36 @@ impl GpuApp {
         } else {
             popup_view::popup_view(&self.state)
         };
-        if let Some(view) = popup {
-            let popup_root = match self.popup_root {
+        // Open/close fade (R12): bump the epoch on a visibility EDGE, then derive
+        // this frame's alpha from the frame clock. `popup_animating` keeps the
+        // redraw loop alive (self-requested below) until the fade completes.
+        let visible = popup.is_some();
+        match &self.popup_anim {
+            None if visible => {
+                self.popup_anim = Some(PopupAnim { started_at: now, opening: true });
+            }
+            Some(a) if a.opening && !visible => {
+                self.popup_anim = Some(PopupAnim { started_at: now, opening: false });
+            }
+            Some(a) if !a.opening && visible => {
+                self.popup_anim = Some(PopupAnim { started_at: now, opening: true });
+            }
+            _ => {}
+        }
+        let (popup_alpha, popup_animating) = match &self.popup_anim {
+            Some(a) => {
+                let t = (now.duration_since(a.started_at).as_secs_f32() / POPUP_FADE_SECS).min(1.0);
+                let alpha = if a.opening { ease_out(t) } else { 1.0 - ease_out(t) };
+                (alpha, t < 1.0)
+            }
+            None => (1.0, false),
+        };
+
+        // Pick the root to paint this frame: the live popup (reconciled into the
+        // tree), or — during a fade-OUT, when the store is already Hidden — the
+        // retained tree kept alive at the decreasing alpha until the fade ends.
+        let popup_root_to_paint: Option<NodeId> = if let Some(view) = popup {
+            let root = match self.popup_root {
                 Some(root) => {
                     let prev = self
                         .popup_prev
@@ -1073,11 +1117,25 @@ impl GpuApp {
                 }
                 None => build_root(&mut self.popup_tree, &view),
             };
-            self.popup_root = Some(popup_root);
+            self.popup_root = Some(root);
             self.popup_prev = Some(view);
+            Some(root)
+        } else if popup_animating {
+            // Fade-OUT in flight: keep painting the frozen retained tree.
+            self.popup_root
+        } else {
+            // No popup + no fade — release the retained tree and reset the epoch.
+            if let Some(root) = self.popup_root.take() {
+                free_subtree(&mut self.popup_tree, root);
+            }
+            self.popup_prev = None;
+            self.popup_anim = None;
+            None
+        };
+        if let Some(root) = popup_root_to_paint {
             measure(
                 &mut self.popup_tree,
-                popup_root,
+                root,
                 SizeConstraint::new(
                     Vec2::new(popup_view::POPUP_MIN_WIDTH, 0.0),
                     Vec2::new(window_w_logical, window_h_logical),
@@ -1088,13 +1146,13 @@ impl GpuApp {
             );
             place_centered(
                 &mut self.popup_tree,
-                popup_root,
+                root,
                 Vec2::new(window_w_logical, window_h_logical),
             );
             self.popup_scratch.clear();
             paint(
                 &self.popup_tree,
-                popup_root,
+                root,
                 &mut self.popup_scratch,
                 renderer.atlas_mut(),
                 &mut self.font_system,
@@ -1102,16 +1160,14 @@ impl GpuApp {
                 &mut self.ui_shape_cache,
                 sf,
             );
+            // Bake the fade alpha into the popup's instances only (the chrome
+            // beneath, already merged, keeps full opacity).
+            if popup_alpha < 1.0 {
+                apply_overlay_alpha(&mut self.popup_scratch, popup_alpha);
+            }
             overlay_shadows.extend_from_slice(&self.popup_scratch.shadows);
             overlay_rects.extend_from_slice(&self.popup_scratch.rects);
             overlay_glyphs.extend_from_slice(&self.popup_scratch.glyphs);
-        } else {
-            // No popup open — release the retained tree so the next open
-            // rebuilds fresh.
-            if let Some(root) = self.popup_root.take() {
-                free_subtree(&mut self.popup_tree, root);
-            }
-            self.popup_prev = None;
         }
         // The overlay always carries the chrome bars (and a popup when one is
         // open), so it is never empty.
@@ -1127,6 +1183,11 @@ impl GpuApp {
         );
         self.shape_cache.end_frame();
         self.ui_shape_cache.end_frame();
+        // Drive the popup fade to completion: while a transition is in flight,
+        // request the next frame (the event-driven redraws alone wouldn't tick).
+        if popup_animating {
+            window.request_redraw();
+        }
     }
 }
 
