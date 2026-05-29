@@ -134,6 +134,7 @@ fn block(child: impl Element) -> Block {
             border_color: WHITE,
             border_width: 1.0,
             padding: Insets::all(4.0),
+            shadow: None,
         },
         child,
     )
@@ -231,6 +232,7 @@ fn r4_stack_to_block_swap() {
             border_color: WHITE,
             border_width: 0.0,
             padding: Insets::all(2.0),
+            shadow: None,
         },
         Text::new("x", FS, WHITE),
     ));

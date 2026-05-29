@@ -48,13 +48,28 @@ pub struct StackStyle {
     pub padding: Insets,
 }
 
-/// Block (container) style: background fill + optional border + padding.
+/// Optional drop shadow under a [`Block`]'s background (design §11). Emitted as
+/// one `term_gpu::ShadowInstance` sized to the Block's placed bounds: a rounded-
+/// rect SDF halo drawn UNDER the bg rect, so the opaque bg covers the saturated
+/// centre and only the soft halo shows. `None` (the default) emits nothing, so
+/// existing chrome Blocks stay byte-identical and untouched.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct BlockShadow {
+    pub blur_radius: f32,
+    pub corner_radius: f32,
+    pub offset: [f32; 2],
+    pub color: [f32; 4],
+}
+
+/// Block (container) style: background fill + optional border + padding, plus an
+/// optional drop `shadow` (popups; `None` for plain containers).
 #[derive(Clone, PartialEq, Debug)]
 pub struct BlockStyle {
     pub background: [f32; 4],
     pub border_color: [f32; 4],
     pub border_width: f32,
     pub padding: Insets,
+    pub shadow: Option<BlockShadow>,
 }
 
 /// Text content + shaping style.

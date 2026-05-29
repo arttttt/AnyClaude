@@ -161,6 +161,7 @@ fn panel() -> Block {
             border_color: [0.0; 4],
             border_width: 0.0,
             padding: Insets::all(12.0),
+            shadow: None,
         },
         Text::new(
             "terminal panel — chrome preview · 'r' Reqs+1 · 'c' Session-copied flash",

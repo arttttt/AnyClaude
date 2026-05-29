@@ -126,6 +126,7 @@ fn fence(color: [f32; 4]) -> Block {
             border_color: [0.0; 4],
             border_width: 0.0,
             padding: Insets::default(),
+            shadow: None,
         },
         term_ui::Spacer::fixed(0.0),
     )

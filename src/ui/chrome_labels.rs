@@ -110,6 +110,7 @@ pub fn chrome_view(
         border_color: [0.0; 4],
         border_width: 0.0,
         padding: Insets::default(),
+        shadow: None,
     };
     Stack::vstack()
         .cross(CrossAxis::Stretch)

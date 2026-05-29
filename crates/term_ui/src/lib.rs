@@ -29,7 +29,7 @@ pub mod view;
 // ── public surface (kept reachable so new types don't trip dead_code) ──
 
 pub use arena::{
-    BlockStyle, Node, NodeKind, RetainedTree, StackStyle, TextStyle,
+    BlockShadow, BlockStyle, Node, NodeKind, RetainedTree, StackStyle, TextStyle,
 };
 pub use geometry::{
     Axis, Bounds, CrossAxis, Insets, MainAxis, SizeConstraint, Sizing,
@@ -37,7 +37,7 @@ pub use geometry::{
 pub use id::{NodeId, WidgetId};
 pub use layout::{line_height, measure, measure_text, place};
 pub use paint::{
-    paint, paint_cpu, CpuPaint, GlyphRecord, PaintOutput, RectRecord,
+    block_shadow, paint, paint_cpu, CpuPaint, GlyphRecord, PaintOutput, RectRecord,
 };
 pub use splice::reconcile_children;
 pub use text_helpers::{byte_at_x, caret_x};
