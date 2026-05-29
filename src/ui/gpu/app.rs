@@ -18,11 +18,10 @@ use term_clipboard::{
 };
 use term_core::{create_emulator, AnsiPalette, MouseMode, TerminalEmulator};
 use term_gpu::{
-    build_cursor_rect, encode_key, encode_paste, expand_line, expand_word, measure_cell_metrics,
-    populate_panel, push_selection_rects, selection_to_text, shell_quote_path, CellMetrics,
-    CellPoint, FontFamily, FontSystem, GlyphInstance, GpuRenderer, PanelRect, RectInstance,
-    RenderLayer, ScrollState, Selection, SwashCache, TextShapeCache, GESTURE_END_TIMEOUT,
-    MOMENTUM_FRAME_INTERVAL, NUM_PIXELS_PER_LINE,
+    build_cursor_rect, encode_key, encode_paste, measure_cell_metrics, populate_panel,
+    push_selection_rects, selection_to_text, shell_quote_path, CellMetrics, CellPoint, FontFamily,
+    FontSystem, GlyphInstance, GpuRenderer, PanelRect, RectInstance, RenderLayer, ScrollState,
+    SwashCache, TextShapeCache, GESTURE_END_TIMEOUT, MOMENTUM_FRAME_INTERVAL, NUM_PIXELS_PER_LINE,
 };
 use uuid::Uuid;
 use winit::application::ApplicationHandler;
@@ -47,7 +46,7 @@ use crate::ui::gpu::pty::ChildPty;
 use crate::ui::history::{HistoryEntry, HistoryIntent};
 use crate::ui::input::{self, AppShortcut};
 use crate::ui::settings::{SettingsDialogState, SettingsIntent};
-use crate::ui::term_geometry::{self, LastClick};
+use crate::ui::term_geometry;
 
 const INITIAL_W: f32 = 1200.0;
 const INITIAL_H: f32 = 800.0;
@@ -758,15 +757,13 @@ impl GpuApp {
     }
 
     fn on_cursor_moved(&mut self, x: f32, y: f32) {
-        self.state.cursor_pos = Some((x, y));
-        if self.state.dragging_selection {
-            if let Some(point) = self.cell_at(x, y) {
-                if let Some(sel) = self.state.selection.as_mut() {
-                    sel.cursor = point;
-                    if let Some(w) = self.window.as_ref() {
-                        w.request_redraw();
-                    }
-                }
+        self.state.set_cursor_pos(x, y);
+        if !self.state.dragging_selection {
+            return;
+        }
+        if let Some(point) = self.cell_at(x, y) {
+            if self.state.drag_selection_to(point) {
+                self.request_redraw();
             }
         }
     }
@@ -803,70 +800,20 @@ impl GpuApp {
             return;
         }
         let Some(point) = self.cell_at(x, y) else { return };
-        let count = self.bump_click_count(point);
-        let snap = self.emulator.as_ref().map(|e| e.snapshot());
-        match count {
-            1 => {
-                self.state.selection = Some(Selection::new(point));
-                self.state.dragging_selection = true;
-            }
-            2 => {
-                let (start, end) = snap
-                    .as_ref()
-                    .map(|s| expand_word(point, s))
-                    .unwrap_or((point, point));
-                self.state.selection = Some(Selection {
-                    anchor: start,
-                    cursor: end,
-                });
-                // No drag after double-click; the user re-clicks to
-                // start a linear selection.
-                self.state.dragging_selection = false;
-            }
-            _ => {
-                let (start, end) = snap
-                    .as_ref()
-                    .map(|s| expand_line(point, s))
-                    .unwrap_or((point, point));
-                self.state.selection = Some(Selection {
-                    anchor: start,
-                    cursor: end,
-                });
-                self.state.dragging_selection = false;
-            }
-        }
-        if let Some(w) = self.window.as_ref() {
-            w.request_redraw();
-        }
+        let Some(snapshot) = self.emulator.as_ref().map(|e| e.snapshot()) else {
+            return;
+        };
+        let count = self
+            .state
+            .next_click(point, Instant::now(), MULTI_CLICK_THRESHOLD_MS);
+        self.state.begin_selection(point, count, &snapshot);
+        self.request_redraw();
     }
 
     fn on_mouse_release(&mut self) {
-        if self.state.dragging_selection {
-            self.state.dragging_selection = false;
-            // A click that didn't drag (anchor == cursor) clears the
-            // selection — keeps "click somewhere to deselect" working.
-            if self.state.selection.map(|s| s.is_empty()).unwrap_or(false) {
-                self.state.selection = None;
-                if let Some(w) = self.window.as_ref() {
-                    w.request_redraw();
-                }
-            }
+        if self.state.end_selection_drag() {
+            self.request_redraw();
         }
-    }
-
-    /// Update `self.state.last_click` based on the new press and return the
-    /// 1..=3 click count. Resets to 1 when the click misses the
-    /// previous cell or arrives after the threshold.
-    fn bump_click_count(&mut self, point: CellPoint) -> u32 {
-        let now = Instant::now();
-        let new_count =
-            term_geometry::next_click_count(self.state.last_click, point, now, MULTI_CLICK_THRESHOLD_MS);
-        self.state.last_click = Some(LastClick {
-            time: now,
-            point,
-            count: new_count,
-        });
-        new_count
     }
 
     fn on_momentum_tick(&mut self) {

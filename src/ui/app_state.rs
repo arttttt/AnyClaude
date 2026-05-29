@@ -15,9 +15,10 @@
 use std::time::Instant;
 
 use glam::Vec2;
+use term_core::RenderSnapshot;
 use term_gpu::{
-    decay_velocity, ScrollState, ScrollVelocity, Selection, MOMENTUM_MIN_VELOCITY,
-    MOMENTUM_THRESHOLD,
+    decay_velocity, expand_line, expand_word, CellPoint, ScrollState, ScrollVelocity, Selection,
+    MOMENTUM_MIN_VELOCITY, MOMENTUM_THRESHOLD,
 };
 use winit::event::TouchPhase;
 use winit::keyboard::ModifiersState;
@@ -195,5 +196,77 @@ impl AppState {
         let delta = v.velocity * elapsed;
         self.scroll.scroll_by(delta.y);
         vec![ScrollEffect::Redraw]
+    }
+
+    // ── selection (E.5) ──────────────────────────────────────────────────
+    // The coordinator resolves window pixels → a `CellPoint` (via
+    // `term_geometry::cell_at`) and supplies the emulator snapshot; these
+    // methods own the selection STATE transition.
+
+    /// Remember the latest mouse position (logical px). Used by the coordinator
+    /// to start a drag-selection on the next press without re-querying winit.
+    pub fn set_cursor_pos(&mut self, x: f32, y: f32) {
+        self.cursor_pos = Some((x, y));
+    }
+
+    /// Record a click at `point` and return its multi-click count (1..=3),
+    /// updating `last_click`. (Wraps the pure `term_geometry::next_click_count`.)
+    pub fn next_click(&mut self, point: CellPoint, now: Instant, threshold_ms: u128) -> u32 {
+        let count = crate::ui::term_geometry::next_click_count(
+            self.last_click,
+            point,
+            now,
+            threshold_ms,
+        );
+        self.last_click = Some(LastClick { time: now, point, count });
+        count
+    }
+
+    /// Begin a selection at `point` for the given click `count`: 1 = linear
+    /// (drag continues), 2 = word, 3 = line (both snap and end the drag).
+    /// Word/line boundaries come from `snapshot`.
+    pub fn begin_selection(&mut self, point: CellPoint, count: u32, snapshot: &RenderSnapshot) {
+        match count {
+            1 => {
+                self.selection = Some(Selection::new(point));
+                self.dragging_selection = true;
+            }
+            2 => {
+                let (anchor, cursor) = expand_word(point, snapshot);
+                self.selection = Some(Selection { anchor, cursor });
+                self.dragging_selection = false;
+            }
+            _ => {
+                let (anchor, cursor) = expand_line(point, snapshot);
+                self.selection = Some(Selection { anchor, cursor });
+                self.dragging_selection = false;
+            }
+        }
+    }
+
+    /// Extend the active drag-selection's cursor to `point`. Returns `true`
+    /// when a drag was in flight (caller should redraw).
+    pub fn drag_selection_to(&mut self, point: CellPoint) -> bool {
+        if self.dragging_selection {
+            if let Some(sel) = self.selection.as_mut() {
+                sel.cursor = point;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// End a left-drag. A click that didn't drag (anchor == cursor) clears the
+    /// selection — keeps "click somewhere to deselect" working. Returns `true`
+    /// when the selection was cleared (caller should redraw).
+    pub fn end_selection_drag(&mut self) -> bool {
+        if self.dragging_selection {
+            self.dragging_selection = false;
+            if self.selection.map(|s| s.is_empty()).unwrap_or(false) {
+                self.selection = None;
+                return true;
+            }
+        }
+        false
     }
 }

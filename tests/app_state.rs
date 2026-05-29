@@ -10,7 +10,8 @@ use anyclaude::ui::backend_switch::BackendSwitchIntent;
 use anyclaude::ui::history::HistoryIntent;
 use anyclaude::ui::settings::SettingsIntent;
 use glam::Vec2;
-use term_gpu::ScrollVelocity;
+use term_core::{create_emulator, RenderSnapshot};
+use term_gpu::{CellPoint, ScrollVelocity};
 use winit::event::TouchPhase;
 
 fn state() -> AppState {
@@ -176,4 +177,73 @@ fn momentum_tick_redraws_while_fast_and_stops_when_slow() {
     // No velocity → no-op.
     let mut idle = scrollable();
     assert!(idle.on_momentum_tick(base).is_empty());
+}
+
+// ── selection reducer (E.5) ──
+
+/// A blank emulator snapshot — enough for the count-dispatch tests (word/line
+/// boundary correctness is term_gpu's `expand_*` concern, not AppState's).
+fn empty_snapshot() -> RenderSnapshot {
+    create_emulator(20, 3, 100).snapshot()
+}
+
+#[test]
+fn single_click_starts_a_linear_drag() {
+    let mut s = state();
+    let p = CellPoint { row: 0, col: 2 };
+    s.begin_selection(p, 1, &empty_snapshot());
+    assert!(s.dragging_selection, "single click keeps dragging");
+    let sel = s.selection.expect("selection set");
+    assert_eq!(sel.anchor, p);
+    assert_eq!(sel.cursor, p);
+}
+
+#[test]
+fn double_and_triple_click_snap_and_end_the_drag() {
+    for count in [2, 3] {
+        let mut s = state();
+        s.begin_selection(CellPoint { row: 0, col: 2 }, count, &empty_snapshot());
+        assert!(!s.dragging_selection, "word/line select does not drag (count {count})");
+        assert!(s.selection.is_some());
+    }
+}
+
+#[test]
+fn drag_extends_only_an_active_selection() {
+    let mut s = state();
+    // Not dragging yet → no-op.
+    assert!(!s.drag_selection_to(CellPoint { row: 1, col: 1 }));
+
+    s.begin_selection(CellPoint { row: 0, col: 0 }, 1, &empty_snapshot());
+    let to = CellPoint { row: 0, col: 5 };
+    assert!(s.drag_selection_to(to), "active drag extends");
+    assert_eq!(s.selection.unwrap().cursor, to);
+}
+
+#[test]
+fn release_clears_a_click_without_drag_but_keeps_a_real_selection() {
+    // Click with no drag → empty (anchor == cursor) → cleared on release.
+    let mut empty = state();
+    empty.begin_selection(CellPoint { row: 0, col: 0 }, 1, &empty_snapshot());
+    assert!(empty.end_selection_drag(), "empty selection cleared");
+    assert!(empty.selection.is_none());
+
+    // Click then drag → non-empty → kept on release.
+    let mut real = state();
+    real.begin_selection(CellPoint { row: 0, col: 0 }, 1, &empty_snapshot());
+    real.drag_selection_to(CellPoint { row: 0, col: 4 });
+    assert!(!real.end_selection_drag(), "non-empty selection kept");
+    assert!(real.selection.is_some());
+}
+
+#[test]
+fn next_click_records_and_cycles() {
+    let mut s = state();
+    let p = CellPoint { row: 1, col: 1 };
+    let now = Instant::now();
+    assert_eq!(s.next_click(p, now, 400), 1);
+    assert_eq!(s.next_click(p, now + Duration::from_millis(100), 400), 2);
+    assert_eq!(s.next_click(p, now + Duration::from_millis(200), 400), 3);
+    // Different cell resets.
+    assert_eq!(s.next_click(CellPoint { row: 2, col: 2 }, now + Duration::from_millis(250), 400), 1);
 }
