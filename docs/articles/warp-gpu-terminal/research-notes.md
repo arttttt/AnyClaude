@@ -2325,3 +2325,88 @@ plain `Close`) — a latent, never-reachable feature. It was ported
 faithfully and left as-is, flagged for the coordinator phase that will
 own Esc routing. Reading the code to migrate it is what turned two
 planning assumptions into facts.
+
+### Phase F: deleting MVI early
+Phase D left the `mvi` crate with exactly one consumer — and it was dead
+code. `src/ui/pty/*` held a `PtyActor`/`PtyIntent`/`PtyLifecycleState` MVI
+machine that nothing referenced (a grep for `ui::pty` outside the module
+came back empty); the *live* PTY is the unrelated `gpu/pty.rs::ChildPty`.
+So Phase F — "delete the `mvi` crate", planned as the last phase — became
+doable immediately: delete the dead module + its 27 tests, then the crate
++ its workspace member + the dependency line. `grep -r mvi` empty, R1
+satisfied. The lesson is about *sequencing*: a phase plan is a default
+order, not a constraint. When an earlier phase happens to clear a later
+phase's only blocker, take the later phase out of turn.
+
+### Phase E: dissolving the god-object by extraction
+Phase E is "turn the 1.5K-line `GpuApp` into a coordinator". Rather than
+write a parallel coordinator and swap, the foundation went in as a series
+of *behaviour-preserving extractions* that left the live app running the
+whole time:
+- **`term_geometry`** — the panel-rect / grid-fit / cell-hit-test / multi-
+  click math, pulled out of `&mut self` methods into pure free functions
+  (cell sizes as plain `f32`, not the GPU `CellMetrics`, so they unit-test
+  with no device). GpuApp delegates, so the *live app exercises the same
+  code the coordinator will reuse* — a free regression check.
+- **`AppState`** — one struct that now holds every bucket-1 UI decision
+  (grid, scroll + momentum, selection, input, modifiers, session, the
+  three popups). GpuApp went from ~14 scattered fields to `state:
+  AppState` + resources. This is the moment the split-brain that started
+  the whole MVI-drop actually closed — there is now exactly one place that
+  holds "what the UI has decided". The copied-flash and uptime are
+  *derived* from epochs + a frame clock, not stored (R12).
+- **`input`** — the R7 "event phase" as pure functions: `(KeyCode,
+  ModifiersState) → intent`. The inline match in the winit handler became
+  a tested table.
+- **scroll reducer** — `on_wheel`/`on_gesture_end`/`on_momentum_tick`
+  became pure `AppState` methods returning `Vec<ScrollEffect>`; the
+  coordinator interprets the effects (start/cancel the momentum timer,
+  redraw). This is the Elm "update returns commands" shape: the decision
+  is pure and testable, the side effects are data the impure shell runs.
+
+What's left of E is the render-heavy part — the terminal surface and
+popups as actual term_ui views, then the `main.rs` swap — and that part
+is render-blind for me, so it'll land piece by piece, each verified by the
+user running it. The extraction approach means even a half-built E leaves
+a working, better-factored app at every commit.
+
+### The glyph-atlas bug — and checking Warp before fixing
+A production bug, found by use, not tests: after scrolling a long
+(Cyrillic-heavy) buffer, glyphs began dropping out and rendering as
+garbage. It was *not* a regression from the coordinator refactor (which
+never touched the render path) — it was a latent flaw in `term_gpu`'s
+glyph atlas, flagged in its own comments: a single 1024² texture whose
+shelf packer only ever grew, with `reset()` "not yet wired". Heavy scroll
+churns thousands of distinct glyphs; the packer marched to the bottom of
+the texture, and from then on every `get_or_insert` returned `None` and
+the glyph was silently dropped (a blank/garbage cell). The 10-frame
+eviction made it worse — an evicted glyph's slot was leaked, so scrolling
+it back re-packed it into new space.
+
+The instinct was to compact-on-full + redraw (a one-texture band-aid).
+The user's instinct was better: *"проверь, как сделано в warp."* Warp's
+atlas is a `Manager` over a *series of textures* — when an allocator
+returns `Full`, it bumps a `TextureId`, spins up a fresh allocator, and
+retries. It never drops a glyph; it grows. So the fix mirrored that as a
+texture **array**: `MAX_LAYERS` layers, one packer each, advance to the
+next layer on full, reclaim a layer once all its glyphs leave the screen
+(the array analogue of Warp's whole-texture eviction), and only
+wholesale-compact if every layer fills at once. One bind group, one
+sampler, a per-glyph `layer` index in the instance, a `texture_2d_array`
+in the shader. The lesson: when a subsystem is adapted from a reference
+implementation and it breaks, re-read the reference *before* inventing —
+the original probably already solved it, and aligning beats diverging.
+
+### Chrome bleed: layer order is a contract
+The last polish bug: terminal text bled up into the header bar and down
+into the footer. The bars were transparent (just text + a 1px separator)
+and drawn in the *same* layer as the terminal — and the renderer draws all
+rectangles first, then all glyphs, so a bar's opaque background rectangle
+(even if added) could never cover a terminal *glyph*; glyphs always win
+within a layer. The fix was to move the bars into the **overlay** layer,
+which is drawn entirely after the base: now the bar's opaque background
+covers any terminal glyph that scrolls into the bar band, the bar text
+sits on top of that, and an open popup sits on top of the bars. The
+takeaway is that "draw order" in a batched renderer isn't per-primitive —
+it's *all rects, then all glyphs, per layer* — so "what can occlude what"
+is decided by layer membership, not insertion order.

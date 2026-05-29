@@ -1214,6 +1214,14 @@ For files containing code ported from Warp:
 | `2a761dd` | Phase D.1 — backend_switch off MVI → plain `apply()` (+ `tests/backend_switch.rs`, 5) |
 | `699b8d7` | Phase D.2 — history off MVI (fold actor+state → `tests/history.rs`, 8) |
 | `dcdadad` | Phase D.3 — settings off MVI; drop `use mvi::Store` from app.rs (`tests/settings.rs`, 14) |
+| `921a55c` | Phase F.1 — delete dead `src/ui/pty/*` PtyActor + 27 tests |
+| `2099052` | Phase F.2 — delete the `crates/mvi` crate (R1: no MVI anywhere) |
+| `9eabb62` | Phase E.1 — `term_geometry` pure panel/grid/hit-test (+ 11 tests) |
+| `121c5de` | Phase E.2 — `AppState` consolidates all bucket-1 truth (+ 5 tests) |
+| `9e795cd` | Phase E.3 — `input` pure R7 event-phase mapping (+ 6 tests) |
+| `7f3b7ac` | Phase E.4 — `AppState` scroll/momentum reducer, effects-as-data (+ 5 tests) |
+| `2b8ddc5` | fix — glyph atlas grows via texture-array layers (no dropped glyphs) |
+| `108d1a2` | chrome polish — bars in overlay + opaque bg, bigger font, edge padding |
 
 - **The split-brain that triggered the rewrite:** MVI had 15 `dispatch`
   calls (the 3 popups) vs ~27 raw `self.<field> =` mutations (the entire
@@ -1258,3 +1266,26 @@ For files containing code ported from Warp:
   to the live Esc** — a latent feature, left flagged for E.
 - **`mvi` after D:** exactly one consumer left — the dead `PtyActor`
   (`src/ui/pty/*`, 27 tests). Crate deletion is now a clean Phase F.
+- **Phase F — MVI gone (R1 ✅):** deleted the dead `src/ui/pty/*` + 27
+  tests, then the `crates/mvi` crate. `grep -r mvi src/ crates/` empty.
+  **6** workspace crates now (was 7). Done EARLY — out of A→F order — since
+  D left mvi with only the dead consumer.
+- **Phase E foundation (coordinator extraction):** `GpuApp` 1.5K-line
+  god-object → `resources + one AppState + pure fns`. Four
+  behaviour-preserving extractions, **27** new GPU-free tests: E.1
+  `term_geometry` (11) · E.2 `AppState` = all bucket-1 truth, split-brain
+  closed (5) · E.3 `input` R7 event-phase (6) · E.4 scroll reducer,
+  effects-as-data (5). Render-heavy remainder (terminal/popup views + the
+  `main.rs` swap) still ahead.
+- **Atlas bug (`2b8ddc5`):** a long Cyrillic scroll filled the 1024² glyph
+  atlas, which then **silently dropped every new glyph** (shelf packer
+  only grew; `reset()` "not yet wired"). User: *"проверь, как сделано в
+  warp"* → Warp's atlas `Manager` grows by adding a texture on `Full`.
+  Fix: texture **array**, `MAX_LAYERS=4`, grow-by-layer + per-layer
+  reclaim; `GlyphInstance` gains a `layer`, shader samples
+  `texture_2d_array`. Found by use, not tests.
+- **Chrome bleed (`108d1a2`):** terminal glyphs bled into the transparent
+  bars because the renderer draws *all rects then all glyphs per layer* —
+  a bar bg rect can't cover a terminal glyph in the same layer. Fix: bars
+  → overlay layer (drawn after base) + opaque bg. Plus font 12→14, edge
+  padding (`CHROME_H_PAD=12`) with full-width separators.

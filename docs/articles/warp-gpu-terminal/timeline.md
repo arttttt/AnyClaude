@@ -1251,6 +1251,41 @@ coordinator owns Esc routing. `mvi` now has exactly one consumer left,
 the dead `PtyActor`, so the crate's deletion is a clean Phase F. All
 ~600 project tests stayed green; verified live.
 
-Status at handoff: Phase A + B + C (chrome views) + D (popups off MVI)
-done and verified; Phase E (dissolve `GpuApp` into the real coordinator,
-land all the deferred term_ui views) is next, then F deletes `mvi`.
+**Phase F** (delete the `mvi` crate) jumped the queue. Phase D had left
+`mvi` with a single consumer — the dead `PtyActor` MVI machine in
+`src/ui/pty/*`, never wired (the live PTY is the separate
+`gpu/pty.rs::ChildPty`). So before tackling the big Phase E, I deleted
+that dead module + its 27 tests and then the `crates/mvi` crate itself.
+`grep -r mvi` came back empty — **R1 (no MVI anywhere) satisfied**, the
+crate count down to six.
+
+**Phase E** is the finale: dissolve the `GpuApp` god-object into a real
+coordinator (`resources + one AppState + view`). I built the *foundation*
+this session as four behaviour-preserving extractions — `term_geometry`
+(pure panel/grid/hit-test math), `AppState` (one struct holding every
+bucket-1 decision; the split-brain finally gone), `input` (the pure R7
+event-phase: keys → intents), and a pure scroll/momentum reducer that
+returns effects-as-data (Elm-style) while the coordinator performs the
+timers. GpuApp is now `resources + AppState + pure fns`, all of it
+GPU-free unit-tested. The render-heavy remainder (the terminal surface as
+a term_ui view, the popup views, and the `main.rs` swap) is still ahead —
+and it's render-blind for me, so each piece will be verified by running.
+
+**Two production bugs surfaced and were fixed by use, not tests.** After
+enough scrolling, glyphs started dropping out / rendering as garbage. The
+cause was in the glyph atlas, not the new code: the 1024² texture never
+reclaimed space (the shelf packer only grew; `reset()` was "not yet
+wired"), so a long Cyrillic buffer filled it and then every new glyph was
+silently dropped. The user said *"проверь, как сделано в warp"* — and
+Warp's atlas `Manager` simply allocates another texture when one fills.
+So the atlas became a texture **array** that grows by layer and reclaims
+layers whose glyphs all leave the screen (the array analogue of Warp's
+whole-texture eviction). Then a polish pass: terminal content was bleeding
+into the header/footer bars (they were transparent, drawn in the same
+layer as the terminal, and glyphs draw over rects) — fixed by rendering
+the bars in the overlay layer with an opaque background; plus a bigger bar
+font and edge padding with full-width separators.
+
+Status at handoff: Phases A–D + F done; MVI fully deleted (R1 ✅); Phase E
+foundation (E.1–E.4) done and verified; the render-heavy E remainder
+(terminal/popup views + the `main.rs` swap) is next.

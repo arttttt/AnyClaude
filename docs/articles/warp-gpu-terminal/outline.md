@@ -1054,3 +1054,38 @@ settle.
     pure YAGNI, skipped. The same read found a fully-tested
     dirty-discard flow never wired to the live key. You learn the system
     by porting it; let that correct the plan.
+60. **A phase plan is a default order, not a constraint.** Phase F (delete
+    the `mvi` crate) was slated last, but Phase D left `mvi` with a single
+    consumer that was dead code. So F jumped the queue. When an earlier
+    phase clears a later phase's only blocker, take the later phase out of
+    turn — the ordering existed to keep builds green, not to be obeyed.
+61. **Dissolve a god-object by extraction, not rewrite.** Turning the
+    1.5K-line `GpuApp` into a coordinator didn't start with a parallel
+    coordinator; it started by pulling pure logic out (geometry, then all
+    state into one `AppState`, then input mapping, then a scroll reducer)
+    and having the live app delegate to it. Every commit leaves a working,
+    better-factored app, and the live app *exercises* the extracted code —
+    a free regression check the eventual swap inherits.
+62. **Effects-as-data lets a pure reducer touch an impure world.** The
+    scroll reducer mutates only state and returns `Vec<ScrollEffect>`
+    (start/cancel a timer, redraw); the coordinator performs them. The
+    decision is pure and unit-tested; the side effects are a data list the
+    impure shell runs. (Elm's update-returns-commands, in Rust.)
+63. **Found by use, not by tests — and the fix was in the reference.** The
+    post-scroll glyph garbage was a latent atlas-capacity bug no unit test
+    would catch (it needs a real, long, glyph-diverse scroll). When a
+    subsystem adapted from a reference breaks, re-read the reference before
+    inventing: Warp's atlas already grows-on-full by adding textures; the
+    fix was to mirror that (as array layers), not to hand-roll a compactor.
+64. **In a batched renderer, occlusion is set by layer, not insertion
+    order.** The renderer draws *all rects, then all glyphs, per layer* —
+    so a bar's opaque background can't cover a terminal glyph in the same
+    layer no matter when it's pushed. Moving the chrome to the overlay
+    layer (drawn entirely after the base) is what lets it occlude bleed.
+    Know your renderer's real draw order before reasoning about "on top".
+65. **When you can't see the output, ship to the one who can.** The whole
+    render path is GPU-blind for the author: shaders and bindings validate
+    only at pipeline creation, and "looks right" can't be asserted. So the
+    discipline is — make it compile, unit-test the *pure* logic, then hand
+    the visual verification to the user running it. Every atlas/chrome/view
+    change this phase landed that way.
