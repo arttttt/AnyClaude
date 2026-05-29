@@ -67,7 +67,8 @@ const SCROLL_BOTTOM_EPSILON: f32 = 0.5;
 const MULTI_CLICK_THRESHOLD_MS: u128 = 400;
 
 use super::chrome::{
-    draw_footer, draw_header, FOOTER_HEIGHT_LOGICAL, HEADER_HEIGHT_LOGICAL, SESSION_COPY_FLASH,
+    draw_footer, draw_header, CHROME_H_PAD, FOOTER_HEIGHT_LOGICAL, HEADER_HEIGHT_LOGICAL,
+    SESSION_COPY_FLASH,
 };
 use super::popup::{
     draw_backend_switch_popup, draw_history_popup, draw_settings_popup,
@@ -235,6 +236,7 @@ impl GpuApp {
             h_logical,
             HEADER_HEIGHT_LOGICAL,
             FOOTER_HEIGHT_LOGICAL,
+            CHROME_H_PAD,
         )
     }
 
@@ -930,6 +932,14 @@ impl GpuApp {
             rects.push(cursor_rect);
         }
 
+        // Chrome (header + footer) and any popup render in the OVERLAY layer,
+        // which is drawn entirely AFTER the terminal base. So the bars' opaque
+        // background covers any terminal glyph that scrolls into the bar band,
+        // the bar text sits on top, and a popup sits on top of the bars.
+        let mut overlay_shadows: Vec<term_gpu::ShadowInstance> = Vec::new();
+        let mut overlay_rects: Vec<RectInstance> = Vec::new();
+        let mut overlay_glyphs: Vec<GlyphInstance> = Vec::new();
+
         // The copied-flash is DERIVED from the deadline + frame clock (R12) —
         // no stored boolean, no expiry mutation.
         let now = Instant::now();
@@ -964,8 +974,8 @@ impl GpuApp {
             &mut self.font_system,
             &mut self.swash_cache,
             &mut self.ui_shape_cache,
-            &mut rects,
-            &mut glyphs,
+            &mut overlay_rects,
+            &mut overlay_glyphs,
             &active_backend,
             subagent_label.as_deref(),
             teammate_label.as_deref(),
@@ -982,20 +992,12 @@ impl GpuApp {
             &mut self.font_system,
             &mut self.swash_cache,
             &mut self.ui_shape_cache,
-            &mut rects,
-            &mut glyphs,
+            &mut overlay_rects,
+            &mut overlay_glyphs,
             window_w_logical,
             window_h_logical,
             sf,
         );
-
-        // Build an optional overlay layer for whichever popup is
-        // currently `Visible`. At most one popup is shown at a time
-        // (close_all_popups before opening) so the checks are
-        // sequential — first match wins.
-        let mut overlay_shadows: Vec<term_gpu::ShadowInstance> = Vec::new();
-        let mut overlay_rects: Vec<RectInstance> = Vec::new();
-        let mut overlay_glyphs: Vec<GlyphInstance> = Vec::new();
         let backend_state_visible = self.state.backend_switch.is_visible();
         let history_state_visible = self.state.history.is_visible();
         let settings_state_visible = self.state.settings.is_visible();
@@ -1056,23 +1058,16 @@ impl GpuApp {
                 sf,
             );
         }
-        let overlay = if overlay_shadows.is_empty()
-            && overlay_rects.is_empty()
-            && overlay_glyphs.is_empty()
-        {
-            None
-        } else {
+        // The overlay always carries the chrome bars (and a popup when one is
+        // open), so it is never empty.
+        window.pre_present_notify();
+        renderer.render(
+            RenderLayer::rects_and_glyphs(&rects, &glyphs),
             Some(RenderLayer {
                 shadows: &overlay_shadows,
                 rects: &overlay_rects,
                 glyphs: &overlay_glyphs,
-            })
-        };
-
-        window.pre_present_notify();
-        renderer.render(
-            RenderLayer::rects_and_glyphs(&rects, &glyphs),
-            overlay,
+            }),
             0.0,
         );
         self.shape_cache.end_frame();

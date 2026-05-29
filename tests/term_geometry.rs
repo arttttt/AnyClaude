@@ -9,17 +9,19 @@ use anyclaude::ui::term_geometry::{cell_at, fit_grid, next_click_count, terminal
 use term_gpu::{CellPoint, PanelRect};
 
 #[test]
-fn panel_sits_between_header_and_footer() {
-    let p = terminal_panel_rect(800.0, 600.0, 24.0, 22.0);
-    assert_eq!(p.x, 0.0);
+fn panel_sits_between_header_and_footer_inset_by_padding() {
+    let p = terminal_panel_rect(800.0, 600.0, 24.0, 22.0, 8.0);
+    // Horizontal padding insets x + both sides of the width; the bars/separators
+    // (drawn elsewhere) stay full-width.
+    assert_eq!(p.x, 8.0);
     assert_eq!(p.y, 24.0);
-    assert_eq!(p.w, 800.0);
+    assert_eq!(p.w, 800.0 - 2.0 * 8.0);
     assert_eq!(p.h, 600.0 - 24.0 - 22.0);
 }
 
 #[test]
 fn panel_height_clamps_to_zero_when_window_smaller_than_chrome() {
-    let p = terminal_panel_rect(800.0, 30.0, 24.0, 22.0);
+    let p = terminal_panel_rect(800.0, 30.0, 24.0, 22.0, 8.0);
     assert_eq!(p.h, 0.0);
 }
 

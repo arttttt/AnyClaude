@@ -21,21 +21,32 @@ use term_gpu::{
 
 /// Top chrome reserved for the header — backend / Reqs / Uptime /
 /// Session etc. live here. Terminal area starts immediately below.
-pub(super) const HEADER_HEIGHT_LOGICAL: f32 = 24.0;
+pub(super) const HEADER_HEIGHT_LOGICAL: f32 = 30.0;
 
 /// Bottom chrome reserved for the footer — hotkey hints + version.
 /// Terminal area ends immediately above.
-pub(super) const FOOTER_HEIGHT_LOGICAL: f32 = 22.0;
+pub(super) const FOOTER_HEIGHT_LOGICAL: f32 = 28.0;
+
+/// Horizontal inset (logical px) for chrome TEXT and the terminal content.
+/// The bar background + separator span the full width; only text/content is
+/// padded in from the edges.
+pub(super) const CHROME_H_PAD: f32 = 12.0;
 
 /// Footer hint text — all the app-level shortcuts the GPU UI honours.
 const FOOTER_HINTS: &str =
-    " Cmd+B: Switch │ Cmd+H: History │ Cmd+E: Settings │ Cmd+R: Restart │ Cmd+Q: Quit";
+    "Cmd+B: Switch │ Cmd+H: History │ Cmd+E: Settings │ Cmd+R: Restart │ Cmd+Q: Quit";
 
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Font size for header / footer chrome text (variable-width
 /// SansSerif), in logical pixels.
-const CHROME_FONT_SIZE: f32 = 12.0;
+const CHROME_FONT_SIZE: f32 = 14.0;
+
+/// Opaque background fill for the chrome bars. Matches the window clear colour
+/// so the bars read as part of the surface, while still covering any terminal
+/// glyph that scrolls into the bar band (the bars render in the overlay layer,
+/// on top of the terminal).
+const CHROME_BG: [f32; 4] = [0.04, 0.04, 0.06, 1.0];
 
 /// How long the "Session ID copied!" flash stays visible after a
 /// successful copy click.
@@ -78,7 +89,14 @@ pub(super) fn draw_header(
     window_w_logical: f32,
     sf: f32,
 ) -> Option<(f32, f32)> {
-    // 1px separator that visually delineates the header from the
+    // Opaque full-width background so any terminal glyph that scrolls into the
+    // header band is covered (the header renders in the overlay, on top).
+    rects.push(RectInstance {
+        pos: [0.0, 0.0],
+        size: [window_w_logical, HEADER_HEIGHT_LOGICAL],
+        color: CHROME_BG,
+    });
+    // 1px separator (full width) that visually delineates the header from the
     // terminal panel below.
     rects.push(RectInstance {
         pos: [0.0, HEADER_HEIGHT_LOGICAL - 1.0],
@@ -93,7 +111,7 @@ pub(super) fn draw_header(
 
     let sep = " │ ";
     let baseline_y = HEADER_HEIGHT_LOGICAL * 0.7;
-    let mut x = 8.0;
+    let mut x = CHROME_H_PAD;
 
     let segments: [String; 5] = [
         format!("backend: {backend}"),
@@ -179,8 +197,14 @@ pub(super) fn draw_footer(
     window_h_logical: f32,
     sf: f32,
 ) {
-    // 1px separator that visually delineates the terminal panel from
-    // the footer below it.
+    // Opaque full-width background so terminal glyphs that scroll into the
+    // footer band are covered (the footer renders in the overlay, on top).
+    rects.push(RectInstance {
+        pos: [0.0, window_h_logical - FOOTER_HEIGHT_LOGICAL],
+        size: [window_w_logical, FOOTER_HEIGHT_LOGICAL],
+        color: CHROME_BG,
+    });
+    // 1px separator (full width) delineating the terminal panel from the footer.
     rects.push(RectInstance {
         pos: [0.0, window_h_logical - FOOTER_HEIGHT_LOGICAL],
         size: [window_w_logical, 1.0],
@@ -196,7 +220,7 @@ pub(super) fn draw_footer(
         ui_shape_cache,
         glyphs,
         FOOTER_HINTS,
-        0.0,
+        CHROME_H_PAD,
         baseline_y,
         CHROME_FONT_SIZE,
         sf,
@@ -205,7 +229,7 @@ pub(super) fn draw_footer(
         CHROME_TEXT_COLOR,
     );
 
-    let version_text = format!("v{APP_VERSION} ");
+    let version_text = format!("v{APP_VERSION}");
     let version_w = measure_label_width(
         font_system,
         ui_shape_cache,
@@ -215,7 +239,7 @@ pub(super) fn draw_footer(
         Weight::NORMAL,
         Style::Normal,
     );
-    let version_x = (window_w_logical - version_w).max(0.0);
+    let version_x = (window_w_logical - version_w - CHROME_H_PAD).max(0.0);
     push_label(
         font_system,
         swash_cache,

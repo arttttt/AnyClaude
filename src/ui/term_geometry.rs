@@ -20,11 +20,20 @@ pub struct LastClick {
 }
 
 /// The terminal panel rect (logical px) carved out between the top header
-/// chrome (`header_h`) and the bottom footer chrome (`footer_h`). Height is
-/// clamped to ≥ 0 so a tiny window never yields a negative extent.
-pub fn terminal_panel_rect(w_logical: f32, h_logical: f32, header_h: f32, footer_h: f32) -> PanelRect {
+/// chrome (`header_h`) and the bottom footer chrome (`footer_h`), inset
+/// horizontally by `h_pad` on each side. Width/height are clamped to ≥ 0 so a
+/// tiny window never yields a negative extent. (The chrome bars and their
+/// separators stay full-width; only the content is inset.)
+pub fn terminal_panel_rect(
+    w_logical: f32,
+    h_logical: f32,
+    header_h: f32,
+    footer_h: f32,
+    h_pad: f32,
+) -> PanelRect {
     let h = (h_logical - header_h - footer_h).max(0.0);
-    PanelRect::new(0.0, header_h, w_logical, h)
+    let w = (w_logical - 2.0 * h_pad).max(0.0);
+    PanelRect::new(h_pad, header_h, w, h)
 }
 
 /// Cols × rows that fit inside `panel` at the given physical cell size, each
