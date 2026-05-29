@@ -294,18 +294,9 @@ impl GpuApp {
 
     /// Resync emulator + PTY to the current window size. Called from
     /// `resumed` and on `Resized`/`ScaleFactorChanged`.
-    fn sync_grid_to_window(&mut self) {
+    fn resync_grid(&mut self) {
         let (cols, rows) = self.fit_grid();
-        if self.state.grid_size == (cols, rows) {
-            return;
-        }
-        self.state.grid_size = (cols, rows);
-        if let Some(emu) = self.emulator.as_mut() {
-            emu.resize(cols, rows);
-        }
-        if let Some(pty) = self.pty.as_ref() {
-            pty.resize(cols as u16, rows as u16);
-        }
+        self.dispatch(Msg::GridResized { cols, rows });
     }
 
     /// Drain the PTY's pending bytes into the emulator. Returns true
@@ -404,6 +395,14 @@ impl GpuApp {
                     ));
                 }
                 Effect::Redraw => self.request_redraw(),
+                Effect::ResizeEmulatorAndPty { cols, rows } => {
+                    if let Some(emu) = self.emulator.as_mut() {
+                        emu.resize(cols, rows);
+                    }
+                    if let Some(pty) = self.pty.as_ref() {
+                        pty.resize(cols as u16, rows as u16);
+                    }
+                }
             }
         }
     }
@@ -1239,23 +1238,19 @@ impl ApplicationHandler<UserEvent> for GpuApp {
                 if let Some(r) = self.renderer.as_mut() {
                     r.resize(new_size);
                 }
-                self.sync_grid_to_window();
-                if let Some(w) = self.window.as_ref() {
-                    w.request_redraw();
-                }
+                // resync_grid dispatches Msg::GridResized → apply updates the
+                // grid + asks for the emulator/PTY resize + redraw as effects.
+                self.resync_grid();
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 self.scale_factor = scale_factor as f32;
                 if let Some(r) = self.renderer.as_mut() {
                     r.set_scale_factor(self.scale_factor);
                 }
-                // Cell metrics depend on scale_factor; invalidate and
-                // resync grid to the new physical cell size.
+                // Cell metrics depend on scale_factor; invalidate, then resync
+                // the grid to the new physical cell size (through the loop).
                 self.cell_metrics = None;
-                self.sync_grid_to_window();
-                if let Some(w) = self.window.as_ref() {
-                    w.request_redraw();
-                }
+                self.resync_grid();
             }
             WindowEvent::ModifiersChanged(mods) => {
                 self.dispatch(Msg::ModifiersChanged(mods.state()));

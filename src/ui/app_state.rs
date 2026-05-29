@@ -77,6 +77,9 @@ pub enum Effect {
     ScheduleGestureEnd,
     /// Abort the pending gesture-end fallback.
     CancelGestureEnd,
+    /// Resize the emulator + PTY to a new `cols × rows` grid after a window /
+    /// scale change (the `grid_size` transition itself happens in `apply`).
+    ResizeEmulatorAndPty { cols: usize, rows: usize },
 }
 
 /// An input event translated to a pure message. The coordinator does any
@@ -94,6 +97,10 @@ pub enum Msg {
     MomentumTick,
     /// The keyboard modifier state changed.
     ModifiersChanged(ModifiersState),
+    /// The window / scale changed and the coordinator recomputed the terminal
+    /// grid to `cols × rows` (computing it needs cell metrics — a resource — so
+    /// the coordinator does that and hands the result in).
+    GridResized { cols: usize, rows: usize },
 }
 
 /// Read-only context the coordinator supplies to [`AppState::apply`]: the frame
@@ -118,6 +125,15 @@ impl AppState {
             Msg::ModifiersChanged(m) => {
                 self.modifiers = m;
                 Vec::new()
+            }
+            Msg::GridResized { cols, rows } => {
+                let mut fx = Vec::new();
+                if self.grid_size != (cols, rows) {
+                    self.grid_size = (cols, rows);
+                    fx.push(Effect::ResizeEmulatorAndPty { cols, rows });
+                }
+                fx.push(Effect::Redraw);
+                fx
             }
         }
     }
