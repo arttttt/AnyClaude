@@ -1289,3 +1289,72 @@ For files containing code ported from Warp:
   a bar bg rect can't cover a terminal glyph in the same layer. Fix: bars
   → overlay layer (drawn after base) + opaque bg. Plus font 12→14, edge
   padding (`CHROME_H_PAD=12`) with full-width separators.
+
+## term_ui E.6/E.7 — chrome + popups become retained trees (2026-05-30)
+
+Phase E render-heavy remainder. The chrome (E.6) and all three popups
+(E.7) move off immediate-mode draw functions onto term_ui retained trees;
+the terminal grid stays a direct full-emit (R5). `GpuApp` is now the
+coordinator: resources + one `AppState` + a chrome tree + a popup tree +
+delegation to pure fns.
+
+- **E.6 — chrome → a retained tree:** `ui::chrome_labels::chrome_view(&AppState)`
+  runs build / reconcile / measure (tight window) / place / paint into the
+  overlay each frame (`GpuApp` holds `chrome_tree` / `chrome_root` /
+  `chrome_prev` / `chrome_scratch`). Session-click-to-copy hitbox restored
+  via a stable `WidgetId` resolved from the laid-out tree (R7 hit-test).
+  Full-width separators via *"a `Block` stretches its single child"* in the
+  place pass. `gpu/chrome.rs` slimmed to dimension constants only.
+- **E.7 — all 3 popups → a SECOND retained tree; `gpu/popup.rs` DELETED
+  (~1045 LoC).** Presenter `src/ui/popup_view.rs`: history + settings from
+  `AppState` via `popup_view()`; backend via `backend_view(...)`
+  (coordinator-built — needs the backend list + override ids that `AppState`
+  lacks). Each popup = a `popup_box` `Block` (opaque bg + 1px border + drop
+  shadow + padding), measured under a `POPUP_MIN_WIDTH=280` floor, centred
+  with the new `place_centered`, painted on top of chrome (its `Block` drop
+  shadow flows through; the chrome paint path omits shadows).
+- **New primitives landed first (E.7.0, 4 commits):** `BlockStyle.shadow` +
+  a pure `block_shadow()` emit (testable without a GPU atlas);
+  `place_centered` (overlay centering); a `term_ui::anim` module
+  (`ease_out` / `ease_in_out` / `lerp` + `apply_overlay_alpha` overlay-alpha
+  bake); `uikit::popup_list` + `fixed_row_window` (a selectable list + the
+  R11 fixed-row virtualization seam).
+- **History gained REAL R11 virtualization (`fixed_row_window`):** the old
+  immediate path drew EVERY row and overflowed a tall history off-window;
+  now only the `MAX_VISIBLE_ROWS=14` window renders.
+- **Settings dirty-confirm killed a dead-code latent bug:** Esc / click-
+  outside now route through `request_close_popups` → `SettingsIntent::RequestClose`,
+  a two-stage dirty-confirm (first dismiss on unsaved edits arms an amber
+  *"Discard unsaved changes?"* prompt row; second discards). `RequestClose`
+  existed + was unit-tested but **never reached** — so dirty settings
+  silently discarded on first Esc. The same latent flaw flagged at the end
+  of Phase D, now closed.
+- **Backend popup = hand-assembled rows:** 3 sections (Active / Subagent /
+  Teammate), only the active section shows a highlight; green
+  `[Active]` / `[Selected]` status suffixes; rows are hstacks of `Text` runs
+  so the suffix can differ in colour (`popup_list`'s single-colour rows
+  can't express that).
+- **Open/close OPACITY fade (R12):** a `ui::popup_anim` epoch (pure
+  `step_popup_anim` + `popup_fade_alpha`, extracted + headlessly tested) +
+  `term_ui::anim::apply_overlay_alpha`. The fade-OUT keeps the retained tree
+  alive (painting the `Hidden`-store popup at decreasing alpha) until
+  `t >= 1`, then frees it. `POPUP_FADE_SECS=0.12`.
+- **Ship count:** **9** atomic feature commits + **4** review-follow-up
+  commits.
+- **25-agent adversarial review:** a review workflow swept the whole E.7
+  diff (5 dimensions → per-finding adversarial verification → synthesis).
+  Result: **0** critical, **0** high. The **17** confirmed findings were
+  test-coverage gaps + **2** intentional cosmetic 1:1 divergences (the
+  highlight bar now inset by the popup padding instead of overhanging it;
+  the `Disabled`-leader brackets are row-coloured, not green) + stale doc-
+  comments — all the non-cosmetic ones fixed.
+- **The retain/full-emit split (Warp/GPUI parallel):** the term_ui
+  retained+reactive tree is the GPUI/warpui model — build a fresh view each
+  frame, reconcile against a persistent arena, apply only deltas. The popup
+  is an overlay-on-top-of-content with a soft drop shadow (a rounded-rect
+  SDF halo) like Warp's command palette; the open/close transition is
+  opacity-only, matching Warp's emoji-free overlay fades. The second-tree-
+  over-a-direct-grid split mirrors *"retain what has stable structure
+  (chrome / popups), full-emit what doesn't (the terminal grid, R5)."*
+- **Green:** all headless tests green; full workspace suite green —
+  **80** test sections. **6** workspace crates.

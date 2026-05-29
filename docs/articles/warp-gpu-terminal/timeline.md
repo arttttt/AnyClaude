@@ -1289,3 +1289,88 @@ font and edge padding with full-width separators.
 Status at handoff: Phases A–D + F done; MVI fully deleted (R1 ✅); Phase E
 foundation (E.1–E.4) done and verified; the render-heavy E remainder
 (terminal/popup views + the `main.rs` swap) is next.
+
+## 35. The render-heavy E remainder — chrome + popups onto retained term_ui trees (2026-05-30)
+
+Picking up the deferred render work from §34, this session ported the two
+surfaces with **stable structure** — the chrome bars and the three popups —
+off their immediate-mode draw functions and onto real term_ui retained
+trees, leaving the terminal grid as the one full-emit holdout. The split is
+the GPUI/warpui shape from the design doc made concrete: *retain what has
+stable structure, full-emit what doesn't.* The terminal grid stays a direct
+`populate_panel` full-emit each frame (R5 — it has no stable element identity
+between frames); chrome and popups now build a fresh view each frame and
+reconcile it against a persistent arena, applying only the deltas, exactly
+like Warp's `warpui` and Zed's GPUI.
+
+**E.6** (chrome) ported the header/footer. `ui::chrome_labels::chrome_view(&
+AppState)` is build / reconcile / measure (against a tight window) / place /
+paint into the overlay every frame, with `GpuApp` now holding the tree's
+persistent state (`chrome_tree` / `chrome_root` / `chrome_prev` /
+`chrome_scratch`). Two C-deferred items finally landed: the
+session-click-to-copy hitbox is back, resolved via a stable `WidgetId` looked
+up in the laid-out tree (the R7 hit-test the fake-data preview couldn't
+stand in for), and the full-width separators became "a `Block` stretches its
+single child" in the layout place pass. `gpu/chrome.rs` slimmed down to
+dimension constants only.
+
+**E.7** (popups) was the larger lift: all three popups (backend switch,
+history, settings) moved off the ~1045-LoC immediate-mode `gpu/popup.rs`
+onto a **second** term_ui retained tree, and `gpu/popup.rs` was deleted. The
+presenter is `src/ui/popup_view.rs` — history and settings derive purely
+from `AppState` via `popup_view()`, while backend goes through
+`backend_view(...)` because it needs the live backend list + override ids
+the coordinator holds and `AppState` doesn't. Each popup is a `popup_box`
+`Block` (opaque background, 1px border, drop shadow, padding) measured under
+a `POPUP_MIN_WIDTH = 280` floor, centred with the new `place_centered`, and
+painted on top of the chrome. It is an overlay-on-content with a soft
+drop-shadow halo — Warp's command-palette shape — and its open/close
+transition is opacity-only, matching Warp's emoji-free overlay fades.
+
+Four new primitives landed first (E.7.0, 4 commits) so the feature work had
+something to compose: `BlockStyle.shadow` + a pure `block_shadow()` emit (a
+rounded-rect SDF halo, testable without a GPU atlas); `place_centered` for
+overlay centering; a `term_ui::anim` module (`ease_out` / `ease_in_out` /
+`lerp` + an `apply_overlay_alpha` overlay-alpha bake); and `uikit::popup_list`
++ `fixed_row_window` — a selectable list plus the R11 fixed-row
+virtualization seam.
+
+Per popup, the port paid for itself:
+
+- **history** gained *real* R11 virtualization through `fixed_row_window` —
+  the old immediate path drew every row and overflowed a tall history off the
+  window; now only the `MAX_VISIBLE_ROWS = 14` window renders.
+- **settings** routed Esc / click-outside through `request_close_popups →
+  SettingsIntent::RequestClose`, a two-stage dirty-confirm: a first dismiss
+  on unsaved edits arms an amber "Discard unsaved changes?" prompt row, a
+  second discards. This **killed the latent dead-code bug §34 flagged** —
+  `RequestClose` existed and was unit-tested but never reached the live
+  Escape, so dirty settings silently discarded on the first Esc. The
+  coordinator owning Esc routing (the E premise) is what closed it.
+- **backend** has three sections (Active / Subagent / Teammate), with only
+  the active section showing a highlight, green `[Active]` / `[Selected]`
+  status suffixes, and rows hand-assembled as hstacks of `Text` runs so the
+  suffix can differ in colour — `popup_list`'s single-colour rows can't
+  express that, so it composes from the lower-level pieces instead.
+
+The open/close fade is R12: a `ui::popup_anim` epoch (pure `step_popup_anim`
++ `popup_fade_alpha`, extracted and headlessly tested) drives
+`term_ui::anim::apply_overlay_alpha`. The fade-*out* keeps the retained tree
+alive — painting the `Hidden`-store popup at decreasing alpha — until
+`t >= 1`, then frees it. `POPUP_FADE_SECS = 0.12`. The popup's own `Block`
+drop shadow flows through the fade; the chrome paint path omits shadows.
+
+E.7 shipped as 9 atomic feature commits + 4 review-follow-up commits, and
+the whole diff went through an **adversarial review** — a 25-agent workflow
+(five dimensions → per-finding adversarial verification → synthesis). Result:
+0 critical, 0 high. The 17 confirmed findings were test-coverage gaps, two
+*intentional* cosmetic 1:1 divergences (the highlight bar is now inset by the
+popup padding instead of overhanging it; the disabled-leader brackets are
+row-coloured, not green), and stale doc-comments — every non-cosmetic one
+fixed.
+
+Architecture now: `GpuApp` is the coordinator = resources + one `AppState` +
+a chrome term_ui tree + a popup term_ui tree + delegation to pure fns; the
+terminal grid stays a direct `populate_panel` full-emit each frame (R5, not a
+retained view). All headless tests green; full workspace suite green (80
+sections).
