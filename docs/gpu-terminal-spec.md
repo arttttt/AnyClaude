@@ -1909,6 +1909,8 @@ impl PrimInstance {
 >
 > 1. **Atlas format is `RGBA8Unorm`, not `R8Unorm`.** A single atlas serves both monochrome glyphs (data lives in the alpha channel) and colour glyphs (emoji). Without this, emoji silently break.
 > 2. **Eviction is a per-glyph frame counter, not a doubly-linked LRU.** Warp uses `MAX_UNUSED_FRAMES = 10`; a glyph not sampled for 10 consecutive frames is dropped on `end_frame()`. This is far simpler than an intrusive linked list and is sufficient for terminal workloads.
+>
+> **As built (2026-05-29): the atlas is a texture ARRAY that grows by layer.** The single-1024²-texture sketch below had a latent bug — the shelf packer only grew and never reclaimed space, so heavy/Cyrillic scrolling marched it to the bottom and then *silently dropped every new glyph* (garbage on screen). Fixed by mirroring Warp's atlas `Manager` (which allocates a new texture on `AllocationError::Full`, [crates/warpui/src/rendering/atlas/manager.rs](https://github.com/warpdotdev/warp/blob/main/crates/warpui/src/rendering/atlas/manager.rs)) as array LAYERS: `MAX_LAYERS = 4`, one `ShelfPacker` per layer, `insert_raw` advances to the next layer on full, and `end_frame()` reclaims layers whose glyphs are all gone (the array analogue of Warp's whole-texture eviction); an all-layers-full frame triggers a wholesale compact + redraw as a last resort. `PlacedGlyph`/`GlyphInstance` carry a `layer` index, `text.wgsl` samples `texture_2d_array`, and the atlas bind-group layout is `D2Array`. The single-texture code below is kept as the original design sketch.
 
 ```rust
 // atlas.rs — shelf bin-packer + frame-counter eviction.
