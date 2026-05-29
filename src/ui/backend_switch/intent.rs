@@ -1,5 +1,5 @@
-use mvi::Intent;
-
+/// Backend-switch popup intents — the message vocabulary consumed by
+/// [`BackendSwitchState::apply`]. Plain enum (no MVI traits).
 #[derive(Debug, Clone)]
 pub enum BackendSwitchIntent {
     Open {
@@ -18,5 +18,3 @@ pub enum BackendSwitchIntent {
     /// while the popup is open.
     Clear,
 }
-
-impl Intent for BackendSwitchIntent {}

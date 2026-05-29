@@ -44,7 +44,7 @@ use crate::config::{
 };
 use crate::metrics::ObservabilityHub;
 use crate::ui::backend_switch::{
-    BackendPopupSection, BackendSwitchActor, BackendSwitchIntent, BackendSwitchState,
+    BackendPopupSection, BackendSwitchIntent, BackendSwitchState,
 };
 use crate::ui::gpu::pty::ChildPty;
 use crate::ui::history::{HistoryActor, HistoryEntry, HistoryIntent};
@@ -175,11 +175,12 @@ pub(super) struct GpuApp {
     /// popup reflects the user's last choice.
     settings_manager: ClaudeSettingsManager,
 
-    /// MVI stores for the popup overlays. At most one is `Visible` at
-    /// a time; rendering and input routing check `is_visible()` on
-    /// each. State machines + intent handling live in the respective
-    /// `Actor` impls — this file is the wiring + render-side projection.
-    backend_switch_store: Store<BackendSwitchActor>,
+    /// Popup overlay state. At most one is `Visible` at a time;
+    /// rendering and input routing check `is_visible()` on each. The
+    /// backend-switch popup is a plain state machine (`apply` method —
+    /// the MVI Actor is gone); history/settings still use MVI stores
+    /// until their cutover.
+    backend_switch: BackendSwitchState,
     history_store: Store<HistoryActor>,
     settings_store: Store<SettingsActor>,
 }
@@ -241,7 +242,7 @@ impl GpuApp {
             spawn_args,
             spawn_env,
             settings_manager,
-            backend_switch_store: Store::new(BackendSwitchActor, |_effect| {}),
+            backend_switch: BackendSwitchState::default(),
             history_store: Store::new(HistoryActor, |_effect| {}),
             settings_store: Store::new(SettingsActor, |_effect| {}),
         }
@@ -428,7 +429,7 @@ impl GpuApp {
     /// True when any popup MVI store is in its `Visible` state. Used
     /// to gate input routing and mouse-click priority.
     fn any_popup_visible(&self) -> bool {
-        self.backend_switch_store.state().is_visible()
+        self.backend_switch.is_visible()
             || self.history_store.state().is_visible()
             || self.settings_store.state().is_visible()
     }
@@ -436,8 +437,8 @@ impl GpuApp {
     /// Dispatch `Close` to every popup store. Called by Cmd+B / +H /
     /// +E before opening a new popup, by Esc, and by click-outside.
     fn close_all_popups(&mut self) {
-        if self.backend_switch_store.state().is_visible() {
-            self.backend_switch_store.dispatch(BackendSwitchIntent::Close);
+        if self.backend_switch.is_visible() {
+            self.backend_switch.apply(BackendSwitchIntent::Close);
         }
         if self.history_store.state().is_visible() {
             self.history_store.dispatch(HistoryIntent::Close);
@@ -454,7 +455,7 @@ impl GpuApp {
     /// dispatches the Open intent with the active backend pre-selected
     /// so pressing Enter is a no-op if the user is just inspecting.
     fn toggle_backend_switch_popup(&mut self) {
-        if self.backend_switch_store.state().is_visible() {
+        if self.backend_switch.is_visible() {
             self.close_all_popups();
             return;
         }
@@ -470,13 +471,12 @@ impl GpuApp {
             .unwrap_or(0);
         // Close any other open popup first.
         self.close_all_popups();
-        self.backend_switch_store
-            .dispatch(BackendSwitchIntent::Open {
-                backend_selection,
-                subagent_selection: 0,
-                teammate_selection: 0,
-                backends_count: cfg.backends.len(),
-            });
+        self.backend_switch.apply(BackendSwitchIntent::Open {
+            backend_selection,
+            subagent_selection: 0,
+            teammate_selection: 0,
+            backends_count: cfg.backends.len(),
+        });
         if let Some(w) = self.window.as_ref() {
             w.request_redraw();
         }
@@ -568,7 +568,7 @@ impl GpuApp {
     /// (switch backend / save settings / dismiss history) and closes
     /// the popup.
     fn handle_popup_key(&mut self, event: &winit::event::KeyEvent) {
-        if self.backend_switch_store.state().is_visible() {
+        if self.backend_switch.is_visible() {
             self.handle_backend_switch_key(event);
         } else if self.history_store.state().is_visible() {
             self.handle_history_key(event);
@@ -580,18 +580,15 @@ impl GpuApp {
     fn handle_backend_switch_key(&mut self, event: &winit::event::KeyEvent) {
         match event.physical_key {
             PhysicalKey::Code(KeyCode::ArrowUp) => {
-                self.backend_switch_store
-                    .dispatch(BackendSwitchIntent::MoveUp);
+                self.backend_switch.apply(BackendSwitchIntent::MoveUp);
                 self.request_redraw();
             }
             PhysicalKey::Code(KeyCode::ArrowDown) => {
-                self.backend_switch_store
-                    .dispatch(BackendSwitchIntent::MoveDown);
+                self.backend_switch.apply(BackendSwitchIntent::MoveDown);
                 self.request_redraw();
             }
             PhysicalKey::Code(KeyCode::Tab) => {
-                self.backend_switch_store
-                    .dispatch(BackendSwitchIntent::NextSection);
+                self.backend_switch.apply(BackendSwitchIntent::NextSection);
                 self.request_redraw();
             }
             PhysicalKey::Code(KeyCode::Enter) => {
@@ -599,8 +596,7 @@ impl GpuApp {
                 self.close_all_popups();
             }
             PhysicalKey::Code(KeyCode::Delete | KeyCode::Backspace) => {
-                self.backend_switch_store
-                    .dispatch(BackendSwitchIntent::Clear);
+                self.backend_switch.apply(BackendSwitchIntent::Clear);
                 self.request_redraw();
             }
             _ => {}
@@ -614,7 +610,7 @@ impl GpuApp {
     /// non-fatal — the popup still closes.
     fn apply_backend_switch_selection(&mut self) {
         let (section, backend_sel, subagent_sel, teammate_sel) =
-            match *self.backend_switch_store.state() {
+            match self.backend_switch {
                 BackendSwitchState::Visible {
                     section,
                     backend_selection,
@@ -1125,7 +1121,7 @@ impl GpuApp {
         let mut overlay_shadows: Vec<term_gpu::ShadowInstance> = Vec::new();
         let mut overlay_rects: Vec<RectInstance> = Vec::new();
         let mut overlay_glyphs: Vec<GlyphInstance> = Vec::new();
-        let backend_state_visible = self.backend_switch_store.state().is_visible();
+        let backend_state_visible = self.backend_switch.is_visible();
         let history_state_visible = self.history_store.state().is_visible();
         let settings_state_visible = self.settings_store.state().is_visible();
         if backend_state_visible {
@@ -1140,7 +1136,7 @@ impl GpuApp {
             let current_subagent = self.subagent_backend.get();
             let current_teammate = self.teammate_backend.get();
             draw_backend_switch_popup(
-                self.backend_switch_store.state(),
+                &self.backend_switch,
                 &items_and_ids,
                 &active_backend,
                 current_subagent.as_deref(),
