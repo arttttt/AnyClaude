@@ -47,6 +47,7 @@ use crate::ui::backend_switch::{
 };
 use crate::ui::gpu::pty::ChildPty;
 use crate::ui::history::{HistoryEntry, HistoryIntent};
+use crate::ui::input::{self, AppShortcut};
 use crate::ui::settings::{SettingsDialogState, SettingsIntent};
 use crate::ui::term_geometry::{self, LastClick};
 
@@ -531,28 +532,15 @@ impl GpuApp {
     }
 
     fn handle_backend_switch_key(&mut self, event: &winit::event::KeyEvent) {
-        match event.physical_key {
-            PhysicalKey::Code(KeyCode::ArrowUp) => {
-                self.state.backend_switch.apply(BackendSwitchIntent::MoveUp);
-                self.request_redraw();
-            }
-            PhysicalKey::Code(KeyCode::ArrowDown) => {
-                self.state.backend_switch.apply(BackendSwitchIntent::MoveDown);
-                self.request_redraw();
-            }
-            PhysicalKey::Code(KeyCode::Tab) => {
-                self.state.backend_switch.apply(BackendSwitchIntent::NextSection);
-                self.request_redraw();
-            }
-            PhysicalKey::Code(KeyCode::Enter) => {
-                self.apply_backend_switch_selection();
-                self.close_all_popups();
-            }
-            PhysicalKey::Code(KeyCode::Delete | KeyCode::Backspace) => {
-                self.state.backend_switch.apply(BackendSwitchIntent::Clear);
-                self.request_redraw();
-            }
-            _ => {}
+        let PhysicalKey::Code(code) = event.physical_key else {
+            return;
+        };
+        if let Some(intent) = input::backend_switch_nav(code) {
+            self.state.backend_switch.apply(intent);
+            self.request_redraw();
+        } else if code == KeyCode::Enter {
+            self.apply_backend_switch_selection();
+            self.close_all_popups();
         }
     }
 
@@ -600,41 +588,27 @@ impl GpuApp {
     }
 
     fn handle_history_key(&mut self, event: &winit::event::KeyEvent) {
-        match event.physical_key {
-            PhysicalKey::Code(KeyCode::ArrowUp) => {
-                self.state.history.apply(HistoryIntent::ScrollUp);
-                self.request_redraw();
-            }
-            PhysicalKey::Code(KeyCode::ArrowDown) => {
-                self.state.history.apply(HistoryIntent::ScrollDown);
-                self.request_redraw();
-            }
-            PhysicalKey::Code(KeyCode::Enter) => {
-                self.close_all_popups();
-            }
-            _ => {}
+        let PhysicalKey::Code(code) = event.physical_key else {
+            return;
+        };
+        if let Some(intent) = input::history_nav(code) {
+            self.state.history.apply(intent);
+            self.request_redraw();
+        } else if code == KeyCode::Enter {
+            self.close_all_popups();
         }
     }
 
     fn handle_settings_key(&mut self, event: &winit::event::KeyEvent) {
-        match event.physical_key {
-            PhysicalKey::Code(KeyCode::ArrowUp) => {
-                self.state.settings.apply(SettingsIntent::MoveUp);
-                self.request_redraw();
-            }
-            PhysicalKey::Code(KeyCode::ArrowDown) => {
-                self.state.settings.apply(SettingsIntent::MoveDown);
-                self.request_redraw();
-            }
-            PhysicalKey::Code(KeyCode::Space) => {
-                self.state.settings.apply(SettingsIntent::Toggle);
-                self.request_redraw();
-            }
-            PhysicalKey::Code(KeyCode::Enter) => {
-                self.apply_settings_and_save();
-                self.close_all_popups();
-            }
-            _ => {}
+        let PhysicalKey::Code(code) = event.physical_key else {
+            return;
+        };
+        if let Some(intent) = input::settings_nav(code) {
+            self.state.settings.apply(intent);
+            self.request_redraw();
+        } else if code == KeyCode::Enter {
+            self.apply_settings_and_save();
+            self.close_all_popups();
         }
     }
 
@@ -1279,24 +1253,27 @@ impl ApplicationHandler<UserEvent> for GpuApp {
                 // `Key::Character("с"|"ç"|"ψ")` and miss the match.
                 if self.state.modifiers.super_key() {
                     if let PhysicalKey::Code(code) = event.physical_key {
-                        match code {
-                            KeyCode::KeyC => self.copy_selection(),
-                            KeyCode::KeyV => self.paste_into_pty(),
-                            KeyCode::KeyB => self.toggle_backend_switch_popup(),
-                            KeyCode::KeyH => self.toggle_history_popup(),
-                            KeyCode::KeyE => self.toggle_settings_popup(),
-                            KeyCode::KeyR => self.restart_pty(),
-                            KeyCode::KeyD if self.state.modifiers.shift_key() => {
-                                let snap = self.emulator.as_ref().map(|e| e.snapshot());
-                                super::diagnostic::dump_snapshot(
-                                    self.state.grid_size,
-                                    self.state.scroll.offset_y,
-                                    self.state.scroll.max_offset(),
-                                    snap.as_ref(),
-                                );
+                        if let Some(shortcut) = input::app_shortcut(code, self.state.modifiers) {
+                            match shortcut {
+                                AppShortcut::CopySelection => self.copy_selection(),
+                                AppShortcut::Paste => self.paste_into_pty(),
+                                AppShortcut::ToggleBackendPopup => {
+                                    self.toggle_backend_switch_popup()
+                                }
+                                AppShortcut::ToggleHistoryPopup => self.toggle_history_popup(),
+                                AppShortcut::ToggleSettingsPopup => self.toggle_settings_popup(),
+                                AppShortcut::RestartPty => self.restart_pty(),
+                                AppShortcut::DumpDiagnostic => {
+                                    let snap = self.emulator.as_ref().map(|e| e.snapshot());
+                                    super::diagnostic::dump_snapshot(
+                                        self.state.grid_size,
+                                        self.state.scroll.offset_y,
+                                        self.state.scroll.max_offset(),
+                                        snap.as_ref(),
+                                    );
+                                }
+                                AppShortcut::Quit => event_loop.exit(),
                             }
-                            KeyCode::KeyQ => event_loop.exit(),
-                            _ => {}
                         }
                     }
                     return;
