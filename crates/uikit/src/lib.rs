@@ -15,5 +15,7 @@
 //! as their consumers appear, never before.
 
 pub mod chrome;
+pub mod popup;
 
 pub use chrome::{footer_bar, header_bar, Segment};
+pub use popup::{fixed_row_window, popup_list};
