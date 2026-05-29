@@ -416,6 +416,23 @@ impl GpuApp {
         }
     }
 
+    /// Dismiss the open popup via Esc / click-outside. Settings gets the
+    /// two-stage dirty-confirm: a first dismiss on unsaved changes arms a
+    /// "discard?" prompt (the dialog stays open), a second discards — so it
+    /// routes through `RequestClose`. The other popups carry no unsaved state
+    /// and close immediately. (Enter-to-save still calls `close_all_popups`
+    /// directly — saving needs no confirmation.)
+    fn request_close_popups(&mut self) {
+        if self.state.settings.is_visible() {
+            self.state.settings.apply(SettingsIntent::RequestClose);
+            if let Some(w) = self.window.as_ref() {
+                w.request_redraw();
+            }
+        } else {
+            self.close_all_popups();
+        }
+    }
+
     /// Cmd+B handler — open or close the backend switch popup. Open
     /// dispatches the Open intent with the active backend pre-selected
     /// so pressing Enter is a no-op if the user is just inspecting.
@@ -805,7 +822,7 @@ impl GpuApp {
         // swallowed — the click never starts a selection in the
         // terminal underneath.
         if self.any_popup_visible() {
-            self.close_all_popups();
+            self.request_close_popups();
             return;
         }
         // Header click — copy session id to clipboard and flash the
@@ -1240,7 +1257,7 @@ impl ApplicationHandler<UserEvent> for GpuApp {
                 // codes, app shortcuts) is suppressed.
                 if self.any_popup_visible() {
                     if let PhysicalKey::Code(KeyCode::Escape) = event.physical_key {
-                        self.close_all_popups();
+                        self.request_close_popups();
                     } else {
                         self.handle_popup_key(&event);
                     }

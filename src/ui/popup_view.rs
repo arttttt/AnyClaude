@@ -44,6 +44,8 @@ const POPUP_TEXT_COLOR: [f32; 4] = [0.55, 0.55, 0.55, 1.0];
 const POPUP_SELECTED_COLOR: [f32; 4] = [0.95, 0.95, 0.95, 1.0];
 /// Green status suffix (`[Active]` / `[Selected]`) — mirrors `chrome::CHROME_FLASH_COLOR`.
 const POPUP_STATUS_COLOR: [f32; 4] = [0.4, 0.85, 0.4, 1.0];
+/// Amber warning for the settings discard-confirm prompt row.
+const POPUP_CONFIRM_COLOR: [f32; 4] = [0.95, 0.7, 0.3, 1.0];
 
 /// `cosmic_text::Weight::BOLD.0` — titles + section headers.
 const WEIGHT_BOLD: u16 = 700;
@@ -59,8 +61,8 @@ pub fn popup_view(state: &AppState) -> Option<Block> {
     {
         return Some(history_view(entries, *scroll_offset));
     }
-    if let SettingsDialogState::Visible { fields, focused, .. } = &state.settings {
-        return Some(settings_view(fields, *focused));
+    if let SettingsDialogState::Visible { fields, focused, confirm_discard, .. } = &state.settings {
+        return Some(settings_view(fields, *focused, *confirm_discard));
     }
     None
 }
@@ -149,9 +151,11 @@ fn history_view(entries: &[HistoryEntry], scroll_offset: usize) -> Block {
 
 /// Settings popup: the title doubles as the hint line, then one toggle row per
 /// field formatted `"[x]  {label}"` / `"[ ]  {label}"` (the checkbox is a glyph
-/// prefix, exactly as the legacy popup), with the focused row highlighted.
-/// Settings lists are short, so there is no virtualization (YAGNI).
-fn settings_view(fields: &[SettingsFieldSnapshot], focused: usize) -> Block {
+/// prefix, exactly as the legacy popup), with the focused row highlighted. When
+/// `confirm_discard` is armed (a first Esc / click-outside on unsaved changes),
+/// an amber prompt row asks the user to confirm before discarding. Settings
+/// lists are short, so there is no virtualization (YAGNI).
+fn settings_view(fields: &[SettingsFieldSnapshot], focused: usize, confirm_discard: bool) -> Block {
     let rows: Vec<Segment> = fields
         .iter()
         .enumerate()
@@ -161,7 +165,7 @@ fn settings_view(fields: &[SettingsFieldSnapshot], focused: usize) -> Block {
             Segment::new(format!("{mark}  {}", f.label), color)
         })
         .collect();
-    let body = Stack::vstack()
+    let mut body = Stack::vstack()
         .cross(CrossAxis::Stretch)
         .child_sized(
             title_row("Settings  ·  Space toggle · Enter save · Esc cancel", POPUP_TEXT_COLOR),
@@ -169,6 +173,16 @@ fn settings_view(fields: &[SettingsFieldSnapshot], focused: usize) -> Block {
         )
         .spacer(Sizing::Fixed(POPUP_LINE_HEIGHT * 0.5))
         .child(popup_list(&rows, focused, POPUP_LINE_HEIGHT, POPUP_HIGHLIGHT_COLOR, POPUP_FONT_SIZE));
+    if confirm_discard {
+        body = body.spacer(Sizing::Fixed(POPUP_LINE_HEIGHT * 0.5)).child_sized(
+            Text::new(
+                "Discard unsaved changes? Esc again to discard.",
+                POPUP_FONT_SIZE,
+                POPUP_CONFIRM_COLOR,
+            ),
+            Sizing::Fixed(POPUP_LINE_HEIGHT),
+        );
+    }
     popup_box(body)
 }
 

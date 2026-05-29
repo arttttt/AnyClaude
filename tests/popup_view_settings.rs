@@ -116,6 +116,40 @@ fn toggling_a_field_flips_its_checkbox_glyph() {
 }
 
 #[test]
+fn confirm_discard_appends_an_amber_prompt_row() {
+    let mut state = AppState::new("sid".to_string(), Instant::now(), (80, 24));
+    state.settings = SettingsDialogState::Visible {
+        fields: vec![field("Agent Teams", true)],
+        focused: 0,
+        dirty: true,
+        confirm_discard: true,
+    };
+    let (tree, root) = laid_out(&state);
+    let body = tree.node(root).children[0];
+    let kids = tree.node(body).children.clone();
+    // [title, gap, list, gap, prompt] when confirm_discard is armed.
+    let prompt = *kids.last().unwrap();
+    match &tree.node(prompt).kind {
+        NodeKind::Text(s) => {
+            assert!(s.text.contains("Discard unsaved changes"), "prompt row text: {}", s.text);
+        }
+        other => panic!("expected the discard prompt Text, got {other:?}"),
+    }
+}
+
+#[test]
+fn no_prompt_row_when_not_confirming() {
+    let state = app_with_settings(vec![field("A", true)], 0); // confirm_discard: false
+    let (tree, root) = laid_out(&state);
+    let body = tree.node(root).children[0];
+    assert_eq!(
+        tree.node(body).children.len(),
+        3,
+        "title, gap, list only — no prompt row when confirm_discard is false"
+    );
+}
+
+#[test]
 fn box_is_min_width_floored_and_has_shadow() {
     let state = app_with_settings(vec![field("A", true)], 0);
     let (tree, root) = laid_out(&state);
