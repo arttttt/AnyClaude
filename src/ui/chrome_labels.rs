@@ -12,11 +12,17 @@
 //! exactly; the two converge when the legacy chrome is deleted at cutover
 //! (Phase E/F), at which point these constants fold into a single palette.
 
-use uikit::Segment;
+use term_ui::{Block, BlockStyle, CrossAxis, Insets, Sizing, Stack};
+use uikit::{footer_bar, header_bar, Segment};
 
 /// Dim grey for chrome labels and the inter-segment separator.
 // TODO(cutover): unify with `ui::gpu::chrome::CHROME_TEXT_COLOR` (Phase E/F).
 pub const CHROME_TEXT_COLOR: [f32; 4] = [0.55, 0.55, 0.55, 1.0];
+
+/// Opaque background fill for the chrome bars — matches the window clear
+/// colour, and (since the bars render in the overlay layer, on top of the
+/// terminal) covers any terminal glyph that scrolls into the bar band.
+pub const CHROME_BG: [f32; 4] = [0.04, 0.04, 0.06, 1.0];
 
 /// Green flash for the "Session ID copied!" confirmation.
 // TODO(cutover): unify with `ui::gpu::chrome::CHROME_FLASH_COLOR` (Phase E/F).
@@ -72,4 +78,52 @@ pub fn footer_segments(version: &str) -> (Vec<Segment>, Vec<Segment>) {
     let left = vec![Segment::new(FOOTER_HINTS, CHROME_TEXT_COLOR)];
     let right = vec![Segment::new(format!("v{version} "), CHROME_TEXT_COLOR)];
     (left, right)
+}
+
+/// Compose the full-window chrome as a term_ui view: an opaque header bar
+/// pinned to the top (`header_h`), an opaque footer bar pinned to the bottom
+/// (`footer_h`), and a transparent fill between them (the terminal panel shows
+/// through). Each bar is wrapped in a `Block` so its opaque [`CHROME_BG`]
+/// background covers any terminal glyph that scrolls into the bar band; the
+/// bar's text + 1px separator (full-width) draw on top. `h_pad` insets the bar
+/// text from the edges.
+pub fn chrome_view(
+    header: &[Segment],
+    footer_left: &[Segment],
+    footer_right: &[Segment],
+    font_size: f32,
+    header_h: f32,
+    footer_h: f32,
+    h_pad: f32,
+) -> Stack {
+    let bar_bg = BlockStyle {
+        background: CHROME_BG,
+        border_color: [0.0; 4],
+        border_width: 0.0,
+        padding: Insets::default(),
+    };
+    Stack::vstack()
+        .cross(CrossAxis::Stretch)
+        .child_sized(
+            Block::new(
+                bar_bg.clone(),
+                header_bar(
+                    header,
+                    HEADER_SEPARATOR,
+                    CHROME_TEXT_COLOR,
+                    font_size,
+                    h_pad,
+                    CHROME_SEPARATOR_COLOR,
+                ),
+            ),
+            Sizing::Fixed(header_h),
+        )
+        .spacer(Sizing::Fill)
+        .child_sized(
+            Block::new(
+                bar_bg,
+                footer_bar(footer_left, footer_right, font_size, CHROME_SEPARATOR_COLOR),
+            ),
+            Sizing::Fixed(footer_h),
+        )
 }
