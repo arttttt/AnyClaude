@@ -18,7 +18,7 @@ use term_clipboard::{
 };
 use term_core::{create_emulator, AnsiPalette, MouseMode, TerminalEmulator};
 use term_gpu::{
-    build_cursor_rect, encode_key, encode_paste, measure_cell_metrics, populate_panel,
+    build_cursor_rect, encode_paste, measure_cell_metrics, populate_panel,
     push_selection_rects, selection_to_text, shell_quote_path, CellMetrics, CellPoint, FontFamily,
     FontSystem, GlyphInstance, GpuRenderer, PanelRect, RectInstance, RenderLayer, ScrollState,
     SwashCache, TextShapeCache, GESTURE_END_TIMEOUT, MOMENTUM_FRAME_INTERVAL, NUM_PIXELS_PER_LINE,
@@ -35,7 +35,6 @@ use winit::event::{
     ElementState, MouseButton, MouseScrollDelta, WindowEvent,
 };
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
-use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowAttributes, WindowId};
 
 use crate::backend::{AgentBackendState, BackendState};
@@ -52,7 +51,6 @@ use crate::ui::backend_switch::{
 };
 use crate::ui::gpu::pty::ChildPty;
 use crate::ui::history::{HistoryEntry, HistoryIntent};
-use crate::ui::input::{self, AppShortcut};
 use crate::ui::settings::{SettingsDialogState, SettingsIntent};
 use crate::ui::term_geometry;
 
@@ -367,16 +365,19 @@ impl GpuApp {
     /// each `Effect`. This is the single coordinator-side entry for the event
     /// loop — every winit / user event funnels through here. (Mouse press builds
     /// its own ctx carrying the emulator snapshot; see `on_mouse_press`.)
-    fn dispatch(&mut self, msg: Msg) {
+    fn dispatch(&mut self, msg: Msg) -> bool {
         let ctx = ApplyCtx { now: Instant::now(), snapshot: None };
         let effects = self.state.apply(msg, &ctx);
-        self.perform_effects(effects);
+        self.perform_effects(effects)
     }
 
     /// Perform the side effects `apply` returned. The one place a state
     /// transition reaches a resource — timers, redraw, PTY / clipboard /
-    /// renderer; the reducer stayed pure on `AppState` (bucket 3-S).
-    fn perform_effects(&mut self, effects: Vec<Effect>) {
+    /// renderer / popups; the reducer stayed pure on `AppState` (bucket 3-S).
+    /// Returns `true` when an effect asked the app to exit (`Quit`), which the
+    /// coordinator turns into `event_loop.exit()` (it owns the event loop).
+    fn perform_effects(&mut self, effects: Vec<Effect>) -> bool {
+        let mut exit = false;
         for effect in effects {
             match effect {
                 Effect::CancelMomentum => self.cancel_momentum(),
@@ -403,8 +404,38 @@ impl GpuApp {
                         pty.resize(cols as u16, rows as u16);
                     }
                 }
+                Effect::WriteToPty(bytes) => {
+                    if let Some(pty) = self.pty.as_mut() {
+                        if let Err(e) = pty.write(&bytes) {
+                            eprintln!("anyclaude: PTY write failed: {e}");
+                        }
+                    }
+                }
+                Effect::ToggleBackendPopup => self.toggle_backend_switch_popup(),
+                Effect::ToggleHistoryPopup => self.toggle_history_popup(),
+                Effect::ToggleSettingsPopup => self.toggle_settings_popup(),
+                Effect::ClosePopups => self.state.close_all_popups(),
+                Effect::ApplyBackendSelection => self.apply_backend_switch_selection(),
+                Effect::SaveSettings => self.apply_settings_and_save(),
+                Effect::CopySelection => self.copy_selection(),
+                Effect::Paste => self.paste_into_pty(),
+                Effect::RestartPty => self.restart_pty(),
+                Effect::DumpDiagnostic => self.dump_diagnostic(),
+                Effect::Quit => exit = true,
             }
         }
+        exit
+    }
+
+    /// Dump a diagnostic snapshot (grid + scroll + emulator) to stderr.
+    fn dump_diagnostic(&self) {
+        let snap = self.emulator.as_ref().map(|e| e.snapshot());
+        super::diagnostic::dump_snapshot(
+            self.state.grid_size,
+            self.state.scroll.offset_y,
+            self.state.scroll.max_offset(),
+            snap.as_ref(),
+        );
     }
 
     /// True when any popup is in its `Visible` state. Used to gate
@@ -549,35 +580,6 @@ impl GpuApp {
         }
     }
 
-    /// Route a keyboard event to the currently-open popup. Each store
-    /// owns its own intent vocabulary; this method translates winit
-    /// key events into the right dispatch. Esc is handled at the call
-    /// site (close_all_popups). Enter triggers the popup's action
-    /// (switch backend / save settings / dismiss history) and closes
-    /// the popup.
-    fn handle_popup_key(&mut self, event: &winit::event::KeyEvent) {
-        if self.state.backend_switch.is_visible() {
-            self.handle_backend_switch_key(event);
-        } else if self.state.history.is_visible() {
-            self.handle_history_key(event);
-        } else if self.state.settings.is_visible() {
-            self.handle_settings_key(event);
-        }
-    }
-
-    fn handle_backend_switch_key(&mut self, event: &winit::event::KeyEvent) {
-        let PhysicalKey::Code(code) = event.physical_key else {
-            return;
-        };
-        if let Some(intent) = input::backend_switch_nav(code) {
-            self.state.backend_switch.apply(intent);
-            self.request_redraw();
-        } else if code == KeyCode::Enter {
-            self.apply_backend_switch_selection();
-            self.close_all_popups();
-        }
-    }
-
     /// Apply whichever action the active section maps to: the Active
     /// section calls `switch_backend`; the Subagent / Teammate sections
     /// write into their `AgentBackendState` (index 0 == Disabled
@@ -618,31 +620,6 @@ impl GpuApp {
                 let new_value = override_selection_to_backend_id(&cfg.backends, teammate_sel);
                 self.teammate_backend.set(new_value);
             }
-        }
-    }
-
-    fn handle_history_key(&mut self, event: &winit::event::KeyEvent) {
-        let PhysicalKey::Code(code) = event.physical_key else {
-            return;
-        };
-        if let Some(intent) = input::history_nav(code) {
-            self.state.history.apply(intent);
-            self.request_redraw();
-        } else if code == KeyCode::Enter {
-            self.close_all_popups();
-        }
-    }
-
-    fn handle_settings_key(&mut self, event: &winit::event::KeyEvent) {
-        let PhysicalKey::Code(code) = event.physical_key else {
-            return;
-        };
-        if let Some(intent) = input::settings_nav(code) {
-            self.state.settings.apply(intent);
-            self.request_redraw();
-        } else if code == KeyCode::Enter {
-            self.apply_settings_and_save();
-            self.close_all_popups();
         }
     }
 
@@ -1279,58 +1256,15 @@ impl ApplicationHandler<UserEvent> for GpuApp {
             WindowEvent::KeyboardInput { event, .. }
                 if event.state == ElementState::Pressed =>
             {
-                // Popups own keyboard input while open: navigation,
-                // selection, dismiss. Everything else (shell control
-                // codes, app shortcuts) is suppressed.
-                if self.any_popup_visible() {
-                    if let PhysicalKey::Code(KeyCode::Escape) = event.physical_key {
-                        self.request_close_popups();
-                    } else {
-                        self.handle_popup_key(&event);
-                    }
-                    return;
-                }
-                // Cmd/Super combos are app-level shortcuts (clipboard,
-                // quit, popups). Match on physical_key, not logical_key,
-                // so they work on every keyboard layout: Cmd+C on a
-                // Russian / French / Greek layout would otherwise see
-                // `Key::Character("с"|"ç"|"ψ")` and miss the match.
-                if self.state.modifiers.super_key() {
-                    if let PhysicalKey::Code(code) = event.physical_key {
-                        if let Some(shortcut) = input::app_shortcut(code, self.state.modifiers) {
-                            match shortcut {
-                                AppShortcut::CopySelection => self.copy_selection(),
-                                AppShortcut::Paste => self.paste_into_pty(),
-                                AppShortcut::ToggleBackendPopup => {
-                                    self.toggle_backend_switch_popup()
-                                }
-                                AppShortcut::ToggleHistoryPopup => self.toggle_history_popup(),
-                                AppShortcut::ToggleSettingsPopup => self.toggle_settings_popup(),
-                                AppShortcut::RestartPty => self.restart_pty(),
-                                AppShortcut::DumpDiagnostic => {
-                                    let snap = self.emulator.as_ref().map(|e| e.snapshot());
-                                    super::diagnostic::dump_snapshot(
-                                        self.state.grid_size,
-                                        self.state.scroll.offset_y,
-                                        self.state.scroll.max_offset(),
-                                        snap.as_ref(),
-                                    );
-                                }
-                                AppShortcut::Quit => event_loop.exit(),
-                            }
-                        }
-                    }
-                    return;
-                }
-                // Ctrl combos belong to the shell (Ctrl+C / Ctrl+D /
-                // ...) and pass straight through encode_key.
-                let Some(bytes) = encode_key(&event.logical_key, self.state.modifiers) else {
-                    return;
-                };
-                if let Some(pty) = self.pty.as_mut() {
-                    if let Err(e) = pty.write(&bytes) {
-                        eprintln!("anyclaude: PTY write failed: {e}");
-                    }
+                // All key routing — popup nav while a popup is open, Cmd/Super
+                // app shortcuts, otherwise a terminal key encoded to the PTY —
+                // lives in AppState::apply. Quit comes back as the exit signal,
+                // since the event loop is the coordinator's to drive.
+                if self.dispatch(Msg::Key {
+                    logical: event.logical_key,
+                    physical: event.physical_key,
+                }) {
+                    event_loop.exit();
                 }
             }
             WindowEvent::RedrawRequested => {

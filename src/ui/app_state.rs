@@ -17,14 +17,15 @@ use std::time::Instant;
 use glam::Vec2;
 use term_core::RenderSnapshot;
 use term_gpu::{
-    decay_velocity, expand_line, expand_word, CellPoint, ScrollState, ScrollVelocity, Selection,
-    MOMENTUM_MIN_VELOCITY, MOMENTUM_THRESHOLD,
+    decay_velocity, encode_key, expand_line, expand_word, CellPoint, ScrollState, ScrollVelocity,
+    Selection, MOMENTUM_MIN_VELOCITY, MOMENTUM_THRESHOLD,
 };
 use winit::event::TouchPhase;
-use winit::keyboard::ModifiersState;
+use winit::keyboard::{Key, KeyCode, ModifiersState, PhysicalKey};
 
 use crate::ui::backend_switch::{BackendSwitchIntent, BackendSwitchState};
 use crate::ui::history::{HistoryDialogState, HistoryIntent};
+use crate::ui::input::{self, AppShortcut};
 use crate::ui::settings::{SettingsDialogState, SettingsIntent};
 use crate::ui::term_geometry::LastClick;
 
@@ -80,6 +81,30 @@ pub enum Effect {
     /// Resize the emulator + PTY to a new `cols × rows` grid after a window /
     /// scale change (the `grid_size` transition itself happens in `apply`).
     ResizeEmulatorAndPty { cols: usize, rows: usize },
+    /// Write encoded key/paste bytes to the PTY (a terminal-focused keypress).
+    WriteToPty(Vec<u8>),
+    /// Open-or-close a popup (reads resources — backend list / settings registry
+    /// / switch log — so the coordinator performs it via its toggle methods).
+    ToggleBackendPopup,
+    ToggleHistoryPopup,
+    ToggleSettingsPopup,
+    /// Close every open popup (state-only; the redraw is a separate `Redraw`).
+    ClosePopups,
+    /// Apply the backend-switch popup's current selection (writes backend state).
+    ApplyBackendSelection,
+    /// Persist the settings popup's edits to disk.
+    SaveSettings,
+    /// Copy the current selection to the clipboard.
+    CopySelection,
+    /// Read the clipboard and paste into the PTY.
+    Paste,
+    /// Tear down + respawn the Claude session (Cmd+R).
+    RestartPty,
+    /// Dump a diagnostic snapshot to stderr (Cmd+Shift+D).
+    DumpDiagnostic,
+    /// Exit the app (Cmd+Q / window close). Performed by the coordinator, which
+    /// owns the `ActiveEventLoop` — surfaced as `perform_effects`' return.
+    Quit,
 }
 
 /// An input event translated to a pure message. The coordinator does any
@@ -101,6 +126,10 @@ pub enum Msg {
     /// grid to `cols × rows` (computing it needs cell metrics — a resource — so
     /// the coordinator does that and hands the result in).
     GridResized { cols: usize, rows: usize },
+    /// A key was pressed. `apply` runs the full routing — popup nav / app
+    /// shortcut / terminal key — reading `modifiers` + popup visibility from
+    /// `AppState`, and emits effects for everything that touches a resource.
+    Key { logical: Key, physical: PhysicalKey },
 }
 
 /// Read-only context the coordinator supplies to [`AppState::apply`]: the frame
@@ -135,7 +164,81 @@ impl AppState {
                 fx.push(Effect::Redraw);
                 fx
             }
+            Msg::Key { logical, physical } => self.on_key(logical, physical),
         }
+    }
+
+    /// Route a key press. Popups own input while open; Cmd/Super combos are app
+    /// shortcuts (each maps to one effect); everything else is a terminal key
+    /// encoded to the PTY. Mirrors the legacy `window_event` keyboard dispatch.
+    fn on_key(&mut self, logical: Key, physical: PhysicalKey) -> Vec<Effect> {
+        if self.any_popup_visible() {
+            return self.on_popup_key(physical);
+        }
+        if self.modifiers.super_key() {
+            if let PhysicalKey::Code(code) = physical {
+                if let Some(shortcut) = input::app_shortcut(code, self.modifiers) {
+                    return vec![match shortcut {
+                        AppShortcut::CopySelection => Effect::CopySelection,
+                        AppShortcut::Paste => Effect::Paste,
+                        AppShortcut::ToggleBackendPopup => Effect::ToggleBackendPopup,
+                        AppShortcut::ToggleHistoryPopup => Effect::ToggleHistoryPopup,
+                        AppShortcut::ToggleSettingsPopup => Effect::ToggleSettingsPopup,
+                        AppShortcut::RestartPty => Effect::RestartPty,
+                        AppShortcut::DumpDiagnostic => Effect::DumpDiagnostic,
+                        AppShortcut::Quit => Effect::Quit,
+                    }];
+                }
+            }
+            return Vec::new();
+        }
+        match encode_key(&logical, self.modifiers) {
+            Some(bytes) => vec![Effect::WriteToPty(bytes)],
+            None => Vec::new(),
+        }
+    }
+
+    /// Route a key to the open popup: Esc dismisses (settings gets the two-stage
+    /// dirty-confirm), nav keys move the selection, Enter triggers the popup's
+    /// action (apply backend / save settings / dismiss) and closes it.
+    fn on_popup_key(&mut self, physical: PhysicalKey) -> Vec<Effect> {
+        let PhysicalKey::Code(code) = physical else {
+            return Vec::new();
+        };
+        if code == KeyCode::Escape {
+            if self.settings.is_visible() {
+                self.settings.apply(SettingsIntent::RequestClose);
+            } else {
+                self.close_all_popups();
+            }
+            return vec![Effect::Redraw];
+        }
+        if self.backend_switch.is_visible() {
+            if let Some(intent) = input::backend_switch_nav(code) {
+                self.backend_switch.apply(intent);
+                return vec![Effect::Redraw];
+            }
+            if code == KeyCode::Enter {
+                return vec![Effect::ApplyBackendSelection, Effect::ClosePopups, Effect::Redraw];
+            }
+        } else if self.history.is_visible() {
+            if let Some(intent) = input::history_nav(code) {
+                self.history.apply(intent);
+                return vec![Effect::Redraw];
+            }
+            if code == KeyCode::Enter {
+                return vec![Effect::ClosePopups, Effect::Redraw];
+            }
+        } else if self.settings.is_visible() {
+            if let Some(intent) = input::settings_nav(code) {
+                self.settings.apply(intent);
+                return vec![Effect::Redraw];
+            }
+            if code == KeyCode::Enter {
+                return vec![Effect::SaveSettings, Effect::ClosePopups, Effect::Redraw];
+            }
+        }
+        Vec::new()
     }
 
     /// Construct the initial state. `session_id`/`start_time` are passed in

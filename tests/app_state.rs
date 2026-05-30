@@ -5,7 +5,7 @@
 
 use std::time::{Duration, Instant};
 
-use anyclaude::ui::app_state::{AppState, Effect};
+use anyclaude::ui::app_state::{ApplyCtx, AppState, Effect, Msg};
 use anyclaude::ui::backend_switch::BackendSwitchIntent;
 use anyclaude::ui::history::HistoryIntent;
 use anyclaude::ui::settings::SettingsIntent;
@@ -13,6 +13,7 @@ use glam::Vec2;
 use term_core::{create_emulator, RenderSnapshot};
 use term_gpu::{CellPoint, ScrollVelocity};
 use winit::event::TouchPhase;
+use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey};
 
 fn state() -> AppState {
     AppState::new("session-abc".to_string(), Instant::now(), (80, 24))
@@ -246,4 +247,89 @@ fn next_click_records_and_cycles() {
     assert_eq!(s.next_click(p, now + Duration::from_millis(200), 400), 3);
     // Different cell resets.
     assert_eq!(s.next_click(CellPoint { row: 2, col: 2 }, now + Duration::from_millis(250), 400), 1);
+}
+
+// ── keyboard routing through apply (E.8.3) ───────────────────────────────
+
+fn ctx() -> ApplyCtx<'static> {
+    ApplyCtx { now: Instant::now(), snapshot: None }
+}
+
+/// A key Msg with a dummy logical key (the popup / shortcut paths read only the
+/// physical code).
+fn key(physical: KeyCode) -> Msg {
+    Msg::Key {
+        logical: Key::Named(NamedKey::Space),
+        physical: PhysicalKey::Code(physical),
+    }
+}
+
+#[test]
+fn terminal_key_emits_write_to_pty() {
+    // No popup, no Super: a plain key encodes to PTY bytes.
+    let mut s = state();
+    let fx = s.apply(
+        Msg::Key {
+            logical: Key::Named(NamedKey::Enter),
+            physical: PhysicalKey::Code(KeyCode::Enter),
+        },
+        &ctx(),
+    );
+    assert!(matches!(fx.as_slice(), [Effect::WriteToPty(_)]), "terminal key writes to PTY: {fx:?}");
+}
+
+#[test]
+fn super_shortcut_maps_to_its_effect() {
+    let mut s = state();
+    s.modifiers = ModifiersState::SUPER;
+    assert_eq!(s.apply(key(KeyCode::KeyQ), &ctx()), vec![Effect::Quit]);
+    assert_eq!(s.apply(key(KeyCode::KeyB), &ctx()), vec![Effect::ToggleBackendPopup]);
+    // A bare Super press with no mapped shortcut produces nothing.
+    assert!(s.apply(key(KeyCode::F13), &ctx()).is_empty());
+}
+
+#[test]
+fn popup_escape_closes_and_redraws() {
+    let mut s = state();
+    s.backend_switch.apply(BackendSwitchIntent::Open {
+        backend_selection: 0,
+        subagent_selection: 0,
+        teammate_selection: 0,
+        backends_count: 2,
+    });
+    assert_eq!(s.apply(key(KeyCode::Escape), &ctx()), vec![Effect::Redraw]);
+    assert!(!s.any_popup_visible(), "Esc closes the backend popup");
+}
+
+#[test]
+fn popup_enter_applies_then_closes_via_effects() {
+    let mut s = state();
+    s.backend_switch.apply(BackendSwitchIntent::Open {
+        backend_selection: 0,
+        subagent_selection: 0,
+        teammate_selection: 0,
+        backends_count: 2,
+    });
+    let fx = s.apply(key(KeyCode::Enter), &ctx());
+    assert_eq!(fx, vec![Effect::ApplyBackendSelection, Effect::ClosePopups, Effect::Redraw]);
+    // apply emits ClosePopups but does NOT close the popup itself — perform
+    // runs the effects (ApplyBackendSelection reads the still-visible selection
+    // before ClosePopups hides it).
+    assert!(s.any_popup_visible());
+}
+
+#[test]
+fn popup_nav_redraws_and_keys_pass_to_the_popup() {
+    let mut s = state();
+    s.backend_switch.apply(BackendSwitchIntent::Open {
+        backend_selection: 0,
+        subagent_selection: 0,
+        teammate_selection: 0,
+        backends_count: 3,
+    });
+    // A nav key moves within the popup and redraws (not a terminal key — the
+    // popup owns input while open, so no WriteToPty escapes to the PTY).
+    assert_eq!(s.apply(key(KeyCode::ArrowDown), &ctx()), vec![Effect::Redraw]);
+    // An unmapped key while the popup is open is swallowed (no effect).
+    assert!(s.apply(key(KeyCode::KeyZ), &ctx()).is_empty());
 }
