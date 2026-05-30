@@ -18,7 +18,8 @@ use term_clipboard::{
 };
 use term_core::{create_emulator, AnsiPalette, MouseMode, TerminalEmulator};
 use term_gpu::{
-    build_cursor_rect, encode_paste, measure_cell_metrics, populate_panel,
+    build_cursor_rect, encode_mouse_sgr, encode_mouse_x10, encode_paste, measure_cell_metrics,
+    populate_panel,
     push_selection_rects, selection_to_text, shell_quote_path, CellMetrics, CellPoint, FontFamily,
     FontSystem, GlyphInstance, GpuRenderer, PanelRect, RectInstance, RenderLayer, ScrollState,
     SwashCache, TextShapeCache, GESTURE_END_TIMEOUT, MOMENTUM_FRAME_INTERVAL, NUM_PIXELS_PER_LINE,
@@ -785,12 +786,11 @@ impl GpuApp {
             .session_click_zone
             .map(|(sx, ex)| x >= sx && x < ex)
             .unwrap_or(false);
-        let owns_mouse = self
-            .emulator
-            .as_ref()
-            .map(|e| e.mouse_mode() != MouseMode::None)
-            .unwrap_or(false);
         let point = self.cell_at(x, y);
+        // When an app has mouse reporting on, the press is encoded for the PTY
+        // (and apply suppresses selection) — §6.
+        let mouse_report =
+            point.and_then(|p| self.mouse_report(p.col as u16 + 1, p.row as u16 + 1, 0, true));
         let snapshot = self.emulator.as_ref().map(|e| e.snapshot());
         let ctx = ApplyCtx {
             now: Instant::now(),
@@ -798,10 +798,35 @@ impl GpuApp {
             multi_click_threshold_ms: MULTI_CLICK_THRESHOLD_MS,
         };
         let fx = self.state.apply(
-            Msg::MousePress { in_header, in_session_zone, owns_mouse, point },
+            Msg::MousePress { in_header, in_session_zone, point, mouse_report },
             &ctx,
         );
         let _ = self.perform_effects(fx);
+    }
+
+    /// Encode a mouse event for the PTY when an app has reporting on (§6), or
+    /// `None` when it's off — or the mode doesn't report this event (X10 / 1000
+    /// reports presses + wheel only, not releases). `button` is the raw
+    /// button-bits (0 left, 64 / 65 wheel up / down); `col` / `row` are 1-based
+    /// cells. Coordinates are the snapshot cell + 1 — viewport-correct on the
+    /// alt screen (where mouse-mode apps live; there is no scrollback there).
+    /// The term_core `MouseMode` collapses report-level + encoding into one enum
+    /// (a known simplification for this Claude-Code-only emulator).
+    fn mouse_report(&self, col: u16, row: u16, button: u8, pressed: bool) -> Option<Vec<u8>> {
+        match self.emulator.as_ref()?.mouse_mode() {
+            MouseMode::None => None,
+            MouseMode::X10 if !pressed => None,
+            MouseMode::Sgr => Some(encode_mouse_sgr(button, col, row, pressed)),
+            _ => Some(encode_mouse_x10(if pressed { button } else { 3 }, col, row)),
+        }
+    }
+
+    /// The mouse report for the cell currently under the cursor (release /
+    /// wheel), or `None` when reporting is off / the cursor isn't over a cell.
+    fn mouse_report_at_cursor(&mut self, button: u8, pressed: bool) -> Option<Vec<u8>> {
+        let (x, y) = self.state.cursor_pos?;
+        let p = self.cell_at(x, y)?;
+        self.mouse_report(p.col as u16 + 1, p.row as u16 + 1, button, pressed)
     }
 
     /// Render one frame: clear, populate cells, push cursor, draw
@@ -1193,8 +1218,14 @@ impl ApplicationHandler<UserEvent> for GpuApp {
                     MouseScrollDelta::PixelDelta(p) => (true, p.y as f32),
                     MouseScrollDelta::LineDelta(_, v) => (false, v * NUM_PIXELS_PER_LINE),
                 };
-                self.refresh_scroll_geometry();
-                self.dispatch(Msg::Wheel { dy, phase, precise });
+                // A mouse-reporting app gets the wheel as button 64 / 65 instead
+                // of scrolling our scrollback (§6).
+                let mouse_report =
+                    self.mouse_report_at_cursor(if dy > 0.0 { 64 } else { 65 }, true);
+                if mouse_report.is_none() {
+                    self.refresh_scroll_geometry();
+                }
+                self.dispatch(Msg::Wheel { dy, phase, precise, mouse_report });
             }
             WindowEvent::CursorMoved { position, .. } => {
                 let PhysicalPosition { x, y } = position;
@@ -1216,7 +1247,8 @@ impl ApplicationHandler<UserEvent> for GpuApp {
             } => match state {
                 ElementState::Pressed => self.on_mouse_press(),
                 ElementState::Released => {
-                    self.dispatch(Msg::MouseRelease);
+                    let mouse_report = self.mouse_report_at_cursor(0, false);
+                    self.dispatch(Msg::MouseRelease { mouse_report });
                 }
             },
             WindowEvent::KeyboardInput { event, .. }

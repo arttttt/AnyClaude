@@ -18,7 +18,7 @@ pub mod selection;
 pub mod text;
 
 pub use atlas::{GlyphAtlas, GlyphFormat, PlacedGlyph, RasterizedGlyph, ShelfPacker};
-pub use input::encode_key;
+pub use input::{encode_key, encode_mouse_sgr, encode_mouse_x10};
 pub use instances::{GlyphInstance, RectInstance, RenderLayer, ShadowInstance, Uniforms};
 pub use label::{measure_label_width, push_label};
 pub use panel_render::{

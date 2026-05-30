@@ -65,3 +65,21 @@ pub fn encode_key(key: &Key, modifiers: ModifiersState) -> Option<Vec<u8>> {
         _ => None,
     }
 }
+
+/// Encode a mouse event in the legacy X10 form `CSI M Cb Cx Cy`, each value a
+/// single byte offset by 32. `button` is the raw button-bits value (0 = left,
+/// 1 = middle, 2 = right, 3 = release; 64 / 65 = wheel up / down). `col` / `row`
+/// are 1-based cells; values above 223 can't fit a single byte and are clamped
+/// (the SGR form has no such limit).
+pub fn encode_mouse_x10(button: u8, col: u16, row: u16) -> Vec<u8> {
+    let enc = |v: u16| 32u8.saturating_add(v.min(223) as u8);
+    vec![0x1b, b'[', b'M', 32u8.saturating_add(button), enc(col), enc(row)]
+}
+
+/// Encode a mouse event in SGR form `CSI < Cb ; Cx ; Cy (M|m)` — `M` for a
+/// press / wheel, `m` for a release. `button` is the raw button-bits value;
+/// `col` / `row` are 1-based with no coordinate limit.
+pub fn encode_mouse_sgr(button: u8, col: u16, row: u16, pressed: bool) -> Vec<u8> {
+    let final_byte = if pressed { 'M' } else { 'm' };
+    format!("\x1b[<{button};{col};{row}{final_byte}").into_bytes()
+}

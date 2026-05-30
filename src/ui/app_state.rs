@@ -118,8 +118,10 @@ pub enum Effect {
 /// land as each event category is migrated (E.8).
 pub enum Msg {
     /// A wheel / trackpad scroll delta. The coordinator refreshes scroll bounds
-    /// (`scroll.total_size_px` / `visible_px`) before dispatching.
-    Wheel { dy: f32, phase: TouchPhase, precise: bool },
+    /// (`scroll.total_size_px` / `visible_px`) before dispatching. When a
+    /// mouse-reporting app is active, `mouse_report` carries the encoded wheel
+    /// button to forward instead of scrolling our scrollback.
+    Wheel { dy: f32, phase: TouchPhase, precise: bool, mouse_report: Option<Vec<u8>> },
     /// A scroll gesture ended (or its silence-timeout fallback fired).
     GestureEnd,
     /// One momentum-decay frame. Coordinator refreshes scroll bounds first.
@@ -143,11 +145,14 @@ pub enum Msg {
     MousePress {
         in_header: bool,
         in_session_zone: bool,
-        owns_mouse: bool,
         point: Option<CellPoint>,
+        /// When a mouse-reporting app is active, the encoded press to forward to
+        /// the PTY (the selection is then suppressed); `None` otherwise.
+        mouse_report: Option<Vec<u8>>,
     },
-    /// A left mouse release (ends a drag-selection).
-    MouseRelease,
+    /// A left mouse release (ends a drag-selection, or forwards a release to a
+    /// mouse-reporting app via `mouse_report`).
+    MouseRelease { mouse_report: Option<Vec<u8>> },
     /// 1 Hz heartbeat — refresh the chrome (uptime / reqs) even when idle.
     Tick,
     /// The window close button was clicked (Cmd+Q routes via the Quit shortcut).
@@ -175,7 +180,13 @@ impl AppState {
     /// on `AppState` + the read-only `ctx`; every side effect comes back as data.
     pub fn apply(&mut self, msg: Msg, ctx: &ApplyCtx) -> Vec<Effect> {
         match msg {
-            Msg::Wheel { dy, phase, precise } => self.on_wheel(dy, phase, precise, ctx.now),
+            Msg::Wheel { dy, phase, precise, mouse_report } => {
+                // A mouse-reporting app owns the wheel — forward it, don't scroll.
+                if let Some(bytes) = mouse_report {
+                    return vec![Effect::WriteToPty(bytes)];
+                }
+                self.on_wheel(dy, phase, precise, ctx.now)
+            }
             Msg::GestureEnd => self.on_gesture_end(ctx.now),
             Msg::MomentumTick => self.on_momentum_tick(ctx.now),
             Msg::ModifiersChanged(m) => {
@@ -203,7 +214,7 @@ impl AppState {
                 }
                 Vec::new()
             }
-            Msg::MousePress { in_header, in_session_zone, owns_mouse, point } => {
+            Msg::MousePress { in_header, in_session_zone, point, mouse_report } => {
                 // A click while a popup is open dismisses it (and is swallowed).
                 if self.any_popup_visible() {
                     return self.close_popups_or_request();
@@ -212,9 +223,9 @@ impl AppState {
                 if in_header {
                     return if in_session_zone { vec![Effect::CopySessionId] } else { Vec::new() };
                 }
-                // Apps in mouse-reporting mode own the drag — don't shadow them.
-                if owns_mouse {
-                    return Vec::new();
+                // A mouse-reporting app owns the click — forward, don't select.
+                if let Some(bytes) = mouse_report {
+                    return vec![Effect::WriteToPty(bytes)];
                 }
                 let (Some(p), Some(snap)) = (point, ctx.snapshot) else {
                     return Vec::new();
@@ -223,7 +234,10 @@ impl AppState {
                 self.begin_selection(p, count, snap);
                 vec![Effect::Redraw]
             }
-            Msg::MouseRelease => {
+            Msg::MouseRelease { mouse_report } => {
+                if let Some(bytes) = mouse_report {
+                    return vec![Effect::WriteToPty(bytes)];
+                }
                 if self.end_selection_drag() {
                     vec![Effect::Redraw]
                 } else {

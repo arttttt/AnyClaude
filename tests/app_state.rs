@@ -336,36 +336,44 @@ fn popup_nav_redraws_and_keys_pass_to_the_popup() {
 
 // ── mouse routing through apply (E.8.4) ──────────────────────────────────
 
-fn press(in_header: bool, in_session_zone: bool, owns_mouse: bool, point: Option<CellPoint>) -> Msg {
-    Msg::MousePress { in_header, in_session_zone, owns_mouse, point }
+fn press(
+    in_header: bool,
+    in_session_zone: bool,
+    mouse_report: Option<Vec<u8>>,
+    point: Option<CellPoint>,
+) -> Msg {
+    Msg::MousePress { in_header, in_session_zone, point, mouse_report }
 }
 
 #[test]
 fn click_on_open_popup_dismisses_it() {
     let mut s = state();
     s.history.apply(HistoryIntent::Load { entries: vec![] });
-    assert_eq!(s.apply(press(false, false, false, None), &ctx()), vec![Effect::Redraw]);
+    assert_eq!(s.apply(press(false, false, None, None), &ctx()), vec![Effect::Redraw]);
     assert!(!s.any_popup_visible(), "a click anywhere dismisses the open popup");
 }
 
 #[test]
 fn header_session_click_copies_the_id() {
     let mut s = state();
-    assert_eq!(s.apply(press(true, true, false, None), &ctx()), vec![Effect::CopySessionId]);
+    assert_eq!(s.apply(press(true, true, None, None), &ctx()), vec![Effect::CopySessionId]);
 }
 
 #[test]
 fn header_click_outside_the_session_zone_does_nothing() {
     let mut s = state();
-    assert!(s.apply(press(true, false, false, None), &ctx()).is_empty());
+    assert!(s.apply(press(true, false, None, None), &ctx()).is_empty());
 }
 
 #[test]
-fn mouse_reporting_app_owns_the_click() {
+fn mouse_reporting_app_gets_the_press_forwarded_not_a_selection() {
     let mut s = state();
-    // owns_mouse short-circuits before any selection begins.
-    let fx = s.apply(press(false, false, true, Some(CellPoint { row: 1, col: 1 })), &ctx());
-    assert!(fx.is_empty());
+    // A mouse-reporting app's encoded press is forwarded; selection is suppressed.
+    let fx = s.apply(
+        press(false, false, Some(b"\x1b[<0;2;2M".to_vec()), Some(CellPoint { row: 1, col: 1 })),
+        &ctx(),
+    );
+    assert!(matches!(fx.as_slice(), [Effect::WriteToPty(_)]), "forwarded, not selected: {fx:?}");
     assert!(s.selection.is_none(), "selection must not shadow a mouse-reporting app");
 }
 
