@@ -4,9 +4,10 @@
 
 use std::time::Instant;
 
-use term_core::MouseMode;
+use term_core::MouseEncoding;
 use term_gpu::{
-    encode_mouse_sgr, encode_mouse_x10, measure_cell_metrics, CellMetrics, CellPoint, PanelRect,
+    encode_mouse_report, measure_cell_metrics, CellMetrics, CellPoint, MouseButton, MouseEventKind,
+    PanelRect,
 };
 
 use crate::ui::app_state::{ApplyCtx, Msg};
@@ -137,8 +138,14 @@ impl super::GpuApp {
         let point = self.cell_at(x, y);
         // When an app has mouse reporting on, the press is encoded for the PTY
         // (and apply suppresses selection) — §6.
-        let mouse_report =
-            point.and_then(|p| self.mouse_report(p.col as u16 + 1, p.row as u16 + 1, 0, true));
+        let mouse_report = point.and_then(|p| {
+            self.mouse_report(
+                MouseButton::Left,
+                MouseEventKind::Press,
+                p.col as u16 + 1,
+                p.row as u16 + 1,
+            )
+        });
         let snapshot = self.session.emulator.as_ref().map(|e| e.snapshot());
         let ctx = ApplyCtx {
             now: Instant::now(),
@@ -153,27 +160,46 @@ impl super::GpuApp {
     }
 
     /// Encode a mouse event for the PTY when an app has reporting on (§6), or
-    /// `None` when it's off — or the mode doesn't report this event (X10 / 1000
-    /// reports presses + wheel only, not releases). `button` is the raw
-    /// button-bits (0 left, 64 / 65 wheel up / down); `col` / `row` are 1-based
-    /// cells. Coordinates are the snapshot cell + 1 — viewport-correct on the
-    /// alt screen (where mouse-mode apps live; there is no scrollback there).
-    /// The term_core `MouseMode` collapses report-level + encoding into one enum
-    /// (a known simplification for this Claude-Code-only emulator).
-    fn mouse_report(&self, col: u16, row: u16, button: u8, pressed: bool) -> Option<Vec<u8>> {
-        match self.session.emulator.as_ref()?.mouse_mode() {
-            MouseMode::None => None,
-            MouseMode::X10 if !pressed => None,
-            MouseMode::Sgr => Some(encode_mouse_sgr(button, col, row, pressed)),
-            _ => Some(encode_mouse_x10(if pressed { button } else { 3 }, col, row)),
+    /// `None` when reporting is off, the active tracking level doesn't report
+    /// this event (motion is only 1002 / 1003), or Shift is held (the bypass
+    /// that keeps the gesture a local selection / scroll — matching Warp).
+    /// `col` / `row` are 1-based cells (the snapshot cell + 1 — viewport-correct
+    /// on the alt screen, where mouse-mode apps live and there's no scrollback).
+    /// The tracking level + encoding come from the emulator's split
+    /// `MouseProtocol`; the byte shape is decided in `encode_mouse_report`.
+    fn mouse_report(
+        &self,
+        button: MouseButton,
+        kind: MouseEventKind,
+        col: u16,
+        row: u16,
+    ) -> Option<Vec<u8>> {
+        // Shift is the local-action bypass: forward nothing so the gesture
+        // stays a selection / scroll even while an app has tracking on.
+        if self.state.modifiers.shift_key() {
+            return None;
         }
+        let proto = self.session.emulator.as_ref()?.mouse_protocol();
+        if !proto.is_active() {
+            return None;
+        }
+        if matches!(kind, MouseEventKind::Motion) && !proto.reports_motion() {
+            return None;
+        }
+        let sgr = matches!(proto.encoding, MouseEncoding::Sgr);
+        Some(encode_mouse_report(button, kind, col, row, sgr))
     }
 
     /// The mouse report for the cell currently under the cursor (release /
-    /// wheel), or `None` when reporting is off / the cursor isn't over a cell.
-    pub(super) fn mouse_report_at_cursor(&mut self, button: u8, pressed: bool) -> Option<Vec<u8>> {
+    /// wheel / motion), or `None` when reporting is off / the cursor isn't over
+    /// a cell.
+    pub(super) fn mouse_report_at_cursor(
+        &mut self,
+        button: MouseButton,
+        kind: MouseEventKind,
+    ) -> Option<Vec<u8>> {
         let (x, y) = self.state.cursor_pos?;
         let p = self.cell_at(x, y)?;
-        self.mouse_report(p.col as u16 + 1, p.row as u16 + 1, button, pressed)
+        self.mouse_report(button, kind, p.col as u16 + 1, p.row as u16 + 1)
     }
 }

@@ -45,7 +45,7 @@ use term_clipboard::{
     get_image_filepaths_from_paths, pick_best_image, save_image_to_temp,
     should_insert_text_on_paste, Clipboard, ClipboardContent,
 };
-use term_core::{create_emulator, AnsiPalette, MouseMode, TerminalEmulator};
+use term_core::{create_emulator, AnsiPalette, TerminalEmulator};
 use term_gpu::{
     build_cursor_rect, decay_velocity, encode_key, encode_paste, expand_line, expand_word,
     measure_cell_metrics, populate_panel, push_selection_rects, selection_to_text,
@@ -730,7 +730,7 @@ impl App {
             let owns_mouse = self
                 .panels
                 .get(&id)
-                .map(|p| p.emulator.mouse_mode() != MouseMode::None)
+                .map(|p| p.emulator.mouse_protocol().is_active())
                 .unwrap_or(false);
             if !owns_mouse {
                 if let Some(point) = self.cell_at_panel(id, x, y) {

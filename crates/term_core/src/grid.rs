@@ -127,14 +127,61 @@ impl CursorStyle {
     }
 }
 
+/// xterm mouse tracking level (mutually exclusive), set by DECSET
+/// 1000 / 1002 / 1003. DECSET 9 (X10) is intentionally unsupported
+/// (deprecated; Warp omits it too).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum MouseMode {
+pub enum MouseTracking {
     #[default]
-    None,
-    X10,
+    Off,
+    /// 1000 — report button press + release.
+    Normal,
+    /// 1002 — also report motion while a button is held.
     ButtonEvent,
+    /// 1003 — report all pointer motion, button or not.
     AnyEvent,
+}
+
+/// Mouse-report byte encoding, set independently of the tracking level.
+/// The UTF-8 (1005) and urxvt (1015) encodings are intentionally
+/// unsupported (deprecated; SGR superseded them, and Warp omits them).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MouseEncoding {
+    /// Legacy `CSI M Cb Cx Cy` (byte-offset 32, coords clamp at 223).
+    #[default]
+    Default,
+    /// 1006 — SGR `CSI < Cb ; Cx ; Cy M|m` (no coordinate limit).
     Sgr,
+}
+
+/// The composite mouse-reporting protocol state. The tracking level and
+/// the encoding are set by orthogonal DECSET sequences, so e.g. `1000`
+/// + `1006` compose into click-tracking with SGR encoding rather than
+/// clobbering each other (the bug a single conflated enum had).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MouseProtocol {
+    pub tracking: MouseTracking,
+    pub encoding: MouseEncoding,
+}
+
+impl MouseProtocol {
+    /// Whether any tracking level is active (reports should be sent).
+    pub fn is_active(&self) -> bool {
+        !matches!(self.tracking, MouseTracking::Off)
+    }
+
+    /// Whether motion (drag / move) events are reported (1002 / 1003).
+    pub fn reports_motion(&self) -> bool {
+        matches!(
+            self.tracking,
+            MouseTracking::ButtonEvent | MouseTracking::AnyEvent
+        )
+    }
+
+    /// Whether motion is reported even with no button held (1003).
+    pub fn reports_bare_motion(&self) -> bool {
+        matches!(self.tracking, MouseTracking::AnyEvent)
+    }
 }
 
 /// A row of fixed-width cells.
@@ -220,7 +267,7 @@ pub struct Grid {
     pub bracketed_paste: bool,
     pub focus_reporting: bool,
     pub sync_output: bool,
-    pub mouse_mode: MouseMode,
+    pub mouse: MouseProtocol,
     pub cursor_keys_app: bool,
     pub keypad_app: bool,
 
@@ -269,7 +316,7 @@ impl Grid {
             bracketed_paste: false,
             focus_reporting: false,
             sync_output: false,
-            mouse_mode: MouseMode::None,
+            mouse: MouseProtocol::default(),
             cursor_keys_app: false,
             keypad_app: false,
             scroll_offset_y: 0.0,
@@ -798,7 +845,7 @@ impl Grid {
         self.bracketed_paste = false;
         self.focus_reporting = false;
         self.sync_output = false;
-        self.mouse_mode = MouseMode::None;
+        self.mouse = MouseProtocol::default();
         self.cursor_keys_app = false;
         self.keypad_app = false;
         self.last_printed = None;

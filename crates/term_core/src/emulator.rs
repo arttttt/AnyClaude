@@ -5,7 +5,7 @@
 //! DSR). The DEC mode / OSC integration layer lives in a separate
 //! commit; this one ships the core dispatch.
 
-use crate::grid::{CursorStyle, Grid, MouseMode, PromptMarker, Row};
+use crate::grid::{CursorStyle, Grid, MouseEncoding, MouseProtocol, MouseTracking, PromptMarker, Row};
 use crate::parser::{Action, EraseMode, Parser, PromptKind, SgrAction};
 use crate::{CellFlags, TermColor};
 
@@ -64,7 +64,7 @@ pub trait TerminalEmulator: Send {
     /// notifications, …). The caller writes the returned bytes to the PTY.
     fn take_responses(&mut self) -> Vec<u8>;
 
-    fn mouse_mode(&self) -> MouseMode;
+    fn mouse_protocol(&self) -> MouseProtocol;
     fn bracketed_paste(&self) -> bool;
     fn cursor_keys_app(&self) -> bool;
     fn focus_reporting(&self) -> bool;
@@ -242,6 +242,19 @@ impl VtEmulator {
         }
     }
 
+    /// Set or reset the mouse tracking level. The levels are mutually
+    /// exclusive (last set wins); a reset only clears the level if it is the
+    /// one currently active, so disabling 1002 while 1003 is on is a no-op.
+    fn set_mouse_tracking(&mut self, level: MouseTracking, enable: bool) {
+        self.grid.mouse.tracking = if enable {
+            level
+        } else if self.grid.mouse.tracking == level {
+            MouseTracking::Off
+        } else {
+            self.grid.mouse.tracking
+        };
+    }
+
     /// DEC private mode handler covering the modes from spec §4.2.
     fn set_dec_mode(&mut self, mode: u16, enable: bool) {
         match mode {
@@ -271,17 +284,14 @@ impl VtEmulator {
                     self.grid.exit_alt_screen();
                 }
             }
-            1000 => self.grid.mouse_mode = if enable { MouseMode::X10 } else { MouseMode::None },
-            1002 => {
-                self.grid.mouse_mode =
-                    if enable { MouseMode::ButtonEvent } else { MouseMode::None };
-            }
-            1003 => {
-                self.grid.mouse_mode =
-                    if enable { MouseMode::AnyEvent } else { MouseMode::None };
-            }
+            1000 => self.set_mouse_tracking(MouseTracking::Normal, enable),
+            1002 => self.set_mouse_tracking(MouseTracking::ButtonEvent, enable),
+            1003 => self.set_mouse_tracking(MouseTracking::AnyEvent, enable),
             1004 => self.grid.focus_reporting = enable,
-            1006 => self.grid.mouse_mode = if enable { MouseMode::Sgr } else { MouseMode::None },
+            1006 => {
+                self.grid.mouse.encoding =
+                    if enable { MouseEncoding::Sgr } else { MouseEncoding::Default };
+            }
             1049 => {
                 if enable {
                     self.grid.enter_alt_screen();
@@ -355,8 +365,8 @@ impl TerminalEmulator for VtEmulator {
         std::mem::take(&mut self.response_buf)
     }
 
-    fn mouse_mode(&self) -> MouseMode {
-        self.grid.mouse_mode
+    fn mouse_protocol(&self) -> MouseProtocol {
+        self.grid.mouse
     }
     fn bracketed_paste(&self) -> bool {
         self.grid.bracketed_paste

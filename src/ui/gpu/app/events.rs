@@ -11,10 +11,13 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use term_core::create_emulator;
-use term_gpu::{GpuRenderer, GESTURE_END_TIMEOUT, MOMENTUM_FRAME_INTERVAL, NUM_PIXELS_PER_LINE};
+use term_gpu::{
+    GpuRenderer, MouseButton, MouseEventKind, GESTURE_END_TIMEOUT, MOMENTUM_FRAME_INTERVAL,
+    NUM_PIXELS_PER_LINE,
+};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition};
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, MouseButton as WinitMouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{WindowAttributes, WindowId};
 
@@ -208,8 +211,8 @@ impl ApplicationHandler<UserEvent> for super::GpuApp {
                 };
                 // A mouse-reporting app gets the wheel as button 64 / 65 instead
                 // of scrolling our scrollback (§6).
-                let mouse_report =
-                    self.mouse_report_at_cursor(if dy > 0.0 { 64 } else { 65 }, true);
+                let wheel = if dy > 0.0 { MouseButton::WheelUp } else { MouseButton::WheelDown };
+                let mouse_report = self.mouse_report_at_cursor(wheel, MouseEventKind::Press);
                 if mouse_report.is_none() {
                     self.refresh_scroll_geometry();
                 }
@@ -230,12 +233,13 @@ impl ApplicationHandler<UserEvent> for super::GpuApp {
             }
             WindowEvent::MouseInput {
                 state,
-                button: MouseButton::Left,
+                button: WinitMouseButton::Left,
                 ..
             } => match state {
                 ElementState::Pressed => self.on_mouse_press(),
                 ElementState::Released => {
-                    let mouse_report = self.mouse_report_at_cursor(0, false);
+                    let mouse_report =
+                        self.mouse_report_at_cursor(MouseButton::Left, MouseEventKind::Release);
                     self.dispatch(Msg::MouseRelease { mouse_report });
                 }
             },

@@ -23,7 +23,10 @@ pub mod parser;
 pub use attrs::CellFlags;
 pub use color::{AnsiPalette, TermColor};
 pub use emulator::{CursorState, RenderSnapshot, TerminalEmulator, VtEmulator};
-pub use grid::{Cell, CellExtra, CursorStyle, Grid, MouseMode, PromptMarker, Row};
+pub use grid::{
+    Cell, CellExtra, CursorStyle, Grid, MouseEncoding, MouseProtocol, MouseTracking, PromptMarker,
+    Row,
+};
 pub use parser::{Action, EraseMode, Parser, PromptKind, SgrAction, TabClear};
 
 /// Create a terminal emulator with the given visible grid size and
