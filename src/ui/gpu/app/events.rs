@@ -243,6 +243,27 @@ impl ApplicationHandler<UserEvent> for super::GpuApp {
                     self.dispatch(Msg::MouseRelease { mouse_report });
                 }
             },
+            // Middle / right buttons have no local action — they only matter to a
+            // mouse-reporting app, so forward the encoded report when one's active
+            // and otherwise drop the event (§6).
+            WindowEvent::MouseInput {
+                state,
+                button: button @ (WinitMouseButton::Middle | WinitMouseButton::Right),
+                ..
+            } => {
+                let report_button = if matches!(button, WinitMouseButton::Right) {
+                    MouseButton::Right
+                } else {
+                    MouseButton::Middle
+                };
+                let kind = match state {
+                    ElementState::Pressed => MouseEventKind::Press,
+                    ElementState::Released => MouseEventKind::Release,
+                };
+                if let Some(bytes) = self.mouse_report_at_cursor(report_button, kind) {
+                    self.dispatch(Msg::MouseReport(bytes));
+                }
+            }
             WindowEvent::KeyboardInput { event, .. }
                 if event.state == ElementState::Pressed =>
             {

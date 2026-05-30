@@ -153,6 +153,10 @@ pub enum Msg {
     /// A left mouse release (ends a drag-selection, or forwards a release to a
     /// mouse-reporting app via `mouse_report`).
     MouseRelease { mouse_report: Option<Vec<u8>> },
+    /// A pre-encoded mouse report to forward verbatim to the PTY — the
+    /// middle / right buttons (which have no local action), so the coordinator
+    /// only builds this when a tracking mode is active. (§6)
+    MouseReport(Vec<u8>),
     /// 1 Hz heartbeat — refresh the chrome (uptime / reqs) even when idle.
     Tick,
     /// The window close button was clicked (Cmd+Q routes via the Quit shortcut).
@@ -244,6 +248,7 @@ impl AppState {
                     Vec::new()
                 }
             }
+            Msg::MouseReport(bytes) => vec![Effect::WriteToPty(bytes)],
             Msg::Tick => vec![Effect::Redraw],
             Msg::Close => vec![Effect::Quit],
             Msg::PtyBytes => vec![Effect::Drain],
