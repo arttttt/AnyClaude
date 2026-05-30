@@ -83,3 +83,64 @@ pub fn encode_mouse_sgr(button: u8, col: u16, row: u16, pressed: bool) -> Vec<u8
     let final_byte = if pressed { 'M' } else { 'm' };
     format!("\x1b[<{button};{col};{row}{final_byte}").into_bytes()
 }
+
+/// A mouse button in xterm-reporting terms (the events anyclaude forwards).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseButton {
+    Left,
+    Middle,
+    Right,
+    WheelUp,
+    WheelDown,
+}
+
+impl MouseButton {
+    /// The base button-bits value, before the motion adjustment.
+    fn base(self) -> u8 {
+        match self {
+            MouseButton::Left => 0,
+            MouseButton::Middle => 1,
+            MouseButton::Right => 2,
+            MouseButton::WheelUp => 64,
+            MouseButton::WheelDown => 65,
+        }
+    }
+}
+
+/// What happened to the button. `Motion` is a drag (a button held while the
+/// pointer moves) or bare pointer motion under any-event tracking; it sets the
+/// `+32` motion bit. xterm has no wheel release, so wheels are always `Press`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseEventKind {
+    Press,
+    Release,
+    Motion,
+}
+
+/// Compose an xterm mouse report for `(button, kind)` at 1-based cell
+/// `(col, row)`. `sgr` selects the SGR (1006) form over the legacy default
+/// (`CSI M`) form. This is the one place the protocol byte shape is decided —
+/// the coordinator maps platform events to `(MouseButton, MouseEventKind)` and
+/// reads the encoding off the emulator's [`term_core::MouseProtocol`]. Modifier
+/// keys are intentionally not folded into `Cb` (matching Warp); the UTF-8 (1005)
+/// and urxvt (1015) encodings are intentionally unsupported (deprecated, and
+/// Warp omits them too).
+pub fn encode_mouse_report(
+    button: MouseButton,
+    kind: MouseEventKind,
+    col: u16,
+    row: u16,
+    sgr: bool,
+) -> Vec<u8> {
+    let motion = matches!(kind, MouseEventKind::Motion);
+    let cb = button.base() + if motion { 32 } else { 0 };
+    if sgr {
+        // SGR keeps the real button code; press / motion → 'M', release → 'm'.
+        encode_mouse_sgr(cb, col, row, !matches!(kind, MouseEventKind::Release))
+    } else {
+        // Legacy form carries no button identity on release — it is reported as
+        // button-bits 3.
+        let raw = if matches!(kind, MouseEventKind::Release) { 3 } else { cb };
+        encode_mouse_x10(raw, col, row)
+    }
+}
