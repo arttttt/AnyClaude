@@ -427,6 +427,11 @@ impl GpuApp {
                 Effect::RestartPty => self.restart_pty(),
                 Effect::DumpDiagnostic => self.dump_diagnostic(),
                 Effect::Quit => exit = true,
+                Effect::Drain => {
+                    if self.drain_pty() {
+                        self.request_redraw();
+                    }
+                }
             }
         }
         exit
@@ -1140,11 +1145,7 @@ impl ApplicationHandler<UserEvent> for GpuApp {
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
             UserEvent::PtyBytesArrived => {
-                if self.drain_pty() {
-                    if let Some(w) = self.window.as_ref() {
-                        w.request_redraw();
-                    }
-                }
+                self.dispatch(Msg::PtyBytes);
             }
             UserEvent::GestureEnded => {
                 self.dispatch(Msg::GestureEnd);
@@ -1154,16 +1155,18 @@ impl ApplicationHandler<UserEvent> for GpuApp {
                 self.dispatch(Msg::MomentumTick);
             }
             UserEvent::TickRedraw => {
-                if let Some(w) = self.window.as_ref() {
-                    w.request_redraw();
-                }
+                self.dispatch(Msg::Tick);
             }
         }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => {
+                if self.dispatch(Msg::Close) {
+                    event_loop.exit();
+                }
+            }
             WindowEvent::Resized(new_size) => {
                 if let Some(r) = self.renderer.as_mut() {
                     r.resize(new_size);

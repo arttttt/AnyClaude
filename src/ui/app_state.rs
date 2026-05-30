@@ -107,6 +107,8 @@ pub enum Effect {
     /// Exit the app (Cmd+Q / window close). Performed by the coordinator, which
     /// owns the `ActiveEventLoop` — surfaced as `perform_effects`' return.
     Quit,
+    /// Drain pending PTY bytes into the emulator, redrawing if any arrived.
+    Drain,
 }
 
 /// An input event translated to a pure message. The coordinator does any
@@ -146,6 +148,12 @@ pub enum Msg {
     },
     /// A left mouse release (ends a drag-selection).
     MouseRelease,
+    /// 1 Hz heartbeat — refresh the chrome (uptime / reqs) even when idle.
+    Tick,
+    /// The window close button was clicked (Cmd+Q routes via the Quit shortcut).
+    Close,
+    /// The PTY signalled that new output is ready to drain.
+    PtyBytes,
 }
 
 /// Read-only context the coordinator supplies to [`AppState::apply`]: the frame
@@ -222,6 +230,9 @@ impl AppState {
                     Vec::new()
                 }
             }
+            Msg::Tick => vec![Effect::Redraw],
+            Msg::Close => vec![Effect::Quit],
+            Msg::PtyBytes => vec![Effect::Drain],
         }
     }
 
