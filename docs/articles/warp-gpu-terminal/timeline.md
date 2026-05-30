@@ -1418,3 +1418,78 @@ Phase E is now effectively complete: R1 (no MVI), R5 (grid direct), R10 (GpuApp
 dissolved into resources + AppState + the apply/effects loop), chrome + popups
 retained, the §6 input surface wired. Full workspace suite green (80 sections);
 the input refactor verified live.
+
+## 37. REFAC-6 — decomposing the GpuApp god-object (2026-05-30)
+
+Dissolving MVI into the coordinator left `GpuApp` carrying everything: render,
+input, PTY, clipboard, popups, chrome, timers, geometry, lifecycle — a
+1344-line `app.rs`. The first instinct was to bundle its fields into
+collaborator structs (`Timers`, `Backends`, `TextResources`, `Session`), and
+after four of those the file had barely moved — still ~1230 lines. The pushback
+was blunt and correct: *bundling fields renames `self.x` to `self.bundle.x` and
+leaves every method — the actual bulk — exactly where it was.* The one
+field-bundle that paid off was `OverlayRenderer`, precisely because it took the
+~155-line chrome+popup paint *pipeline* out of `redraw` along with the fields it
+operated on. **The lesson, recorded as a rule: decompose a god-object by moving
+method *clusters*, not by grouping fields.**
+
+So the real cut was a method-split. `app.rs` became a module directory:
+`app/mod.rs` keeps the coordinator core (the struct, `new`, `request_redraw`,
+the constants, the `UserEvent` enum), and the method clusters moved into sibling
+submodules — `events` (the Msg/apply/Effect loop + `ApplicationHandler`),
+`render` (the per-frame paint), `geometry` (cell metrics / grid fit / hit-test),
+`popups`, `clipboard`, `session_ops`. Each is an `impl super::GpuApp` block, and
+the mechanism that made it nearly free is a Rust visibility detail: a child
+module of the type's defining module can see that type's *private* fields, so no
+field needed to become `pub(super)` — only the handful of methods called across
+submodules did. The result is seven files, none over 262 lines, behaviour
+byte-identical, the suite untouched at green. The "huge file violating SRP"
+complaint is closed — by moving code mass, not by counting fields.
+
+## 38. Completing the input surface — full mouse + keyboard, modelled on Warp (2026-05-30)
+
+With the refactor done, an audit of the now-"finished" migration against the
+ratified design found that the input surface — declared complete in §36 — was
+quietly partial in two places, and both had the same shape of bug.
+
+The **mouse** had been scoped to left press/release + wheel over a single
+`MouseMode { None, X10, ButtonEvent, AnyEvent, Sgr }` enum. That enum was the
+bug: it conflated the *tracking level* (DECSET 1000/1002/1003) with the
+*encoding* (1006/SGR), so a real app's `?1000h` + `?1006h` pair clobbered each
+other — it was impossible to have click-tracking *and* SGR encoding at once,
+which is what every modern TUI sends. The fix mirrors alacritty/Warp's
+`TermMode` bitflags: an orthogonal `MouseProtocol { tracking, encoding }` set by
+independent DECSETs that *compose*. On top of that the coverage was finished to
+match Warp — middle/right buttons, drag/motion reporting (1002 only while a
+button is held, 1003 always, deduped per cell so a drag emits once per cell
+crossed rather than once per pixel), a Shift bypass that keeps a gesture a local
+selection even under tracking — with `encode_mouse_report` / `encode_motion_report`
+as the single byte-shape authority. DECSET 9 (X10), the UTF-8 (1005) and urxvt
+(1015) encodings, and modifier bits in the button code are deliberately left out:
+exactly the lines Warp draws.
+
+The **keyboard** was the more visible failure, because — unlike mouse mode — it
+has a live consumer: you, typing. `encode_key` was a stub. Special keys broke or
+sent the wrong bytes: `Option+a` sent `ESC å` (the macOS-composed glyph) instead
+of `ESC a`; Shift+Tab — which ink TUIs like Claude Code use to cycle modes —
+sent a plain Tab; arrows ignored application-cursor mode; Ctrl/Opt/Cmd+Backspace
+did nothing useful. The rewrite follows Warp's table: Shift+Tab → `CSI Z`; the
+xterm modifier parameter `1 + shift + alt*2 + ctrl*4` spliced into
+`CSI 1 ; <mod> X` for modified arrows/Home/End; DECCKM branching between `SS3`
+and `CSI`; F1–F12; Meta built from the *un-composed* base key (winit's
+`key_without_modifiers()`, the analogue of the `charactersIgnoringModifiers`
+Warp reads on macOS); and the backspace editing combos `Opt → ESC DEL`,
+`Ctrl → ^W`, `Cmd → ^U`. Two macOS-shaped details fell out: the Meta char must
+come from the un-composed key, and Cmd+Backspace had to be handled in the
+coordinator's Super branch, because Cmd is intercepted as an app-shortcut
+modifier *before* the encoder runs.
+
+The architecture made both fixes land the same way: the coordinator resolves the
+resource-backed inputs an app can't read purely — the emulator's DECCKM state,
+the un-composed key, the cell under the cursor — into a *pure* `Msg`, and
+`apply` returns `Effect::WriteToPty`. The encoders, previously the most
+render-blind and (for keys) entirely *untested* surface in the app, gained exact
+byte tests: 19 mouse + 7 protocol-compose + 11 key cases. Verification split
+cleanly along the consumer line — the mouse encoders are pinned only by their
+byte tests (nothing in anyclaude enables mouse mode, so there is nothing to
+eyeball), while the keyboard was verified live before these notes were written.

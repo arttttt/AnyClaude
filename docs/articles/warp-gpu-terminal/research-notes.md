@@ -2546,3 +2546,39 @@ never enables mouse mode), so there is nothing to eyeball. That, plus
 term_core's `MouseMode` collapsing report-level and encoding into one enum, is
 why it was scoped to left press/release + wheel and nearly cut as YAGNI: built
 for spec-completeness, not for a consumer.
+
+A later audit of the "finished" migration reopened both halves of the input
+surface — and the lesson was the same both times: *the conflated-enum shortcut
+hides a composition bug, and "minimal" key handling silently drops the keys a
+real TUI leans on.* For the mouse, the single `MouseMode { None, X10,
+ButtonEvent, AnyEvent, Sgr }` enum couldn't represent what every real app
+actually sends: a *tracking level* DECSET (`?1000h`/`1002`/`1003`) **and**
+*independently* an *encoding* DECSET (`?1006h` for SGR). Enabling SGR clobbered
+the level. The fix mirrors alacritty/Warp's `TermMode` bitflags — split into an
+orthogonal `MouseProtocol { tracking, encoding }` so the two DECSETs compose —
+and then the coverage was completed to match Warp: middle/right buttons,
+drag/motion (1002 only while a button is held, 1003 always, deduped per cell so
+a drag reports once per cell crossed), a Shift bypass for local selection, and
+`encode_mouse_report`/`encode_motion_report` as the single byte-shape authority.
+DECSET 9 (X10), the UTF-8 (1005) and urxvt (1015) encodings, and modifier bits
+in `Cb` are deliberately omitted — exactly the lines Warp draws.
+
+The keyboard was the more visible failure, because it *does* have a live
+consumer: you, typing. `encode_key` had been a stub — printable chars, Ctrl+
+letter, Alt as an ESC-prefix on the macOS-*composed* char, and plain arrows that
+always sent `CSI` regardless of DECCKM. So `Option+a` sent `ESC å` instead of
+`ESC a`; Shift+Tab (which ink TUIs use to cycle modes) sent a plain Tab; arrows
+broke under application-cursor mode; and Ctrl/Opt/Cmd+Backspace did nothing
+useful. The rewrite follows Warp's table: Shift+Tab → `CSI Z`; the xterm
+modifier parameter `1 + shift + alt*2 + ctrl*4` spliced into `CSI 1 ; <mod> X`
+for modified arrows/Home/End; DECCKM branching `SS3` vs `CSI`; F-keys; and Meta
+that uses the *un-composed* base key (winit's `key_without_modifiers()`, which on
+macOS is the analogue of Cocoa's `charactersIgnoringModifiers` that Warp reads).
+Two macOS-shaped details fell out: the Option-as-Meta char must come from the
+un-composed key, and Cmd+Backspace (→ `^U`) had to be handled in the Super
+branch, because Cmd is intercepted as an app-shortcut modifier *before* the
+encoder ever runs. The encoder — previously the single most render-blind,
+*untested* surface in the app — got its first byte tests (`key_encode.rs`).
+Verification split cleanly along the consumer line: the mouse encoders are
+pinned only by exact-byte tests (no consumer to eyeball), while the keyboard was
+verified live before the docs were written.

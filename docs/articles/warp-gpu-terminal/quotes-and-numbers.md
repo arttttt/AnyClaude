@@ -1396,3 +1396,33 @@ coordinator; the last §6 item (mouse reporting) lands.
 - **Phase E complete:** R1 (no MVI) · R5 (grid direct) · R10 (dissolved GpuApp +
   apply/effects loop) · chrome + popups retained · §6 input wired. Full suite
   green — **80** sections.
+
+## REFAC-6 + the full input surface (2026-05-30)
+
+After Phase E "completed," a decomposition pass and an audit of the result.
+
+- **REFAC-6 — `gpu/app.rs` god-object split.** 5 collaborators extracted first
+  (`Timers`/`Backends`/`TextResources`/`Session`/`OverlayRenderer`): **1344 →
+  1109** lines, but the first 4 were field-bundles that *didn't shrink code
+  mass* — the recorded lesson is **decompose by moving method clusters, not
+  fields.** Then the method-split: `app.rs` → `app/{mod,events,render,geometry,
+  popups,clipboard,session_ops}.rs`, each an `impl super::GpuApp` (child modules
+  see the struct's private fields → no `pub(super)` on fields). Result: **7**
+  files, **none over 262** lines, behaviour byte-identical.
+- **§6 mouse — brought to full coverage (Warp-modelled).** The conflated
+  `MouseMode` enum is split into orthogonal `MouseProtocol { tracking:
+  {Off,Normal/1000,ButtonEvent/1002,AnyEvent/1003}, encoding: {Default,Sgr/1006}
+  }` — so `?1000h` + `?1006h` **compose** instead of clobbering (the core bug).
+  Added middle/right buttons, drag/motion (1002 held-only, 1003 always, deduped
+  per cell), Shift bypass. **19** byte/gating tests + **7** protocol
+  compose/reset tests. Omitted, matching Warp: DECSET 9 (X10), 1005/1015
+  encodings, modifier bits in `Cb`.
+- **Keyboard — `encode_key` completed.** Was a stub; rewrote to the full xterm
+  table: **Shift+Tab → `CSI Z`**, modifier param `1+shift+alt*2+ctrl*4` →
+  `CSI 1;<mod> X`, DECCKM `SS3` vs `CSI` arrows, F1–F12, **Meta on the
+  un-composed base char** (winit `key_without_modifiers()` — `Option+a` is
+  `ESC a`, not `ESC å`), backspace combos (`Opt → ESC DEL`, `Ctrl → ^W`,
+  `Cmd → ^U`). The encoder's **first** tests — **11** exact-byte cases.
+- **The verification split:** mouse encoders pinned only by byte tests (no live
+  consumer); the keyboard — which *does* have a consumer (you type) — was
+  **verified live before docs**. Full workspace suite green — **82** sections.
