@@ -13,13 +13,12 @@ use term_clipboard::{
     get_image_filepaths_from_paths, pick_best_image, save_image_to_temp,
     should_insert_text_on_paste, Clipboard, ClipboardContent,
 };
-use term_core::{create_emulator, AnsiPalette, MouseMode, TerminalEmulator};
+use term_core::{create_emulator, MouseMode, TerminalEmulator};
 use term_gpu::{
     build_cursor_rect, encode_mouse_sgr, encode_mouse_x10, encode_paste, measure_cell_metrics,
-    populate_panel,
-    push_selection_rects, selection_to_text, shell_quote_path, CellMetrics, CellPoint, FontFamily,
-    FontSystem, GlyphInstance, GpuRenderer, PanelRect, RectInstance, RenderLayer, ScrollState,
-    SwashCache, TextShapeCache, GESTURE_END_TIMEOUT, MOMENTUM_FRAME_INTERVAL, NUM_PIXELS_PER_LINE,
+    populate_panel, push_selection_rects, selection_to_text, shell_quote_path, CellMetrics,
+    CellPoint, GlyphInstance, GpuRenderer, PanelRect, RectInstance, RenderLayer, ScrollState,
+    GESTURE_END_TIMEOUT, MOMENTUM_FRAME_INTERVAL, NUM_PIXELS_PER_LINE,
 };
 use glam::Vec2;
 use term_ui::{
@@ -73,6 +72,7 @@ const MULTI_CLICK_THRESHOLD_MS: u128 = 400;
 const POPUP_FADE_SECS: f32 = 0.12;
 
 use super::backends::Backends;
+use super::text::TextResources;
 use super::timers::Timers;
 use super::chrome::{
     CHROME_FONT_SIZE, CHROME_H_PAD, FOOTER_HEIGHT_LOGICAL, HEADER_HEIGHT_LOGICAL,
@@ -98,19 +98,9 @@ pub(super) struct GpuApp {
     renderer: Option<GpuRenderer>,
     scale_factor: f32,
 
-    // Font system is owned at the app level — cosmic-text rasterizes
-    // glyphs against it via the shape cache, and the swash cache holds
-    // the bitmap data destined for the atlas.
-    font_system: FontSystem,
-    swash_cache: SwashCache,
-    shape_cache: TextShapeCache,
-
-    palette: AnsiPalette,
-    cell_metrics: Option<CellMetrics>,
-    /// Variable-width text cache for chrome (header / footer / popups).
-    /// Separate from `shape_cache` because cache instances are family-
-    /// scoped — terminal cells are Monospace, chrome is SansSerif.
-    ui_shape_cache: TextShapeCache,
+    /// Terminal + chrome text-rasterization resources (font system, swash +
+    /// shape caches, palette, cached cell metrics). See [`TextResources`].
+    text: TextResources,
 
     /// Retained term_ui tree for the chrome overlay (header + footer). Built
     /// from `chrome_labels::chrome_view(&AppState)` each frame and reconciled
@@ -184,10 +174,7 @@ impl GpuApp {
             window: None,
             renderer: None,
             scale_factor: 1.0,
-            font_system: FontSystem::new(),
-            swash_cache: SwashCache::new(),
-            shape_cache: TextShapeCache::with_family(FontFamily::Monospace),
-            ui_shape_cache: TextShapeCache::with_family(FontFamily::SansSerif),
+            text: TextResources::new(),
             chrome_tree: RetainedTree::new(),
             chrome_root: None,
             chrome_prev: None,
@@ -197,8 +184,6 @@ impl GpuApp {
             popup_prev: None,
             popup_scratch: PaintOutput::default(),
             popup_anim: None,
-            palette: AnsiPalette::default_dark(),
-            cell_metrics: None,
             pty: None,
             emulator: None,
             state: AppState::new(
@@ -223,16 +208,16 @@ impl GpuApp {
     }
 
     fn cell_metrics(&mut self) -> CellMetrics {
-        if let Some(m) = self.cell_metrics {
+        if let Some(m) = self.text.cell_metrics {
             return m;
         }
         let metrics = measure_cell_metrics(
-            &mut self.font_system,
-            &mut self.shape_cache,
+            &mut self.text.font_system,
+            &mut self.text.shape_cache,
             FONT_SIZE,
             self.scale_factor,
         );
-        self.cell_metrics = Some(metrics);
+        self.text.cell_metrics = Some(metrics);
         metrics
     }
 
@@ -814,11 +799,11 @@ impl GpuApp {
         populate_panel(
             &snapshot,
             panel,
-            &self.palette,
-            &mut self.font_system,
-            &mut self.swash_cache,
+            &self.text.palette,
+            &mut self.text.font_system,
+            &mut self.text.swash_cache,
             renderer.atlas_mut(),
-            &mut self.shape_cache,
+            &mut self.text.shape_cache,
             FONT_SIZE,
             sf,
             metrics,
@@ -924,8 +909,8 @@ impl GpuApp {
             &mut self.chrome_tree,
             chrome_root,
             SizeConstraint::tight(Vec2::new(window_w_logical, window_h_logical)),
-            &mut self.font_system,
-            &mut self.ui_shape_cache,
+            &mut self.text.font_system,
+            &mut self.text.ui_shape_cache,
             sf,
         );
         place(&mut self.chrome_tree, chrome_root, Vec2::ZERO);
@@ -935,9 +920,9 @@ impl GpuApp {
             chrome_root,
             &mut self.chrome_scratch,
             renderer.atlas_mut(),
-            &mut self.font_system,
-            &mut self.swash_cache,
-            &mut self.ui_shape_cache,
+            &mut self.text.font_system,
+            &mut self.text.swash_cache,
+            &mut self.text.ui_shape_cache,
             sf,
         );
         overlay_rects.extend_from_slice(&self.chrome_scratch.rects);
@@ -1030,8 +1015,8 @@ impl GpuApp {
                     Vec2::new(popup_view::POPUP_MIN_WIDTH, 0.0),
                     Vec2::new(window_w_logical, window_h_logical),
                 ),
-                &mut self.font_system,
-                &mut self.ui_shape_cache,
+                &mut self.text.font_system,
+                &mut self.text.ui_shape_cache,
                 sf,
             );
             place_centered(
@@ -1045,9 +1030,9 @@ impl GpuApp {
                 root,
                 &mut self.popup_scratch,
                 renderer.atlas_mut(),
-                &mut self.font_system,
-                &mut self.swash_cache,
-                &mut self.ui_shape_cache,
+                &mut self.text.font_system,
+                &mut self.text.swash_cache,
+                &mut self.text.ui_shape_cache,
                 sf,
             );
             // Bake the fade alpha into the popup's instances only (the chrome
@@ -1071,8 +1056,8 @@ impl GpuApp {
             }),
             0.0,
         );
-        self.shape_cache.end_frame();
-        self.ui_shape_cache.end_frame();
+        self.text.shape_cache.end_frame();
+        self.text.ui_shape_cache.end_frame();
         // Drive the popup fade to completion: while a transition is in flight,
         // request the next frame (the event-driven redraws alone wouldn't tick).
         if popup_animating {
@@ -1169,7 +1154,7 @@ impl ApplicationHandler<UserEvent> for GpuApp {
                 }
                 // Cell metrics depend on scale_factor; invalidate, then resync
                 // the grid to the new physical cell size (through the loop).
-                self.cell_metrics = None;
+                self.text.cell_metrics = None;
                 self.resync_grid();
             }
             WindowEvent::ModifiersChanged(mods) => {
