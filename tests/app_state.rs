@@ -283,25 +283,26 @@ fn terminal_key_emits_write_to_pty() {
 }
 
 #[test]
-fn super_shortcut_maps_to_its_effect() {
+fn ctrl_shortcut_maps_to_its_effect() {
     let mut s = state();
-    s.modifiers = ModifiersState::SUPER;
+    s.modifiers = ModifiersState::CONTROL;
     assert_eq!(s.apply(key(KeyCode::KeyQ), &ctx()), vec![Effect::Quit]);
-    assert_eq!(s.apply(key(KeyCode::KeyB), &ctx()), vec![Effect::ToggleBackendPopup]);
-    // A bare Super press with no mapped shortcut produces nothing.
-    assert!(s.apply(key(KeyCode::F13), &ctx()).is_empty());
+    assert_eq!(s.apply(key(KeyCode::KeyT), &ctx()), vec![Effect::ToggleBackendPopup]);
+    // Ctrl+B is not an app shortcut — it falls through to encode_key → the PTY
+    // (so Claude Code still receives it).
+    assert!(matches!(
+        s.apply(key(KeyCode::KeyB), &ctx()).as_slice(),
+        [Effect::WriteToPty(_)]
+    ));
 }
 
 #[test]
-fn cmd_backspace_deletes_to_line_start() {
-    // Cmd+Backspace has no app shortcut → it sends ^U (delete to line start).
+fn cmd_clipboard_maps_and_unbound_cmd_is_swallowed() {
     let mut s = state();
     s.modifiers = ModifiersState::SUPER;
-    let fx = s.apply(key(KeyCode::Backspace), &ctx());
-    assert!(
-        matches!(fx.as_slice(), [Effect::WriteToPty(b)] if b.as_slice() == [0x15]),
-        "Cmd+Backspace → ^U: {fx:?}"
-    );
+    assert_eq!(s.apply(key(KeyCode::KeyC), &ctx()), vec![Effect::CopySelection]);
+    // A Cmd combo with no shortcut is swallowed, never leaked to the PTY.
+    assert!(s.apply(key(KeyCode::F13), &ctx()).is_empty());
 }
 
 #[test]

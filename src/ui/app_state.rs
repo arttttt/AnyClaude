@@ -306,9 +306,10 @@ impl AppState {
         vec![Effect::Redraw]
     }
 
-    /// Route a key press. Popups own input while open; Cmd/Super combos are app
-    /// shortcuts (each maps to one effect); everything else is a terminal key
-    /// encoded to the PTY. Mirrors the legacy `window_event` keyboard dispatch.
+    /// Route a key press. Popups own input while open; the clipboard (Cmd+C/V)
+    /// and app features (a single Ctrl chord) are app shortcuts resolved before
+    /// terminal encoding; an unbound Cmd combo is swallowed (never leaked to the
+    /// PTY); everything else is a terminal key encoded via `encode_key`.
     fn on_key(
         &mut self,
         logical: Key,
@@ -319,26 +320,23 @@ impl AppState {
         if self.any_popup_visible() {
             return self.on_popup_key(physical);
         }
-        if self.modifiers.super_key() {
-            if let PhysicalKey::Code(code) = physical {
-                if let Some(shortcut) = input::app_shortcut(code, self.modifiers) {
-                    return vec![match shortcut {
-                        AppShortcut::CopySelection => Effect::CopySelection,
-                        AppShortcut::Paste => Effect::Paste,
-                        AppShortcut::ToggleBackendPopup => Effect::ToggleBackendPopup,
-                        AppShortcut::ToggleHistoryPopup => Effect::ToggleHistoryPopup,
-                        AppShortcut::ToggleSettingsPopup => Effect::ToggleSettingsPopup,
-                        AppShortcut::RestartPty => Effect::RestartPty,
-                        AppShortcut::DumpDiagnostic => Effect::DumpDiagnostic,
-                        AppShortcut::Quit => Effect::Quit,
-                    }];
-                }
-                // Cmd+Backspace → delete to line start (^U) — the macOS
-                // line-edit convenience (Super has no terminal byte otherwise).
-                if code == KeyCode::Backspace {
-                    return vec![Effect::WriteToPty(vec![0x15])];
-                }
+        if let PhysicalKey::Code(code) = physical {
+            if let Some(shortcut) = input::app_shortcut(code, self.modifiers) {
+                return vec![match shortcut {
+                    AppShortcut::CopySelection => Effect::CopySelection,
+                    AppShortcut::Paste => Effect::Paste,
+                    AppShortcut::ToggleBackendPopup => Effect::ToggleBackendPopup,
+                    AppShortcut::ToggleHistoryPopup => Effect::ToggleHistoryPopup,
+                    AppShortcut::ToggleSettingsPopup => Effect::ToggleSettingsPopup,
+                    AppShortcut::RestartPty => Effect::RestartPty,
+                    AppShortcut::DumpDiagnostic => Effect::DumpDiagnostic,
+                    AppShortcut::Quit => Effect::Quit,
+                }];
             }
+        }
+        // A Cmd combo with no bound shortcut is swallowed — Cmd+key has no
+        // terminal byte and must not leak to the PTY.
+        if self.modifiers.super_key() {
             return Vec::new();
         }
         match encode_key(&logical, &logical_unmod, self.modifiers, app_cursor) {

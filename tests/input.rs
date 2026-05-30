@@ -10,35 +10,44 @@ use anyclaude::ui::settings::SettingsIntent;
 use winit::keyboard::{KeyCode, ModifiersState};
 
 const SUPER: ModifiersState = ModifiersState::SUPER;
+const CTRL: ModifiersState = ModifiersState::CONTROL;
 
 #[test]
-fn app_shortcut_requires_super() {
+fn clipboard_is_on_cmd_not_ctrl() {
     // No modifiers → nothing, even for a bound key.
     assert_eq!(app_shortcut(KeyCode::KeyC, ModifiersState::empty()), None);
-    assert_eq!(app_shortcut(KeyCode::KeyC, SUPER), Some(AppShortcut::CopySelection));
-}
-
-#[test]
-fn app_shortcut_table() {
+    // Copy / paste are Cmd (Ctrl+C/V are interrupt / literal-next).
     assert_eq!(app_shortcut(KeyCode::KeyC, SUPER), Some(AppShortcut::CopySelection));
     assert_eq!(app_shortcut(KeyCode::KeyV, SUPER), Some(AppShortcut::Paste));
-    assert_eq!(app_shortcut(KeyCode::KeyB, SUPER), Some(AppShortcut::ToggleBackendPopup));
-    assert_eq!(app_shortcut(KeyCode::KeyH, SUPER), Some(AppShortcut::ToggleHistoryPopup));
-    assert_eq!(app_shortcut(KeyCode::KeyE, SUPER), Some(AppShortcut::ToggleSettingsPopup));
-    assert_eq!(app_shortcut(KeyCode::KeyR, SUPER), Some(AppShortcut::RestartPty));
-    assert_eq!(app_shortcut(KeyCode::KeyQ, SUPER), Some(AppShortcut::Quit));
-    // Unbound super-combo.
-    assert_eq!(app_shortcut(KeyCode::KeyA, SUPER), None);
+    assert_eq!(app_shortcut(KeyCode::KeyC, CTRL), None);
 }
 
 #[test]
-fn diagnostic_needs_super_and_shift() {
-    // Cmd+D alone is unbound; Cmd+Shift+D dumps.
-    assert_eq!(app_shortcut(KeyCode::KeyD, SUPER), None);
-    assert_eq!(
-        app_shortcut(KeyCode::KeyD, ModifiersState::SUPER | ModifiersState::SHIFT),
-        Some(AppShortcut::DumpDiagnostic)
-    );
+fn features_are_on_ctrl() {
+    assert_eq!(app_shortcut(KeyCode::KeyT, CTRL), Some(AppShortcut::ToggleBackendPopup));
+    assert_eq!(app_shortcut(KeyCode::KeyH, CTRL), Some(AppShortcut::ToggleHistoryPopup));
+    assert_eq!(app_shortcut(KeyCode::KeyE, CTRL), Some(AppShortcut::ToggleSettingsPopup));
+    assert_eq!(app_shortcut(KeyCode::KeyR, CTRL), Some(AppShortcut::RestartPty));
+    assert_eq!(app_shortcut(KeyCode::KeyQ, CTRL), Some(AppShortcut::Quit));
+    // Features are not on Cmd.
+    assert_eq!(app_shortcut(KeyCode::KeyT, SUPER), None);
+    // Unbound Ctrl combo.
+    assert_eq!(app_shortcut(KeyCode::KeyA, CTRL), None);
+}
+
+#[test]
+fn ctrl_b_and_ctrl_d_pass_through_to_the_terminal() {
+    // Ctrl+B is Claude Code's; Ctrl+D is EOF — neither is an app shortcut, so
+    // they fall through to `encode_key` → the PTY.
+    assert_eq!(app_shortcut(KeyCode::KeyB, CTRL), None);
+    assert_eq!(app_shortcut(KeyCode::KeyD, CTRL), None);
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn diagnostic_on_ctrl_g_debug_only() {
+    // The diagnostic dump is a debug-build-only dev aid.
+    assert_eq!(app_shortcut(KeyCode::KeyG, CTRL), Some(AppShortcut::DumpDiagnostic));
 }
 
 #[test]
