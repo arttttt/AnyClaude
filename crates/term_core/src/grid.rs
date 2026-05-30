@@ -182,6 +182,11 @@ impl MouseProtocol {
     pub fn reports_bare_motion(&self) -> bool {
         matches!(self.tracking, MouseTracking::AnyEvent)
     }
+
+    /// Whether reports use the SGR (1006) byte form rather than the legacy one.
+    pub fn is_sgr(&self) -> bool {
+        matches!(self.encoding, MouseEncoding::Sgr)
+    }
 }
 
 /// A row of fixed-width cells.

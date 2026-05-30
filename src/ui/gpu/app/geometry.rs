@@ -4,7 +4,6 @@
 
 use std::time::Instant;
 
-use term_core::MouseEncoding;
 use term_gpu::{
     encode_motion_report, encode_mouse_report, measure_cell_metrics, CellMetrics, CellPoint,
     MouseButton, MouseEventKind, PanelRect,
@@ -186,8 +185,7 @@ impl super::GpuApp {
         if matches!(kind, MouseEventKind::Motion) && !proto.reports_motion() {
             return None;
         }
-        let sgr = matches!(proto.encoding, MouseEncoding::Sgr);
-        Some(encode_mouse_report(button, kind, col, row, sgr))
+        Some(encode_mouse_report(button, kind, col, row, proto.is_sgr()))
     }
 
     /// The mouse report for the cell currently under the cursor (release /

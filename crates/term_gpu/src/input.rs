@@ -8,7 +8,7 @@
 //! (modifier keys alone, function keys we don't translate, IME
 //! composition events).
 
-use term_core::{MouseEncoding, MouseProtocol, MouseTracking};
+use term_core::{MouseProtocol, MouseTracking};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 /// Encode `(key, modifiers)` as PTY input bytes. Returns `None` when
@@ -177,12 +177,11 @@ pub fn encode_motion_report(
         }
         _ => return None,
     };
-    let sgr = matches!(proto.encoding, MouseEncoding::Sgr);
     Some(encode_mouse_report(
         button,
         MouseEventKind::Motion,
         cell.0 + 1,
         cell.1 + 1,
-        sgr,
+        proto.is_sgr(),
     ))
 }
