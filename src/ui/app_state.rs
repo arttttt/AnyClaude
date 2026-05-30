@@ -73,6 +73,12 @@ pub struct AppState {
 /// resource — timers, redraw, PTY / clipboard / renderer writes — comes back as
 /// one of these for `GpuApp::perform_effects` to run (bucket 3-S). Variants are
 /// added as each event category is migrated onto the loop (E.8).
+///
+/// This is a command bus, and its surface grows with features: `apply` (the
+/// emitter) and `perform_effects` (the handler) are coupled by an exhaustive
+/// `match`. That coupling is intentional — a new variant can't be added without
+/// the compiler forcing a handler — so the linear growth is the accepted cost of
+/// keeping the reducer pure rather than a sign of drift.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Effect {
     Redraw,
@@ -191,6 +197,13 @@ pub enum Msg {
 /// Read-only context the coordinator supplies to [`AppState::apply`]: the frame
 /// clock, plus (for selection) the current emulator snapshot. Resource WRITES
 /// never happen through this — they come back as [`Effect`]s.
+///
+/// `snapshot` is `None` on the common path (`GpuApp::dispatch`); only the
+/// mouse-press path (`on_mouse_press`) builds a ctx that carries it, because
+/// only word/line selection-expansion needs the grid content. That's a
+/// deliberate two-entry seam into `apply`: threading the snapshot through every
+/// event would clone it per keystroke / tick for nothing. Cheaper than the
+/// uniform alternative, but a seam worth keeping an eye on.
 pub struct ApplyCtx<'a> {
     pub now: Instant,
     /// The emulator's current content, for selection word / line expansion.
@@ -202,9 +215,27 @@ pub struct ApplyCtx<'a> {
 }
 
 impl AppState {
-    /// The single state-transition entry point: route a [`Msg`] to its
-    /// transition and return the [`Effect`]s the coordinator must perform. Pure
-    /// on `AppState` + the read-only `ctx`; every side effect comes back as data.
+    /// The single state-TRANSITION point: route a [`Msg`] to its transition and
+    /// return the [`Effect`]s the coordinator must perform. Pure on `AppState` +
+    /// the read-only `ctx`; every side effect comes back as data, so the reducer
+    /// is unit-testable without a window.
+    ///
+    /// It is deliberately NOT the single *decision* point — calling it that would
+    /// oversell it. The reduce/resolve boundary is drawn at "does it need to read
+    /// a resource": the coordinator pre-resolves resource-backed facts before
+    /// building a `Msg` (the cell under the cursor, the backend list, the
+    /// emulator's DECCKM + mouse-protocol state), and folds the genuinely
+    /// decision-shaped parts into PURE, separately-tested helpers it calls during
+    /// that resolution — `term_gpu::encode_key` / `encode_mouse_report` /
+    /// `encode_motion_report` (the latter owns the motion per-cell dedup + the
+    /// tracking-level gate). So `apply` frequently receives half-resolved input
+    /// (e.g. `Msg::Wheel { mouse_report: Some(bytes) }`) and its arm is trivial
+    /// *because* the coordinator already did the resource-reading half. The logic
+    /// stays pure and tested — it's just split between here and those helpers
+    /// along the resource-read line, not centralized. The alternative (a fat
+    /// `ApplyCtx` carrying a whole world snapshot so every decision lives here)
+    /// was rejected: it would clone the snapshot on every event and bloat the
+    /// ctx. Thin ctx + pure helpers is the trade.
     pub fn apply(&mut self, msg: Msg, ctx: &ApplyCtx) -> Vec<Effect> {
         match msg {
             Msg::Wheel { dy, phase, precise, mouse_report } => {

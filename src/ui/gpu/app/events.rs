@@ -31,8 +31,11 @@ impl super::GpuApp {
     /// Translate a `Msg` to its state transition and perform the resulting
     /// effects: build the read-only `ApplyCtx`, call `AppState::apply`, then run
     /// each `Effect`. This is the single coordinator-side entry for the event
-    /// loop — every winit / user event funnels through here. (Mouse press builds
-    /// its own ctx carrying the emulator snapshot; see `on_mouse_press`.)
+    /// loop — every winit / user event funnels through here. `snapshot` is `None`
+    /// because only selection word/line-expansion needs the grid content; the
+    /// mouse-press path builds its own ctx that carries the snapshot (the
+    /// two-entry seam — see `on_mouse_press`), so the common path avoids cloning
+    /// it per keystroke / tick.
     pub(super) fn dispatch(&mut self, msg: Msg) -> bool {
         let ctx = ApplyCtx {
             now: Instant::now(),
