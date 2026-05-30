@@ -163,8 +163,7 @@ impl GpuApp {
 /// Construct the platform clipboard. macOS gets `MacClipboard` with
 /// full pasteboard parity (text, HTML, file paths, images). Other
 /// platforms fall back to `InMemoryClipboard` — anyclaude is
-/// macOS-targeted today and the legacy ui::run takes the same
-/// approach.
+/// macOS-targeted today.
 fn make_clipboard() -> Box<dyn Clipboard> {
     #[cfg(target_os = "macos")]
     {
