@@ -13,7 +13,7 @@ use term_clipboard::{
     get_image_filepaths_from_paths, pick_best_image, save_image_to_temp,
     should_insert_text_on_paste, Clipboard, ClipboardContent,
 };
-use term_core::{create_emulator, MouseMode, TerminalEmulator};
+use term_core::{create_emulator, MouseMode};
 use term_gpu::{
     build_cursor_rect, encode_mouse_sgr, encode_mouse_x10, encode_paste, measure_cell_metrics,
     populate_panel, push_selection_rects, selection_to_text, shell_quote_path, CellMetrics,
@@ -72,6 +72,7 @@ const MULTI_CLICK_THRESHOLD_MS: u128 = 400;
 const POPUP_FADE_SECS: f32 = 0.12;
 
 use super::backends::Backends;
+use super::session::Session;
 use super::text::TextResources;
 use super::timers::Timers;
 use super::chrome::{
@@ -124,10 +125,9 @@ pub(super) struct GpuApp {
     /// fade is in flight; the alpha is derived from this + the frame clock.
     popup_anim: Option<PopupAnim>,
 
-    // Lazily initialised in `resumed`: spawning the shell needs to know
-    // the window's pixel size, which we don't have until then.
-    pty: Option<ChildPty>,
-    emulator: Option<Box<dyn TerminalEmulator>>,
+    /// Terminal session — the PTY child, the VT emulator, and the spawn params.
+    /// Lazily populated in `resumed`. See [`Session`].
+    session: Session,
 
     /// The single bucket-1 source of UI-decision truth — grid size, scroll +
     /// momentum, selection / input, session header, and the popup overlays.
@@ -149,11 +149,6 @@ pub(super) struct GpuApp {
     /// Proxy + config handles — backend state, subagent / teammate overrides,
     /// observability, settings manager. See [`Backends`].
     backends: Backends,
-    /// Spawn params for Claude Code, prepared by `run()` before the
-    /// event loop. Used in `resumed()` to spawn the PTY child.
-    spawn_command: String,
-    spawn_args: Vec<String>,
-    spawn_env: Vec<(String, String)>,
 }
 
 
@@ -184,8 +179,7 @@ impl GpuApp {
             popup_prev: None,
             popup_scratch: PaintOutput::default(),
             popup_anim: None,
-            pty: None,
-            emulator: None,
+            session: Session::new(spawn_command, spawn_args, spawn_env),
             state: AppState::new(
                 Uuid::new_v4().to_string(),
                 Instant::now(),
@@ -201,9 +195,6 @@ impl GpuApp {
                 observability,
                 settings_manager,
             },
-            spawn_command,
-            spawn_args,
-            spawn_env,
         }
     }
 
@@ -271,7 +262,7 @@ impl GpuApp {
     /// stays visible while the shell prints. Users who explicitly
     /// scrolled up keep position.
     fn drain_pty(&mut self) -> bool {
-        let Some(pty) = self.pty.as_mut() else {
+        let Some(pty) = self.session.pty.as_mut() else {
             return false;
         };
         let chunks = pty.drain();
@@ -280,7 +271,7 @@ impl GpuApp {
         }
         self.refresh_scroll_geometry();
         let was_at_bottom = self.state.scroll.offset_y <= SCROLL_BOTTOM_EPSILON;
-        if let Some(emu) = self.emulator.as_mut() {
+        if let Some(emu) = self.session.emulator.as_mut() {
             for chunk in chunks {
                 emu.process(&chunk);
             }
@@ -300,7 +291,7 @@ impl GpuApp {
         let Some(window) = self.window.as_ref() else {
             return;
         };
-        let Some(emu) = self.emulator.as_ref() else {
+        let Some(emu) = self.session.emulator.as_ref() else {
             return;
         };
         let sf = self.scale_factor.max(0.0001);
@@ -349,15 +340,15 @@ impl GpuApp {
                 }
                 Effect::Redraw => self.request_redraw(),
                 Effect::ResizeEmulatorAndPty { cols, rows } => {
-                    if let Some(emu) = self.emulator.as_mut() {
+                    if let Some(emu) = self.session.emulator.as_mut() {
                         emu.resize(cols, rows);
                     }
-                    if let Some(pty) = self.pty.as_ref() {
+                    if let Some(pty) = self.session.pty.as_ref() {
                         pty.resize(cols as u16, rows as u16);
                     }
                 }
                 Effect::WriteToPty(bytes) => {
-                    if let Some(pty) = self.pty.as_mut() {
+                    if let Some(pty) = self.session.pty.as_mut() {
                         if let Err(e) = pty.write(&bytes) {
                             eprintln!("anyclaude: PTY write failed: {e}");
                         }
@@ -387,7 +378,7 @@ impl GpuApp {
 
     /// Dump a diagnostic snapshot (grid + scroll + emulator) to stderr.
     fn dump_diagnostic(&self) {
-        let snap = self.emulator.as_ref().map(|e| e.snapshot());
+        let snap = self.session.emulator.as_ref().map(|e| e.snapshot());
         super::diagnostic::dump_snapshot(
             self.state.grid_size,
             self.state.scroll.offset_y,
@@ -572,9 +563,9 @@ impl GpuApp {
     /// The old reader thread exits on its own as soon as its master
     /// PTY is dropped — the spawn flow is fire-and-forget.
     fn restart_pty(&mut self) {
-        self.pty = None;
+        self.session.pty = None;
         let (cols, rows) = self.state.grid_size;
-        self.emulator = Some(create_emulator(cols, rows, SCROLLBACK_LINES));
+        self.session.emulator = Some(create_emulator(cols, rows, SCROLLBACK_LINES));
         self.state.scroll = ScrollState::default();
         self.state.scroll_velocity = None;
         self.timers.cancel_momentum();
@@ -587,15 +578,15 @@ impl GpuApp {
         match ChildPty::spawn(
             cols as u16,
             rows as u16,
-            self.spawn_command.clone(),
-            self.spawn_args.clone(),
-            self.spawn_env.clone(),
+            self.session.spawn_command.clone(),
+            self.session.spawn_args.clone(),
+            self.session.spawn_env.clone(),
             move || {
                 let _ = proxy.send_event(UserEvent::PtyBytesArrived);
             },
         ) {
             Ok(pty) => {
-                self.pty = Some(pty);
+                self.session.pty = Some(pty);
             }
             Err(e) => {
                 eprintln!("anyclaude: failed to restart shell: {e}");
@@ -626,7 +617,7 @@ impl GpuApp {
         if sel.is_empty() {
             return;
         }
-        let Some(emu) = self.emulator.as_ref() else { return };
+        let Some(emu) = self.session.emulator.as_ref() else { return };
         let snap = emu.snapshot();
         let text = selection_to_text(&sel, &snap);
         if text.is_empty() {
@@ -683,12 +674,12 @@ impl GpuApp {
         }
         let payload = parts.join(" ");
         let bracketed = self
-            .emulator
+            .session.emulator
             .as_ref()
             .map(|e| e.bracketed_paste())
             .unwrap_or(false);
         let bytes = encode_paste(&payload, bracketed);
-        if let Some(pty) = self.pty.as_mut() {
+        if let Some(pty) = self.session.pty.as_mut() {
             if let Err(e) = pty.write(&bytes) {
                 eprintln!("anyclaude: paste write failed: {e}");
             }
@@ -702,7 +693,7 @@ impl GpuApp {
     fn cell_at(&mut self, x: f32, y: f32) -> Option<CellPoint> {
         let metrics = self.cell_metrics();
         let panel = self.terminal_panel_rect();
-        let emu = self.emulator.as_ref()?;
+        let emu = self.session.emulator.as_ref()?;
         let snap = emu.snapshot();
         let total_rows = snap.rows.len();
         let visible_rows = snap.visible_rows;
@@ -738,7 +729,7 @@ impl GpuApp {
         // (and apply suppresses selection) — §6.
         let mouse_report =
             point.and_then(|p| self.mouse_report(p.col as u16 + 1, p.row as u16 + 1, 0, true));
-        let snapshot = self.emulator.as_ref().map(|e| e.snapshot());
+        let snapshot = self.session.emulator.as_ref().map(|e| e.snapshot());
         let ctx = ApplyCtx {
             now: Instant::now(),
             snapshot: snapshot.as_ref(),
@@ -760,7 +751,7 @@ impl GpuApp {
     /// The term_core `MouseMode` collapses report-level + encoding into one enum
     /// (a known simplification for this Claude-Code-only emulator).
     fn mouse_report(&self, col: u16, row: u16, button: u8, pressed: bool) -> Option<Vec<u8>> {
-        match self.emulator.as_ref()?.mouse_mode() {
+        match self.session.emulator.as_ref()?.mouse_mode() {
             MouseMode::None => None,
             MouseMode::X10 if !pressed => None,
             MouseMode::Sgr => Some(encode_mouse_sgr(button, col, row, pressed)),
@@ -787,7 +778,7 @@ impl GpuApp {
         let Some(window) = self.window.as_ref() else {
             return;
         };
-        let Some(emulator) = self.emulator.as_ref() else {
+        let Some(emulator) = self.session.emulator.as_ref() else {
             return;
         };
         let sf = self.scale_factor.max(0.0001);
@@ -1086,21 +1077,21 @@ impl ApplicationHandler<UserEvent> for GpuApp {
 
         let (cols, rows) = self.fit_grid();
         self.state.grid_size = (cols, rows);
-        self.emulator = Some(create_emulator(cols, rows, SCROLLBACK_LINES));
+        self.session.emulator = Some(create_emulator(cols, rows, SCROLLBACK_LINES));
 
         let proxy = self.proxy.clone();
         match ChildPty::spawn(
             cols as u16,
             rows as u16,
-            self.spawn_command.clone(),
-            self.spawn_args.clone(),
-            self.spawn_env.clone(),
+            self.session.spawn_command.clone(),
+            self.session.spawn_args.clone(),
+            self.session.spawn_env.clone(),
             move || {
                 let _ = proxy.send_event(UserEvent::PtyBytesArrived);
             },
         ) {
             Ok(pty) => {
-                self.pty = Some(pty);
+                self.session.pty = Some(pty);
             }
             Err(e) => {
                 eprintln!("anyclaude: failed to spawn shell: {e}");

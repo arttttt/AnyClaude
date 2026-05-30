@@ -13,6 +13,7 @@ mod bootstrap;
 mod chrome;
 mod diagnostic;
 pub mod pty;
+mod session;
 mod text;
 mod timers;
 
