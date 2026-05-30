@@ -1374,3 +1374,47 @@ a chrome term_ui tree + a popup term_ui tree + delegation to pure fns; the
 terminal grid stays a direct `populate_panel` full-emit each frame (R5, not a
 retained view). All headless tests green; full workspace suite green (80
 sections).
+
+## 36. Phase E close-out — a unified Msg/apply/Effect loop, and mouse reporting (2026-05-30)
+
+With chrome and popups on retained trees, the last structural gap was the event
+loop itself: the live `GpuApp` still handled each winit event with a bespoke
+method that mutated `AppState` *and* fired side effects inline. E.8 folded all of
+it into one Elm-shaped loop — `dispatch(Msg) → AppState::apply(Msg, &ApplyCtx) ->
+Vec<Effect> → perform_effects`. `apply` is the single, pure state-transition
+point; `perform_effects` is the single side-effect site (and returns
+`should_exit` for `Effect::Quit`, since the `ActiveEventLoop` is the
+coordinator's to drive). The coordinator does any read-only resource resolution
+needed to build a *pure* `Msg` — resolve the cell under the cursor, read the
+backend list, hand the emulator snapshot in `ApplyCtx` — so the message carries
+plain data; resource *writes* come back as `Effect`s (`WriteToPty`,
+`ResizeEmulatorAndPty`, `Toggle*Popup`, `ApplyBackendSelection`, `SaveSettings`,
+`Copy*`, `Paste`, `RestartPty`, `DumpDiagnostic`, `Drain`, `Quit`, plus the
+scroll timers + `Redraw`). Only `RedrawRequested` stays direct — it *is* the
+render, not a transition.
+
+It migrated one event category per commit, each leaving a green build: scroll +
+modifiers, resize/scale, keyboard (popup nav / Cmd shortcuts / `encode_key`),
+mouse + selection, then pty-bytes/tick/close. Ten per-event `GpuApp` wrappers
+(`on_wheel`, `handle_popup_key`, `request_close_popups`, …) were deleted; the
+`window_event` / `user_event` arms are now one-line `dispatch` calls. Because the
+whole loop is pure, every arm is headlessly testable — 28 `app_state` tests pin
+key / mouse / resize / tick / close / modifiers routing → effects, without a
+window. This made R10 literal: `GpuApp` is `resources + one AppState + two
+term_ui trees + a pure apply/effects loop`.
+
+The same pass closed the one remaining §6 item: **mouse reporting**. New
+`term_gpu` encoders (`encode_mouse_x10` → `CSI M Cb Cx Cy`, `encode_mouse_sgr` →
+`CSI < Cb ; Cx ; Cy M|m`) forward press / release / wheel to the PTY when an app
+turns reporting on, suppressing our selection + scrollback scroll. It is
+spec-pinned by exact-byte tests rather than live verification — Claude Code is
+keyboard-driven, so the feature has no consumer to exercise it in the actual
+app. That is also why it was the *last* thing done and nearly cut as YAGNI:
+honestly scoped, it forwards left press/release + wheel (not motion/drag or other
+buttons), and term_core's single `MouseMode` enum collapses report-level and
+encoding — both documented simplifications for a Claude-Code-only emulator.
+
+Phase E is now effectively complete: R1 (no MVI), R5 (grid direct), R10 (GpuApp
+dissolved into resources + AppState + the apply/effects loop), chrome + popups
+retained, the §6 input surface wired. Full workspace suite green (80 sections);
+the input refactor verified live.

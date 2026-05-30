@@ -2511,3 +2511,38 @@ to pure functions, while the terminal **grid** stays a direct
 has stable structure (chrome, popups), full-emit what changes wholesale
 every frame (the grid). All headless tests green; the full workspace suite
 is green at 80 sections.
+
+### Phase E.8: the event loop becomes one pure reducer + a thin coordinator
+The render work (E.6/E.7) put *views* on a retained model; E.8 did the same to
+the *event loop*. Before, the live `GpuApp` handled each winit event with a
+method that both mutated `AppState` and fired side effects (redraw, PTY write,
+timers) inline — Elm-ish in spirit (the scroll reducer already returned
+`Vec<ScrollEffect>`) but not in structure. E.8 generalized that one reducer into
+the whole loop: `dispatch(Msg) → AppState::apply(Msg, &ApplyCtx) -> Vec<Effect> →
+perform_effects`. `apply` is now the *single* pure state-transition point and
+`perform_effects` the *single* side-effect site.
+
+The design tension worth recording is the resource boundary. A pure `apply`
+can't read the PTY, the backend list, or the emulator snapshot — those are
+resources (bucket 3-S/3-T). The resolution: the coordinator does the read-only
+resolution *while translating the event into a `Msg`*, so the message carries
+plain data (a resolved `CellPoint`, the backend open-data, the snapshot borrowed
+in `ApplyCtx`), and every resource *write* comes back as an `Effect` the
+coordinator performs. Two wrinkles fell out: `Effect::Quit` can't run in
+`perform_effects` (it needs the `ActiveEventLoop`, which only the event-loop
+callback holds), so `perform_effects` returns a `should_exit` bool; and
+genuinely resource-only events either become a coarse effect (PTY bytes →
+`Effect::Drain`, which feeds the emulator) or stay direct (`RedrawRequested` is
+the render, not a transition). The payoff is testability: the entire input
+surface is now headless — 28 `app_state` tests drive `apply` arms to their
+effects with no window, where before input was the least-testable, most
+render-blind part of the app.
+
+E.8 also closed §6 mouse reporting. The encoders are the textbook xterm forms
+(X10 `CSI M Cb Cx Cy` offset by 32 and clamped at 223; SGR `CSI < Cb ; Cx ; Cy
+M|m`, unbounded), and they're the rare case where *exact-byte tests are the
+verification* — the feature is unobservable in anyclaude itself (Claude Code
+never enables mouse mode), so there is nothing to eyeball. That, plus
+term_core's `MouseMode` collapsing report-level and encoding into one enum, is
+why it was scoped to left press/release + wheel and nearly cut as YAGNI: built
+for spec-completeness, not for a consumer.

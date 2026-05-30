@@ -1358,3 +1358,41 @@ delegation to pure fns.
   (chrome / popups), full-emit what doesn't (the terminal grid, R5)."*
 - **Green:** all headless tests green; full workspace suite green —
   **80** test sections. **6** workspace crates.
+
+## term_ui E.8 + §6 — the unified loop + mouse reporting (2026-05-30)
+
+Phase E close-out. The event loop becomes one pure reducer + a thin
+coordinator; the last §6 item (mouse reporting) lands.
+
+- **Unified loop:** every winit/user event → `GpuApp::dispatch` →
+  `AppState::apply(Msg, &ApplyCtx) -> Vec<Effect>` → `perform_effects`. `apply`
+  = the **single** pure state-transition point; `perform_effects` = the
+  **single** side-effect site.
+- **The resource boundary:** the coordinator does read-only resolution to build
+  a *pure* `Msg`; resource **writes** come back as `Effect`s. `Effect::Quit`
+  returns via a `should_exit` bool (it needs the `ActiveEventLoop`). Only
+  `RedrawRequested` stays direct (it IS the render).
+- **Deleted:** **10** per-event `GpuApp` wrappers (`on_wheel` /
+  `on_gesture_end` / `on_momentum_tick` / `update_modifiers` /
+  `on_cursor_moved` / `on_mouse_release` / `handle_popup_key` / `handle_*_key` /
+  `request_close_popups` / `any_popup_visible`).
+- **Migrated** one event category per commit — **6** atomic commits: scroll +
+  modifiers · resize/scale · keyboard · mouse + selection · pty/tick/close ·
+  tests.
+- **Testability:** the whole input surface is now headless — **28** `app_state`
+  tests pin every `apply` arm → effects, with no window. R10 is literal:
+  `GpuApp = resources + one AppState + two term_ui trees + a pure apply/effects
+  loop`.
+- **§6 mouse reporting:** new `term_gpu` encoders — `encode_mouse_x10`
+  (`CSI M Cb Cx Cy`, offset 32, clamped 223) + `encode_mouse_sgr`
+  (`CSI < Cb ; Cx ; Cy M|m`) — forward press/release/wheel to the PTY when an
+  app turns reporting on, suppressing selection/scroll. Spec-pinned by **7**
+  exact-byte tests.
+- **The honest caveat:** *mouse reporting has no consumer in anyclaude — Claude
+  Code is keyboard-driven — so the exact-byte tests ARE the verification;
+  nothing to eyeball.* Scoped to left press/release + wheel; term_core's single
+  `MouseMode` enum collapses report-level + encoding (documented simplifications,
+  Claude-Code-only).
+- **Phase E complete:** R1 (no MVI) · R5 (grid direct) · R10 (dissolved GpuApp +
+  apply/effects loop) · chrome + popups retained · §6 input wired. Full suite
+  green — **80** sections.
