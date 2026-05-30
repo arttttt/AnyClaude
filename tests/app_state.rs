@@ -260,7 +260,9 @@ fn ctx() -> ApplyCtx<'static> {
 fn key(physical: KeyCode) -> Msg {
     Msg::Key {
         logical: Key::Named(NamedKey::Space),
+        logical_unmod: Key::Named(NamedKey::Space),
         physical: PhysicalKey::Code(physical),
+        app_cursor: false,
     }
 }
 
@@ -271,7 +273,9 @@ fn terminal_key_emits_write_to_pty() {
     let fx = s.apply(
         Msg::Key {
             logical: Key::Named(NamedKey::Enter),
+            logical_unmod: Key::Named(NamedKey::Enter),
             physical: PhysicalKey::Code(KeyCode::Enter),
+            app_cursor: false,
         },
         &ctx(),
     );

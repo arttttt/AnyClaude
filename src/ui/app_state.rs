@@ -142,7 +142,15 @@ pub enum Msg {
     /// A key was pressed. `apply` runs the full routing — popup nav / app
     /// shortcut / terminal key — reading `modifiers` + popup visibility from
     /// `AppState`, and emits effects for everything that touches a resource.
-    Key { logical: Key, physical: PhysicalKey },
+    /// `logical_unmod` is the key without modifiers (the un-composed base char,
+    /// for the Meta form); `app_cursor` is the emulator's DECCKM state, both
+    /// pre-resolved by the coordinator. (§ key encoding)
+    Key {
+        logical: Key,
+        logical_unmod: Key,
+        physical: PhysicalKey,
+        app_cursor: bool,
+    },
     /// The cursor moved to `(x, y)` logical px. `point` is the cell under it,
     /// pre-resolved by the coordinator (when a selection drag is in flight OR a
     /// mouse-reporting app wants motion). `motion_report` is the encoded drag /
@@ -221,7 +229,9 @@ impl AppState {
                 fx.push(Effect::Redraw);
                 fx
             }
-            Msg::Key { logical, physical } => self.on_key(logical, physical),
+            Msg::Key { logical, logical_unmod, physical, app_cursor } => {
+                self.on_key(logical, logical_unmod, physical, app_cursor)
+            }
             Msg::CursorMoved { x, y, point, motion_report } => {
                 self.set_cursor_pos(x, y);
                 // A mouse-reporting app owns motion — forward the drag / move
@@ -299,7 +309,13 @@ impl AppState {
     /// Route a key press. Popups own input while open; Cmd/Super combos are app
     /// shortcuts (each maps to one effect); everything else is a terminal key
     /// encoded to the PTY. Mirrors the legacy `window_event` keyboard dispatch.
-    fn on_key(&mut self, logical: Key, physical: PhysicalKey) -> Vec<Effect> {
+    fn on_key(
+        &mut self,
+        logical: Key,
+        logical_unmod: Key,
+        physical: PhysicalKey,
+        app_cursor: bool,
+    ) -> Vec<Effect> {
         if self.any_popup_visible() {
             return self.on_popup_key(physical);
         }
@@ -320,7 +336,7 @@ impl AppState {
             }
             return Vec::new();
         }
-        match encode_key(&logical, self.modifiers) {
+        match encode_key(&logical, &logical_unmod, self.modifiers, app_cursor) {
             Some(bytes) => vec![Effect::WriteToPty(bytes)],
             None => Vec::new(),
         }

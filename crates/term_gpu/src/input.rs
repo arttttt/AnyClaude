@@ -11,9 +11,59 @@
 use term_core::{MouseProtocol, MouseTracking};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
-/// Encode `(key, modifiers)` as PTY input bytes. Returns `None` when
-/// the key has no terminal-byte equivalent.
-pub fn encode_key(key: &Key, modifiers: ModifiersState) -> Option<Vec<u8>> {
+/// The xterm modifier parameter (`1 + shift + alt*2 + ctrl*4`) as its ASCII
+/// digit (`'2'..'8'`), or `None` when no shift / alt / ctrl is held (the
+/// unmodified form). Cmd / Super is never encoded — it drives app shortcuts.
+fn modifier_param(m: ModifiersState) -> Option<u8> {
+    let bits =
+        (m.shift_key() as u8) | ((m.alt_key() as u8) << 1) | ((m.control_key() as u8) << 2);
+    (bits != 0).then_some(b'1' + bits)
+}
+
+/// Arrow / Home / End: `CSI 1 ; <mod> <letter>` when a modifier is held;
+/// otherwise the application-cursor `SS3 <letter>` (DECCKM) or the normal
+/// `CSI <letter>` form. Modified forms always use `CSI`, even under DECCKM.
+fn cursor_seq(letter: u8, m: ModifiersState, app_cursor: bool) -> Vec<u8> {
+    match modifier_param(m) {
+        Some(p) => vec![0x1b, b'[', b'1', b';', p, letter],
+        None if app_cursor => vec![0x1b, b'O', letter],
+        None => vec![0x1b, b'[', letter],
+    }
+}
+
+/// F1–F4: `SS3 P/Q/R/S`, or `CSI 1 ; <mod> P/Q/R/S` when modified.
+fn fn_pqrs(letter: u8, m: ModifiersState) -> Vec<u8> {
+    match modifier_param(m) {
+        Some(p) => vec![0x1b, b'[', b'1', b';', p, letter],
+        None => vec![0x1b, b'O', letter],
+    }
+}
+
+/// F5+ : `CSI <n> ~`, or `CSI <n> ; <mod> ~` when modified.
+fn fn_tilde(n: &[u8], m: ModifiersState) -> Vec<u8> {
+    let mut v = vec![0x1b, b'['];
+    v.extend_from_slice(n);
+    if let Some(p) = modifier_param(m) {
+        v.push(b';');
+        v.push(p);
+    }
+    v.push(b'~');
+    v
+}
+
+/// Encode a key press as the PTY input bytes. `key` is the layout-resolved
+/// logical key (modifier-composed — e.g. macOS `Option+a` arrives as `å`);
+/// `key_unmod` is the same key WITHOUT modifiers (the base `a`), used for the
+/// Meta / ESC-prefix form so `Option+a` sends `ESC a`, not `ESC å`.
+/// `app_cursor` is the emulator's DECCKM state (arrows/Home/End use `SS3` when
+/// set). Returns `None` when the key has no terminal-byte equivalent. Cmd /
+/// Super combos are handled upstream as app shortcuts, never here.
+pub fn encode_key(
+    key: &Key,
+    key_unmod: &Key,
+    modifiers: ModifiersState,
+    app_cursor: bool,
+) -> Option<Vec<u8>> {
     let ctrl = modifiers.control_key();
     let alt = modifiers.alt_key();
     match key {
@@ -22,8 +72,9 @@ pub fn encode_key(key: &Key, modifiers: ModifiersState) -> Option<Vec<u8>> {
             if ctrl && chars.len() == 1 {
                 let ch = chars[0];
                 if ch.is_ascii_alphabetic() {
-                    // Ctrl+A..Z → 0x01..0x1A.
-                    return Some(vec![(ch.to_ascii_lowercase() as u8) - b'a' + 1]);
+                    // Ctrl+A..Z → 0x01..0x1A; Ctrl+Alt+key adds the ESC prefix.
+                    let c0 = ch.to_ascii_lowercase() as u8 - b'a' + 1;
+                    return Some(if alt { vec![0x1b, c0] } else { vec![c0] });
                 }
                 // A few non-letter Ctrl combos shells expect to receive.
                 let mapped = match ch {
@@ -39,28 +90,47 @@ pub fn encode_key(key: &Key, modifiers: ModifiersState) -> Option<Vec<u8>> {
                     return Some(vec![b]);
                 }
             }
-            let mut bytes = s.as_str().as_bytes().to_vec();
             if alt {
-                // ESC-prefix is the conventional encoding for Meta+key.
-                bytes.insert(0, 0x1b);
+                // Meta: ESC + the un-composed base char (so macOS Option+a is
+                // `ESC a`, not the composed `å`).
+                if let Key::Character(base) = key_unmod {
+                    let mut bytes = vec![0x1b];
+                    bytes.extend_from_slice(base.as_str().as_bytes());
+                    return Some(bytes);
+                }
             }
-            Some(bytes)
+            Some(s.as_str().as_bytes().to_vec())
         }
         Key::Named(named) => match named {
             NamedKey::Enter => Some(b"\r".to_vec()),
+            // Shift+Tab is back-tab (CSI Z) — ink TUIs use it for mode cycling.
+            NamedKey::Tab if modifiers.shift_key() => Some(b"\x1b[Z".to_vec()),
             NamedKey::Tab => Some(b"\t".to_vec()),
             NamedKey::Backspace => Some(b"\x7f".to_vec()),
             NamedKey::Escape => Some(b"\x1b".to_vec()),
             NamedKey::Space => Some(b" ".to_vec()),
-            NamedKey::ArrowUp => Some(b"\x1b[A".to_vec()),
-            NamedKey::ArrowDown => Some(b"\x1b[B".to_vec()),
-            NamedKey::ArrowRight => Some(b"\x1b[C".to_vec()),
-            NamedKey::ArrowLeft => Some(b"\x1b[D".to_vec()),
-            NamedKey::Home => Some(b"\x1b[H".to_vec()),
-            NamedKey::End => Some(b"\x1b[F".to_vec()),
+            NamedKey::ArrowUp => Some(cursor_seq(b'A', modifiers, app_cursor)),
+            NamedKey::ArrowDown => Some(cursor_seq(b'B', modifiers, app_cursor)),
+            NamedKey::ArrowRight => Some(cursor_seq(b'C', modifiers, app_cursor)),
+            NamedKey::ArrowLeft => Some(cursor_seq(b'D', modifiers, app_cursor)),
+            NamedKey::Home => Some(cursor_seq(b'H', modifiers, app_cursor)),
+            NamedKey::End => Some(cursor_seq(b'F', modifiers, app_cursor)),
+            NamedKey::Insert => Some(b"\x1b[2~".to_vec()),
             NamedKey::Delete => Some(b"\x1b[3~".to_vec()),
             NamedKey::PageUp => Some(b"\x1b[5~".to_vec()),
             NamedKey::PageDown => Some(b"\x1b[6~".to_vec()),
+            NamedKey::F1 => Some(fn_pqrs(b'P', modifiers)),
+            NamedKey::F2 => Some(fn_pqrs(b'Q', modifiers)),
+            NamedKey::F3 => Some(fn_pqrs(b'R', modifiers)),
+            NamedKey::F4 => Some(fn_pqrs(b'S', modifiers)),
+            NamedKey::F5 => Some(fn_tilde(b"15", modifiers)),
+            NamedKey::F6 => Some(fn_tilde(b"17", modifiers)),
+            NamedKey::F7 => Some(fn_tilde(b"18", modifiers)),
+            NamedKey::F8 => Some(fn_tilde(b"19", modifiers)),
+            NamedKey::F9 => Some(fn_tilde(b"20", modifiers)),
+            NamedKey::F10 => Some(fn_tilde(b"21", modifiers)),
+            NamedKey::F11 => Some(fn_tilde(b"23", modifiers)),
+            NamedKey::F12 => Some(fn_tilde(b"24", modifiers)),
             _ => None,
         },
         _ => None,

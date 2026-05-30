@@ -278,10 +278,21 @@ impl ApplicationHandler<UserEvent> for super::GpuApp {
                 // All key routing — popup nav while a popup is open, Cmd/Super
                 // app shortcuts, otherwise a terminal key encoded to the PTY —
                 // lives in AppState::apply. Quit comes back as the exit signal,
-                // since the event loop is the coordinator's to drive.
+                // since the event loop is the coordinator's to drive. Resolve the
+                // resource-backed inputs the encoder needs here: the DECCKM state
+                // (SS3 vs CSI arrows) and the un-composed base key (Meta form).
+                let app_cursor = self
+                    .session
+                    .emulator
+                    .as_ref()
+                    .map(|e| e.cursor_keys_app())
+                    .unwrap_or(false);
+                let logical_unmod = key_without_modifiers(&event);
                 if self.dispatch(Msg::Key {
                     logical: event.logical_key,
+                    logical_unmod,
                     physical: event.physical_key,
+                    app_cursor,
                 }) {
                     event_loop.exit();
                 }
@@ -291,5 +302,21 @@ impl ApplicationHandler<UserEvent> for super::GpuApp {
             }
             _ => {}
         }
+    }
+}
+
+/// The layout-resolved key WITHOUT modifiers applied. On macOS this strips the
+/// Option composition (so `Option+a` is the base `a`, not `å`), which
+/// `encode_key` uses for the Meta / ESC-prefix form. Other platforms fall back
+/// to the logical key (anyclaude is macOS-targeted).
+fn key_without_modifiers(event: &winit::event::KeyEvent) -> winit::keyboard::Key {
+    #[cfg(target_os = "macos")]
+    {
+        use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
+        event.key_without_modifiers()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        event.logical_key.clone()
     }
 }

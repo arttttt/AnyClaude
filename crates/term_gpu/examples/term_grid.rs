@@ -1091,7 +1091,14 @@ impl ApplicationHandler<CustomEvent> for App {
                         }
                     }
                 }
-                if let Some(bytes) = encode_key(&event.logical_key, self.modifiers) {
+                let app_cursor = self
+                    .panels
+                    .get(&self.tree.focus())
+                    .map(|p| p.emulator.cursor_keys_app())
+                    .unwrap_or(false);
+                if let Some(bytes) =
+                    encode_key(&event.logical_key, &event.logical_key, self.modifiers, app_cursor)
+                {
                     self.write_to_focused(&bytes);
                 }
             }
