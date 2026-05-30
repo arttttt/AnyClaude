@@ -8,6 +8,7 @@
 //! the default and removes the flag.
 
 pub mod app;
+mod backends;
 mod bootstrap;
 mod chrome;
 mod diagnostic;

@@ -72,6 +72,7 @@ const MULTI_CLICK_THRESHOLD_MS: u128 = 400;
 /// Popup open/close fade duration (seconds).
 const POPUP_FADE_SECS: f32 = 0.12;
 
+use super::backends::Backends;
 use super::timers::Timers;
 use super::chrome::{
     CHROME_FONT_SIZE, CHROME_H_PAD, FOOTER_HEIGHT_LOGICAL, HEADER_HEIGHT_LOGICAL,
@@ -155,30 +156,14 @@ pub(super) struct GpuApp {
 
     clipboard: Box<dyn Clipboard>,
 
-    /// Live proxy backend state. Backend popup reads the list from
-    /// here and Enter calls `switch_backend`; history popup pulls
-    /// from `get_switch_log()`.
-    backend_state: BackendState,
-    /// Live subagent backend override. `None` means "use active backend
-    /// for subagents". Header reads it for the `sub:` label; backend
-    /// popup writes it via `Enter` in the Subagent section.
-    subagent_backend: AgentBackendState,
-    /// Live teammate backend override. Same shape as `subagent_backend`
-    /// — separate field so subagents and teammates can route to
-    /// different backends.
-    teammate_backend: AgentBackendState,
-    /// Proxy's observability hub. Header reads the total request
-    /// counter via `snapshot()` once per frame.
-    observability: ObservabilityHub,
+    /// Proxy + config handles — backend state, subagent / teammate overrides,
+    /// observability, settings manager. See [`Backends`].
+    backends: Backends,
     /// Spawn params for Claude Code, prepared by `run()` before the
     /// event loop. Used in `resumed()` to spawn the PTY child.
     spawn_command: String,
     spawn_args: Vec<String>,
     spawn_env: Vec<(String, String)>,
-    /// Settings registry + current values. Persisted to disk on Cmd+E
-    /// popup confirm (Enter). Loaded from Config at startup so the
-    /// popup reflects the user's last choice.
-    settings_manager: ClaudeSettingsManager,
 }
 
 
@@ -224,14 +209,16 @@ impl GpuApp {
             timers: Timers::new(),
             session_click_zone: None,
             clipboard: make_clipboard(),
-            backend_state,
-            subagent_backend,
-            teammate_backend,
-            observability,
+            backends: Backends {
+                backend_state,
+                subagent_backend,
+                teammate_backend,
+                observability,
+                settings_manager,
+            },
             spawn_command,
             spawn_args,
             spawn_env,
-            settings_manager,
         }
     }
 
@@ -441,11 +428,11 @@ impl GpuApp {
             self.close_all_popups();
             return;
         }
-        let cfg = self.backend_state.get_config();
+        let cfg = self.backends.backend_state.get_config();
         if cfg.backends.is_empty() {
             return;
         }
-        let active = self.backend_state.get_active_backend();
+        let active = self.backends.backend_state.get_active_backend();
         let backend_selection = cfg
             .backends
             .iter()
@@ -472,7 +459,7 @@ impl GpuApp {
             self.close_all_popups();
             return;
         }
-        let entries = self.backend_state.get_switch_log();
+        let entries = self.backends.backend_state.get_switch_log();
         let history_entries: Vec<HistoryEntry> = entries
             .into_iter()
             .map(|e| HistoryEntry {
@@ -500,7 +487,7 @@ impl GpuApp {
             return;
         }
         let fields: Vec<SettingsFieldSnapshot> = self
-            .settings_manager
+            .backends.settings_manager
             .registry()
             .iter()
             .map(|def| SettingsFieldSnapshot {
@@ -508,7 +495,7 @@ impl GpuApp {
                 label: def.label,
                 description: def.description,
                 section: def.section,
-                value: self.settings_manager.get(def.id),
+                value: self.backends.settings_manager.get(def.id),
             })
             .collect();
         if fields.is_empty() {
@@ -530,10 +517,10 @@ impl GpuApp {
             SettingsDialogState::Hidden => return,
         };
         for field in &fields {
-            self.settings_manager.set(field.id, field.value);
+            self.backends.settings_manager.set(field.id, field.value);
         }
         let snapshot = self
-            .settings_manager
+            .backends.settings_manager
             .snapshot_values()
             .into_iter()
             .map(|(id, v)| (id.as_str().to_string(), v))
@@ -565,23 +552,23 @@ impl GpuApp {
                 ),
                 BackendSwitchState::Hidden => return,
             };
-        let cfg = self.backend_state.get_config();
+        let cfg = self.backends.backend_state.get_config();
         match section {
             BackendPopupSection::ActiveBackend => {
                 if let Some(b) = cfg.backends.get(backend_sel) {
                     let id = b.name.clone();
-                    if let Err(e) = self.backend_state.switch_backend(&id) {
+                    if let Err(e) = self.backends.backend_state.switch_backend(&id) {
                         eprintln!("anyclaude: backend switch failed: {e}");
                     }
                 }
             }
             BackendPopupSection::SubagentBackend => {
                 let new_value = override_selection_to_backend_id(&cfg.backends, subagent_sel);
-                self.subagent_backend.set(new_value);
+                self.backends.subagent_backend.set(new_value);
             }
             BackendPopupSection::TeammateBackend => {
                 let new_value = override_selection_to_backend_id(&cfg.backends, teammate_sel);
-                self.teammate_backend.set(new_value);
+                self.backends.teammate_backend.set(new_value);
             }
         }
     }
@@ -872,8 +859,8 @@ impl GpuApp {
         // The copied-flash is DERIVED from the deadline + frame clock (R12) —
         // no stored boolean, no expiry mutation.
         let now = Instant::now();
-        let active_backend = self.backend_state.get_active_backend();
-        let cfg = self.backend_state.get_config();
+        let active_backend = self.backends.backend_state.get_active_backend();
+        let cfg = self.backends.backend_state.get_config();
         let resolve_display = |id: &str| -> Option<String> {
             cfg.backends
                 .iter()
@@ -881,15 +868,15 @@ impl GpuApp {
                 .map(|b| b.display_name.clone())
         };
         let subagent_label = self
-            .subagent_backend
+            .backends.subagent_backend
             .get()
             .and_then(|id| resolve_display(&id));
         let teammate_label = self
-            .teammate_backend
+            .backends.teammate_backend
             .get()
             .and_then(|id| resolve_display(&id));
         let total_reqs: u64 = self
-            .observability
+            .backends.observability
             .snapshot()
             .per_backend
             .values()
@@ -977,15 +964,15 @@ impl GpuApp {
         // exclusive, so at most one is ever built.
         let popup: Option<Block> = if self.state.backend_switch.is_visible() {
             let items_and_ids: Vec<(String, String)> = self
-                .backend_state
+                .backends.backend_state
                 .get_config()
                 .backends
                 .iter()
                 .map(|b| (b.display_name.clone(), b.name.clone()))
                 .collect();
-            let active_backend = self.backend_state.get_active_backend();
-            let current_subagent = self.subagent_backend.get();
-            let current_teammate = self.teammate_backend.get();
+            let active_backend = self.backends.backend_state.get_active_backend();
+            let current_subagent = self.backends.subagent_backend.get();
+            let current_teammate = self.backends.teammate_backend.get();
             Some(popup_view::backend_view(
                 &self.state.backend_switch,
                 &items_and_ids,
