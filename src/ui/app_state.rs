@@ -333,6 +333,11 @@ impl AppState {
                         AppShortcut::Quit => Effect::Quit,
                     }];
                 }
+                // Cmd+Backspace → delete to line start (^U) — the macOS
+                // line-edit convenience (Super has no terminal byte otherwise).
+                if code == KeyCode::Backspace {
+                    return vec![Effect::WriteToPty(vec![0x15])];
+                }
             }
             return Vec::new();
         }

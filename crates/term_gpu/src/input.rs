@@ -106,6 +106,11 @@ pub fn encode_key(
             // Shift+Tab is back-tab (CSI Z) — ink TUIs use it for mode cycling.
             NamedKey::Tab if modifiers.shift_key() => Some(b"\x1b[Z".to_vec()),
             NamedKey::Tab => Some(b"\t".to_vec()),
+            // Backspace editing combos (macOS convention): Opt = delete word
+            // (Meta-Backspace), Ctrl = delete word (^W). Cmd = delete line, but
+            // Cmd is a Super combo handled upstream, never reaching here.
+            NamedKey::Backspace if alt => Some(vec![0x1b, 0x7f]),
+            NamedKey::Backspace if ctrl => Some(vec![0x17]),
             NamedKey::Backspace => Some(b"\x7f".to_vec()),
             NamedKey::Escape => Some(b"\x1b".to_vec()),
             NamedKey::Space => Some(b" ".to_vec()),

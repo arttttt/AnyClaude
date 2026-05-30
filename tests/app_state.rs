@@ -293,6 +293,18 @@ fn super_shortcut_maps_to_its_effect() {
 }
 
 #[test]
+fn cmd_backspace_deletes_to_line_start() {
+    // Cmd+Backspace has no app shortcut → it sends ^U (delete to line start).
+    let mut s = state();
+    s.modifiers = ModifiersState::SUPER;
+    let fx = s.apply(key(KeyCode::Backspace), &ctx());
+    assert!(
+        matches!(fx.as_slice(), [Effect::WriteToPty(b)] if b.as_slice() == [0x15]),
+        "Cmd+Backspace → ^U: {fx:?}"
+    );
+}
+
+#[test]
 fn popup_escape_closes_and_redraws() {
     let mut s = state();
     s.backend_switch.apply(BackendSwitchIntent::Open {

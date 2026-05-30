@@ -109,6 +109,16 @@ fn named_fixed_sequences() {
 }
 
 #[test]
+fn backspace_editing_combos() {
+    // Plain Backspace = DEL.
+    assert_eq!(enc(&named(NamedKey::Backspace), ModifiersState::empty()), Some(b"\x7f".to_vec()));
+    // Opt+Backspace = Meta-Backspace (ESC DEL) → backward-kill-word.
+    assert_eq!(enc(&named(NamedKey::Backspace), ModifiersState::ALT), Some(vec![0x1b, 0x7f]));
+    // Ctrl+Backspace = ^W → delete word.
+    assert_eq!(enc(&named(NamedKey::Backspace), ModifiersState::CONTROL), Some(vec![0x17]));
+}
+
+#[test]
 fn printable_and_shifted() {
     assert_eq!(enc(&ch("a"), ModifiersState::empty()), Some(b"a".to_vec()));
     // Shift is already folded into the logical char.
