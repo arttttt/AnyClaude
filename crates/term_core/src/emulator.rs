@@ -69,6 +69,10 @@ pub trait TerminalEmulator: Send {
     fn cursor_keys_app(&self) -> bool;
     fn focus_reporting(&self) -> bool;
     fn title(&self) -> &str;
+
+    /// Monotonic count of scrollback lines evicted off the top (buffer full).
+    /// Used to keep a scrolled-up viewport anchored as old lines erode.
+    fn lines_evicted(&self) -> u64;
 }
 
 pub struct VtEmulator {
@@ -379,5 +383,8 @@ impl TerminalEmulator for VtEmulator {
     }
     fn title(&self) -> &str {
         &self.title
+    }
+    fn lines_evicted(&self) -> u64 {
+        self.grid.lines_evicted()
     }
 }

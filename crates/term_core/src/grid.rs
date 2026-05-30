@@ -225,6 +225,10 @@ pub struct Grid {
     visible_rows: usize,
     cols: usize,
     max_scrollback: usize,
+    /// Monotonic count of scrollback lines evicted off the top because the
+    /// buffer was full. Lets a scrolled-up viewport stay anchored to its
+    /// content as old lines erode (the analog of Warp's `num_lines_truncated`).
+    lines_evicted: u64,
 
     // Cursor state
     pub cursor_row: usize,
@@ -299,6 +303,7 @@ impl Grid {
             visible_rows: rows,
             cols,
             max_scrollback,
+            lines_evicted: 0,
             cursor_row: 0,
             cursor_col: 0,
             cursor_visible: true,
@@ -337,6 +342,11 @@ impl Grid {
     }
     pub fn scrollback_len(&self) -> usize {
         self.rows.len().saturating_sub(self.visible_rows)
+    }
+
+    /// Total scrollback lines evicted off the top since creation (monotonic).
+    pub fn lines_evicted(&self) -> u64 {
+        self.lines_evicted
     }
 
     fn visible_start(&self) -> usize {
@@ -591,6 +601,7 @@ impl Grid {
             if self.scroll_top == 0 {
                 if self.scrollback_len() >= self.max_scrollback {
                     self.rows.remove(0);
+                    self.lines_evicted += 1;
                 }
                 let insert_idx = self.visible_start() + self.scroll_bottom + 1;
                 let insert_idx = insert_idx.min(self.rows.len());

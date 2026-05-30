@@ -11,10 +11,16 @@ use super::{UserEvent, SCROLLBACK_LINES, SCROLL_BOTTOM_EPSILON};
 impl super::GpuApp {
     /// Drain the PTY's pending bytes into the emulator. Returns true
     /// when at least one chunk arrived (caller should request redraw).
-    /// Follow mode: if the scroll was at the bottom BEFORE applying
-    /// the new bytes, re-pin to the bottom afterward so the cursor
-    /// stays visible while the shell prints. Users who explicitly
-    /// scrolled up keep position.
+    ///
+    /// Scroll behaviour follows Warp: if the view was at the bottom BEFORE the
+    /// new bytes, re-pin to the bottom (follow mode) so the cursor stays
+    /// visible. If the user had scrolled up to read history, KEEP the visible
+    /// lines fixed instead of letting them drift: the offset is measured from
+    /// the bottom, so as content grows below (and erodes off the top once the
+    /// scrollback is full) the same lines would otherwise scroll away. We
+    /// compensate by advancing `offset_y` by how much the buffer grew below
+    /// plus how many lines were evicted off the top (the analog of Warp's
+    /// `num_lines_truncated` anchor adjustment).
     pub(super) fn drain_pty(&mut self) -> bool {
         let Some(pty) = self.session.pty.as_mut() else {
             return false;
@@ -25,6 +31,13 @@ impl super::GpuApp {
         }
         self.refresh_scroll_geometry();
         let was_at_bottom = self.state.scroll.offset_y <= SCROLL_BOTTOM_EPSILON;
+        let old_total = self.state.scroll.total_size_px;
+        let old_evicted = self
+            .session
+            .emulator
+            .as_ref()
+            .map(|e| e.lines_evicted())
+            .unwrap_or(0);
         if let Some(emu) = self.session.emulator.as_mut() {
             for chunk in chunks {
                 emu.process(&chunk);
@@ -33,6 +46,20 @@ impl super::GpuApp {
         self.refresh_scroll_geometry();
         if was_at_bottom {
             self.state.scroll.offset_y = 0.0;
+        } else {
+            let new_evicted = self
+                .session
+                .emulator
+                .as_ref()
+                .map(|e| e.lines_evicted())
+                .unwrap_or(old_evicted);
+            let cell_h = self.cell_metrics().height_physical / self.scale_factor.max(0.0001);
+            let grew = (self.state.scroll.total_size_px - old_total)
+                + new_evicted.saturating_sub(old_evicted) as f32 * cell_h;
+            if grew > 0.0 {
+                let max = self.state.scroll.max_offset();
+                self.state.scroll.offset_y = (self.state.scroll.offset_y + grew).min(max);
+            }
         }
         true
     }
