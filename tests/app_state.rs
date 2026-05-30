@@ -368,3 +368,37 @@ fn mouse_reporting_app_owns_the_click() {
     assert!(fx.is_empty());
     assert!(s.selection.is_none(), "selection must not shadow a mouse-reporting app");
 }
+
+// ── resize / tick / close / pty / modifiers routing through apply (E.8.2/5) ──
+
+#[test]
+fn grid_resized_updates_grid_and_asks_to_resize_resources() {
+    let mut s = state(); // starts (80, 24)
+    let fx = s.apply(Msg::GridResized { cols: 100, rows: 40 }, &ctx());
+    assert_eq!(s.grid_size, (100, 40));
+    assert_eq!(
+        fx,
+        vec![Effect::ResizeEmulatorAndPty { cols: 100, rows: 40 }, Effect::Redraw]
+    );
+}
+
+#[test]
+fn grid_resized_to_the_same_size_only_redraws() {
+    let mut s = state(); // (80, 24)
+    assert_eq!(s.apply(Msg::GridResized { cols: 80, rows: 24 }, &ctx()), vec![Effect::Redraw]);
+}
+
+#[test]
+fn tick_close_pty_map_to_their_effects() {
+    let mut s = state();
+    assert_eq!(s.apply(Msg::Tick, &ctx()), vec![Effect::Redraw]);
+    assert_eq!(s.apply(Msg::Close, &ctx()), vec![Effect::Quit]);
+    assert_eq!(s.apply(Msg::PtyBytes, &ctx()), vec![Effect::Drain]);
+}
+
+#[test]
+fn modifiers_changed_updates_state_with_no_effect() {
+    let mut s = state();
+    assert!(s.apply(Msg::ModifiersChanged(ModifiersState::SUPER), &ctx()).is_empty());
+    assert!(s.modifiers.super_key());
+}
