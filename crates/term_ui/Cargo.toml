@@ -1,0 +1,27 @@
+[package]
+name = "term_ui"
+version = "0.1.0"
+edition = "2021"
+description = "Retained + reactive UI engine for AnyClaude. Sits between AppState and term_gpu: View trait, generational arena, Flex-lite layout, event-agnostic reconcile. See docs/design/term-ui-design.md (Phase A)."
+
+[lints]
+workspace = true
+
+[dependencies]
+# term_ui layers on term_gpu and consumes its instance/text surface (R9).
+# It re-implements none of term_gpu's GPU substrate; it only orchestrates
+# layout + paint over the same RectInstance/GlyphInstance/ShadowInstance
+# types and the same FontSystem/TextShapeCache/GlyphAtlas/SwashCache.
+term_gpu = { path = "../term_gpu" }
+# Vec2 / vector math for the layout engine (constraints, sizes, origins).
+glam = "0.30"
+
+[dev-dependencies]
+# The toy example drives a real GpuRenderer + winit window (compiled
+# headlessly under `cargo build --examples`; running it is manual
+# validation per Phase A).
+winit = "0.30"
+
+[[example]]
+name = "toy"
+path = "examples/toy.rs"

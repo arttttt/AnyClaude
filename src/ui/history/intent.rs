@@ -1,6 +1,7 @@
 use crate::ui::history::state::HistoryEntry;
-use mvi::Intent;
 
+/// History popup intents — the message vocabulary consumed by
+/// [`HistoryDialogState::apply`]. Plain enum (no MVI traits).
 #[derive(Debug, Clone)]
 pub enum HistoryIntent {
     Load { entries: Vec<HistoryEntry> },
@@ -8,5 +9,3 @@ pub enum HistoryIntent {
     ScrollUp,
     ScrollDown,
 }
-
-impl Intent for HistoryIntent {}

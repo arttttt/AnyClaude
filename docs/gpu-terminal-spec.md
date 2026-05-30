@@ -1,77 +1,77 @@
 # GPU Terminal Specification — AnyClaude
 
-## 1. Обзор
+## 1. Overview
 
-### Цель
-Заменить текстовый TUI-рендерер (ratatui + alacritty_terminal) на кастомный GPU-рендерер с поддержкой variable-width шрифтов и системой панелей.
+### Goal
+Replace the textual TUI renderer (ratatui + alacritty_terminal) with a custom GPU renderer that supports variable-width fonts and a panel system.
 
-### Текущий стек
+### Current stack
 ```
 PTY (portable-pty) → alacritty_terminal (VT parser) → TermCell grid → ratatui → stdout
 ```
 
-**Ограничения текущего стека:**
-- Monospace-only рендеринг через ratatui
-- Фиксированная сетка ячеек (row/col), нет пиксельного позиционирования
-- Нет поддержки панелей (layout: header + body + footer, одна терминальная панель)
-- Нет GPU-ускорения, рендеринг через escape sequences в stdout
-- Зависимость от alacritty_terminal — тяжёлый полный VT-эмулятор, избыточный для Claude Code
+**Current stack limitations:**
+- Monospace-only rendering via ratatui
+- Fixed cell grid (row/col), no pixel positioning
+- No panel support (layout: header + body + footer, single terminal panel)
+- No GPU acceleration, rendering via escape sequences to stdout
+- Dependency on alacritty_terminal — a heavy full VT emulator, excessive for Claude Code
 
-### Целевой стек
+### Target stack
 ```
-PTY (portable-pty) → term_core (минимальный VT parser) → TextRun grid → wgpu → GPU
+PTY (portable-pty) → term_core (minimal VT parser) → Cell grid → wgpu → GPU
 ```
 
-**Преимущества:**
-- Variable-width шрифты с пиксельным позиционированием
-- GPU-ускоренный рендеринг (Metal на macOS, Vulkan на Linux)
-- Система панелей (BSP tree)
-- Минимальный VT-парсер — только то, что нужно для Claude Code (ink-based TUI)
-- Минимум зависимостей
+**Advantages:**
+- Variable-width fonts with pixel positioning
+- GPU-accelerated rendering (Metal on macOS, Vulkan on Linux)
+- Panel system (BSP tree)
+- Minimal VT parser — only what Claude Code (ink-based TUI) needs
+- Minimal dependencies
 
 ---
 
-## 2. Зависимости
+## 2. Dependencies
 
-### Внешние (только 3 крейта)
+### External (only 3 crates)
 
-| Крейт | Версия | Назначение | Почему нельзя написать самим |
-|-------|--------|------------|------------------------------|
-| `wgpu` | 24 | GPU abstraction (Metal/Vulkan/DX12) | Тысячи строк платформенного кода, активная поддержка драйверов |
-| `winit` | 0.30 | Окна, события, DPI | Platform-specific windowing (Cocoa, Wayland, X11) |
-| `cosmic-text` | 0.14 | Text shaping для variable-width | Unicode shaping (HarfBuzz-level complexity), BiDi, font fallback |
+| Crate | Version | Purpose | Why we cannot write it ourselves |
+|-------|---------|---------|----------------------------------|
+| `wgpu` | 24 | GPU abstraction (Metal/Vulkan/DX12) | Thousands of lines of platform code, active driver support |
+| `winit` | 0.30 | Windows, events, DPI | Platform-specific windowing (Cocoa, Wayland, X11) |
+| `cosmic-text` | 0.14 | Text shaping for variable-width | Unicode shaping (HarfBuzz-level complexity), BiDi, font fallback |
 
-### Удаляемые зависимости
+### Removed dependencies
 
-| Крейт | Причина удаления |
-|-------|-----------------|
-| `ratatui` | Заменяется GPU рендерером |
-| `alacritty_terminal` | Заменяется term_core |
-| `crossterm` | Заменяется winit (события) |
-| `signal-hook` | Встраивается в winit event loop |
+| Crate | Reason for removal |
+|-------|--------------------|
+| `ratatui` | Replaced by GPU renderer |
+| `alacritty_terminal` | Replaced by term_core |
+| `crossterm` | Replaced by winit (events) |
+| `signal-hook` | Folded into winit event loop |
 
-### Остающиеся без изменений
+### Unchanged
 
-portable-pty, tokio, axum, reqwest, clap, serde/serde_json/toml, dirs, parking_lot, arboard, anyhow, tempfile, uuid, term_input (адаптируется).
+portable-pty, tokio, axum, reqwest, clap, serde/serde_json/toml, dirs, parking_lot, arboard, anyhow, tempfile, uuid, term_input (adapted).
 
 ---
 
-## 3. Структура крейтов
+## 3. Crate structure
 
 ```
 Cargo.toml (workspace)
 ├── src/                    # anyclaude — main app
 ├── crates/
-│   ├── term_input/         # [существующий] обработка ввода с /dev/tty
-│   ├── term_core/          # [НОВЫЙ] минимальный VT-парсер + variable-width grid
-│   ├── term_gpu/           # [НОВЫЙ] wgpu рендерер, glyph atlas, шейдеры
-│   └── term_layout/        # [НОВЫЙ] BSP panel manager
+│   ├── term_input/         # [existing] input handling from /dev/tty
+│   ├── term_core/          # [NEW] minimal VT parser + variable-width grid
+│   ├── term_gpu/           # [NEW] wgpu renderer, glyph atlas, shaders
+│   └── term_layout/        # [NEW] BSP panel manager
 ```
 
-### Зависимости между крейтами
+### Dependencies between crates
 
 ```
-term_core         (0 внешних deps, только std)
+term_core         (0 external deps, std only)
     ↑
 term_gpu          → wgpu, cosmic-text, term_core
     ↑
@@ -80,7 +80,7 @@ term_layout       → term_gpu, term_core
 anyclaude         → term_layout, term_gpu, term_core, term_input
 ```
 
-### Cargo.toml крейтов
+### Crate Cargo.toml files
 
 #### crates/term_core/Cargo.toml
 ```toml
@@ -92,7 +92,7 @@ edition = "2021"
 [lints]
 workspace = true
 
-# Ноль внешних зависимостей — только std
+# Zero external dependencies — std only
 ```
 
 #### crates/term_gpu/Cargo.toml
@@ -110,7 +110,10 @@ term_core = { path = "../term_core" }
 wgpu = "24"
 winit = "0.30"
 cosmic-text = "0.14"
-pollster = "0.4"       # block_on для async wgpu init
+pollster = "0.4"        # block_on for async wgpu init
+futures = "0.3"         # abortable handle for the momentum timer
+futures-timer = "3"     # Delay for momentum ticks (see §5.7)
+glam = "0.30"           # Vec2 for scroll velocity
 ```
 
 #### crates/term_layout/Cargo.toml
@@ -128,143 +131,222 @@ term_core = { path = "../term_core" }
 term_gpu = { path = "../term_gpu" }
 ```
 
-#### Обновлённый корневой Cargo.toml (изменения)
+#### Updated root Cargo.toml (changes)
 ```toml
 [workspace]
 members = [".", "crates/term_input", "crates/term_core", "crates/term_gpu", "crates/term_layout"]
 
 [dependencies]
-# УДАЛИТЬ:
+# REMOVE:
 # ratatui = "0.30"
 # alacritty_terminal = "0.25"
 # crossterm = "0.29"
 # signal-hook = "0.4"
 
-# ДОБАВИТЬ:
+# ADD:
 term_core = { path = "crates/term_core" }
 term_gpu = { path = "crates/term_gpu" }
 term_layout = { path = "crates/term_layout" }
 
-# ОСТАВИТЬ БЕЗ ИЗМЕНЕНИЙ:
-# portable-pty, tokio, axum, reqwest, clap, serde, и т.д.
+# KEEP UNCHANGED:
+# portable-pty, tokio, axum, reqwest, clap, serde, etc.
 ```
 
 ---
 
-## 4. term_core: Минимальный VT-парсер
+## 4. term_core: Minimal VT parser
 
-### 4.1 Структура файлов
+### 4.1 File structure
 
 ```
 crates/term_core/src/
-├── lib.rs          # Публичный API, реэкспорт
-├── parser.rs       # VT state machine
-├── grid.rs         # Variable-width grid (TextRun-based)
-├── emulator.rs     # VtEmulator — реализация трейта TerminalEmulator
+├── lib.rs          # Public API, re-exports
+├── parser.rs       # Paul Williams VT state machine (hand-rolled, ~500 LoC)
+├── grid.rs         # Fixed-cell grid (Cell, Row, Grid; alacritty-style)
+├── emulator.rs     # VtEmulator — TerminalEmulator trait implementation
 ├── color.rs        # TermColor, ANSI palette
-└── attrs.rs        # TextAttrs (bold, italic, etc.)
+└── attrs.rs        # CellFlags (bold, italic, underline, …)
 ```
 
-### 4.2 Поддерживаемые escape sequences
+**Why fixed-cell instead of variable-width spans?** ink (Claude Code's
+TUI framework) assumes a monospace grid for cursor positioning — `CUP
+row 5 col 10` must address a definite cell, not a pixel range.
+Variable-width rendering happens in `term_gpu`, which shapes each row
+with cosmic-text and lays out glyphs by their actual advance widths.
+Logical model is fixed; visual model is variable. See
+[`docs/analysis/warp-vt-parser-research.md`](analysis/warp-vt-parser-research.md)
+§1 for Warp's identical choice.
 
-Только то, что использует Claude Code (ink-based TUI):
+### 4.2 Supported escape sequences
+
+Only what Claude Code (ink-based TUI) uses:
 
 #### CSI sequences (`ESC [`)
-| Sequence | Код | Назначение |
-|----------|-----|-----------|
-| CUU | `ESC[{n}A` | Cursor Up |
-| CUD | `ESC[{n}B` | Cursor Down |
-| CUF | `ESC[{n}C` | Cursor Forward |
-| CUB | `ESC[{n}D` | Cursor Back |
-| CUP | `ESC[{r};{c}H` | Cursor Position |
-| CHA | `ESC[{n}G` | Cursor Horizontal Absolute |
-| ED | `ESC[{n}J` | Erase Display (0=to end, 1=to start, 2=all, 3=scrollback) |
-| EL | `ESC[{n}K` | Erase Line (0=to end, 1=to start, 2=all) |
-| IL | `ESC[{n}L` | Insert Lines |
-| DL | `ESC[{n}M` | Delete Lines |
-| SGR | `ESC[{...}m` | Set Graphics Rendition (цвета, стили) |
-| DECSTBM | `ESC[{t};{b}r` | Set Scroll Region |
-| DECSET | `ESC[?{n}h` | Set DEC Private Mode |
-| DECRST | `ESC[?{n}l` | Reset DEC Private Mode |
-| DSR | `ESC[{n}n` | Device Status Report |
-| SU | `ESC[{n}S` | Scroll Up |
-| SD | `ESC[{n}T` | Scroll Down |
+
+Priority tags follow the research recommendations
+([`warp-vt-parser-research.md`](analysis/warp-vt-parser-research.md) §3):
+**P0** required for Claude Code to render correctly, **P1** modern UX
+with low complexity, **P2** robustness improvements. Lines without a
+tag were in the original spec before the research.
+
+| Sequence | Code | Priority | Purpose |
+|----------|-----|----------|-----------|
+| ICH | `ESC[{n}@` | **P0** | Insert blank chars |
+| CUU | `ESC[{n}A` | | Cursor Up |
+| CUD | `ESC[{n}B` | | Cursor Down |
+| CUF | `ESC[{n}C` | | Cursor Forward |
+| CUB | `ESC[{n}D` | | Cursor Back |
+| CNL | `ESC[{n}E` | **P0** | Cursor next line (CUD + col 1) |
+| CPL | `ESC[{n}F` | **P0** | Cursor previous line (CUU + col 1) |
+| CHA | `ESC[{n}G` | | Cursor Horizontal Absolute |
+| CUP | `ESC[{r};{c}H` | | Cursor Position |
+| CHT | `ESC[{n}I` | **P2** | Cursor forward tabs |
+| ED | `ESC[{n}J` | | Erase Display (0=to end, 1=to start, 2=all, 3=scrollback) |
+| EL | `ESC[{n}K` | | Erase Line (0=to end, 1=to start, 2=all) |
+| IL | `ESC[{n}L` | | Insert Lines |
+| DL | `ESC[{n}M` | | Delete Lines |
+| DCH | `ESC[{n}P` | **P0** | Delete chars at cursor |
+| SU | `ESC[{n}S` | | Scroll Up |
+| SD | `ESC[{n}T` | | Scroll Down |
+| ECH | `ESC[{n}X` | **P0** | Erase chars at cursor (no cursor move) |
+| CBT | `ESC[{n}Z` | **P2** | Cursor backward tabs |
+| HPA | `ESC[{n}\`` | **P2** | Horizontal position absolute (same as CHA) |
+| REP | `ESC[{n}b` | **P0** | Repeat last character N times |
+| DA | `ESC[c` | **P0** | Device attributes — emulator must reply `ESC[?6c` |
+| VPA | `ESC[{n}d` | **P0** | Vertical position absolute |
+| HVP | `ESC[{r};{c}f` | | Horizontal-vertical position (same as CUP) |
+| TBC | `ESC[{n}g` | **P2** | Tab clear |
+| SGR | `ESC[{...}m` | | Set Graphics Rendition (colors, styles) |
+| DSR | `ESC[{n}n` | | Device Status Report (n=6 → report cursor pos) |
+| DECRQM | `ESC[?{n}p` | **P1** | Request DEC mode state |
+| DECSCUSR | `ESC[{n} q` | **P1** | Set cursor style (1-2 block, 3-4 underline, 5-6 beam) |
+| DECSTBM | `ESC[{t};{b}r` | | Set Scroll Region |
+| SCOSC | `ESC[s` | **P2** | Save cursor (SCO variant) |
+| DECSET | `ESC[?{n}h` | | Set DEC Private Mode |
+| DECRST | `ESC[?{n}l` | | Reset DEC Private Mode |
+| SCORC | `ESC[u` | **P2** | Restore cursor (SCO variant) |
 
 #### SGR parameters (`ESC[{...}m`)
-| Код | Значение |
-|-----|----------|
-| 0 | Reset |
-| 1 | Bold |
-| 2 | Faint |
-| 3 | Italic |
-| 4 | Underline |
-| 7 | Inverse |
-| 9 | Strikethrough |
-| 22 | Normal intensity |
-| 23 | Not italic |
-| 24 | Not underline |
-| 27 | Not inverse |
-| 29 | Not strikethrough |
-| 30-37 | Foreground (standard) |
-| 38;5;{n} | Foreground (256-color) |
-| 38;2;{r};{g};{b} | Foreground (truecolor) |
-| 39 | Default foreground |
-| 40-47 | Background (standard) |
-| 48;5;{n} | Background (256-color) |
-| 48;2;{r};{g};{b} | Background (truecolor) |
-| 49 | Default background |
-| 90-97 | Foreground (bright) |
-| 100-107 | Background (bright) |
+| Code | Priority | Meaning |
+|-----|----------|----------|
+| 0 | | Reset |
+| 1 | | Bold |
+| 2 | | Faint |
+| 3 | | Italic |
+| 4 | | Underline |
+| 4;2 | **P2** | Double underline |
+| 4;0 | **P2** | Cancel underline |
+| 5 | **P2** | Blink (slow) |
+| 6 | **P2** | Blink (fast) |
+| 7 | | Inverse |
+| 8 | **P2** | Hidden |
+| 9 | | Strikethrough |
+| 21 | **P2** | Cancel bold (different from 22) |
+| 22 | | Normal intensity |
+| 23 | | Not italic |
+| 24 | | Not underline |
+| 27 | | Not inverse |
+| 28 | **P2** | Cancel hidden |
+| 29 | | Not strikethrough |
+| 30-37 | | Foreground (standard) |
+| 38;5;{n} | | Foreground (256-color) |
+| 38;2;{r};{g};{b} | | Foreground (truecolor) |
+| 39 | | Default foreground |
+| 40-47 | | Background (standard) |
+| 48;5;{n} | | Background (256-color) |
+| 48;2;{r};{g};{b} | | Background (truecolor) |
+| 49 | | Default background |
+| 90-97 | | Foreground (bright) |
+| 100-107 | | Background (bright) |
 
 #### DEC Private Modes (`ESC[?{n}h/l`)
-| Код | Режим | Назначение |
-|-----|-------|-----------|
-| 1 | DECCKM | Application cursor keys |
-| 25 | DECTCEM | Cursor visible/hidden |
-| 47 | Alt screen (save) | Alternate screen buffer |
-| 1000 | X10 mouse | Basic mouse tracking |
-| 1002 | Button event | Mouse button events |
-| 1003 | Any event | All mouse events |
-| 1006 | SGR mouse | SGR mouse encoding |
-| 1049 | Alt screen (save+clear) | Alternate screen buffer + clear |
-| 2004 | Bracketed paste | Bracketed paste mode |
+| Code | Mode | Priority | Purpose |
+|-----|-------|----------|-----------|
+| 1 | DECCKM | | Application cursor keys |
+| 6 | DECOM | **P0** | Origin mode — CUP within scrolling region |
+| 7 | DECAWM | **P0** | Autowrap at right margin |
+| 12 | | **P1** | Blinking cursor |
+| 25 | DECTCEM | | Cursor visible/hidden |
+| 47 | Alt screen (save) | | Alternate screen buffer |
+| 1000 | X10 mouse | | Basic mouse tracking |
+| 1002 | Button event | | Mouse button events |
+| 1003 | Any event | | All mouse events |
+| 1004 | Focus events | **P1** | Emit `CSI I` on focus, `CSI O` on blur |
+| 1006 | SGR mouse | | SGR mouse encoding |
+| 1007 | Alt scroll | **P2** | Wheel produces arrow keys in alt screen |
+| 1049 | Alt screen (save+clear) | | Alternate screen buffer + clear |
+| 2004 | Bracketed paste | | Bracketed paste mode |
+| 2026 | Sync output | **P2** | Buffer output frames atomically (150 ms / 2 MiB cap) |
 
 #### OSC sequences (`ESC ]`)
-| Sequence | Назначение |
-|----------|-----------|
-| `ESC]0;{title}ST` | Set window title |
-| `ESC]2;{title}ST` | Set window title |
+| Sequence | Priority | Purpose |
+|----------|----------|-----------|
+| `OSC 0;{title} ST` | | Set window title (and icon name) |
+| `OSC 2;{title} ST` | | Set window title only |
+| `OSC 7;file://host/{path} ST` | **P1** | Notify shell CWD |
+| `OSC 8;params;url ST` | **P2** | Hyperlink (modern apps; Warp ignores, we may want) |
+| `OSC 133;A ST` | **P1** | Prompt start marker (FinalTerm/shell integration) |
+| `OSC 133;B ST` | **P1** | Prompt end marker |
+| `OSC 133;P;k=v ST` | **P1** | Prompt param payload |
+
+OSC strings are terminated by `ST` (`ESC \`, two bytes) or `BEL`
+(`0x07`, one byte). The parser must accept both.
 
 #### Simple escape sequences
-| Sequence | Назначение |
-|----------|-----------|
-| `ESC 7` | Save cursor (DECSC) |
-| `ESC 8` | Restore cursor (DECRC) |
-| `ESC M` | Reverse index (scroll down) |
-| `ESC c` | Full reset (RIS) |
+| Sequence | Priority | Purpose |
+|----------|----------|-----------|
+| `ESC 7` | | Save cursor (DECSC) |
+| `ESC 8` | | Restore cursor (DECRC) |
+| `ESC D` | **P2** | Index (IND) — move cursor down, scroll if at bottom |
+| `ESC E` | **P2** | Next line (NEL) — equivalent to CR + LF |
+| `ESC M` | | Reverse index — move up, scroll down if at top |
+| `ESC =` | **P2** | Application keypad mode (DECPAM) |
+| `ESC >` | **P2** | Numeric keypad mode (DECPNM) |
+| `ESC c` | | Full reset (RIS) |
 
 #### Control characters
-| Byte | Назначение |
-|------|-----------|
-| 0x07 (BEL) | Bell |
-| 0x08 (BS) | Backspace |
-| 0x09 (HT) | Tab |
-| 0x0A (LF) | Line feed |
-| 0x0D (CR) | Carriage return |
+| Byte | Priority | Purpose |
+|------|----------|-----------|
+| 0x07 (BEL) | | Bell |
+| 0x08 (BS) | | Backspace |
+| 0x09 (HT) | | Tab (fixed at 8 columns) |
+| 0x0A (LF) | | Line feed |
+| 0x0B (VT) | **P2** | Vertical tab — treat as LF |
+| 0x0C (FF) | **P2** | Form feed — treat as LF |
+| 0x0D (CR) | | Carriage return |
+| 0x1A (SUB) | **P2** | Substitute — abort current escape sequence |
 
-### 4.3 Что НЕ поддерживается
+### 4.3 What is NOT supported
 
-- DCS, SOS, PM, APC sequences
-- Character sets (G0/G1/G2/G3, SI/SO)
-- VT52 compatibility mode
-- Двойная ширина/высота строк (DECDWL, DECDHL)
-- Tab stops (HTS, TBC) — используем фиксированный tab = 8
-- Printer control (MC)
-- Soft fonts (DECDLD)
-- Rectangular area operations (DECRARA, DECCRA)
-- Macro sequences
+Either out of scope for our use case (Claude Code wrapping) or
+explicitly skipped per the [Warp VT research](analysis/warp-vt-parser-research.md) §4.
 
-### 4.4 Публичный API (lib.rs)
+- **DCS, SOS, PM, APC** sequences — eaten without dispatch (state
+  machine consumes them so they don't corrupt subsequent input)
+- **Character sets G2/G3** (`ESC * / +`). G0/G1 + the line-drawing
+  table (`ESC ( 0`) is P3 — add only if observed in real traces.
+- **VT52 compatibility mode**
+- **Double width/height lines** (DECDWL, DECDHL)
+- **Custom tab stops** (HTS sets, TBC clears — P2; otherwise fixed
+  tab = 8 is used)
+- **Printer control** (MC)
+- **Soft fonts** (DECDLD)
+- **Rectangular area operations** (DECRARA, DECCRA)
+- **Macro sequences**
+- **iTerm inline images** (OSC 1337) and **Kitty image protocol**
+  (APC). Claude Code does not emit images.
+- **Sixel graphics**
+- **Tmux control mode** (Warp's `TmuxControlModeParser`) — we wrap
+  Claude Code, not tmux
+- **OSC 4 palette manipulation** and **OSC 10/11/12 dynamic colors
+  with `?` query** — Warp uses these for theme integration; Claude
+  Code does not change palette
+- **Warp-specific OSCs** (`OSC 9277..9280`, `OSC 781378`) — Warp-only
+- **Kitty keyboard protocol** (`CSI u`) — P3, add only if Claude Code
+  uses modifiers beyond Alt-prefixed
+- **OSC 52 clipboard**, **OSC 10/11/12 color queries** — niche
+
+### 4.4 Public API (lib.rs)
 
 ```rust
 pub mod parser;
@@ -273,23 +355,25 @@ pub mod emulator;
 pub mod color;
 pub mod attrs;
 
-pub use color::TermColor;
-pub use attrs::TextAttrs;
-pub use grid::{Grid, Line, TextRun, PixelPos};
-pub use emulator::{TerminalEmulator, CursorState, CursorStyle, RenderSnapshot};
-pub use parser::{Parser, Action};
+pub use color::{AnsiPalette, TermColor};
+pub use attrs::CellFlags;
+pub use grid::{Cell, Grid, Row};
+pub use emulator::{CursorState, CursorStyle, MouseMode, RenderSnapshot, TerminalEmulator};
+pub use parser::{Action, EraseMode, Parser, SgrAction};
 
-/// Создать эмулятор терминала
-pub fn create_emulator(width_px: u32, height_px: u32, scrollback: usize) -> Box<dyn TerminalEmulator> {
-    Box::new(emulator::VtEmulator::new(width_px, height_px, scrollback))
+/// Create a terminal emulator with the given visible grid size and
+/// scrollback line cap. `cols` and `rows` are in cells (variable-width
+/// rendering happens in `term_gpu`, the logical grid is fixed-cell).
+pub fn create_emulator(cols: usize, rows: usize, scrollback: usize) -> Box<dyn TerminalEmulator> {
+    Box::new(emulator::VtEmulator::new(cols, rows, scrollback))
 }
 ```
 
-### 4.5 Цвета и атрибуты (color.rs, attrs.rs)
+### 4.5 Colors and attributes (color.rs, attrs.rs)
 
 ```rust
 // color.rs
-/// Цвет терминала — совместим с текущим TermColor из emulator/mod.rs
+/// Terminal color — compatible with the current TermColor from emulator/mod.rs
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum TermColor {
     #[default]
@@ -299,7 +383,7 @@ pub enum TermColor {
 }
 
 impl TermColor {
-    /// Стандартная ANSI палитра (16 цветов)
+    /// Standard ANSI palette (16 colors)
     pub const BLACK: Self = Self::Indexed(0);
     pub const RED: Self = Self::Indexed(1);
     pub const GREEN: Self = Self::Indexed(2);
@@ -309,7 +393,7 @@ impl TermColor {
     pub const CYAN: Self = Self::Indexed(6);
     pub const WHITE: Self = Self::Indexed(7);
 
-    /// Конвертация в RGBA f32 для GPU
+    /// Convert to RGBA f32 for GPU
     pub fn to_rgba(&self, palette: &AnsiPalette) -> [f32; 4] {
         match *self {
             Self::Default => [1.0, 1.0, 1.0, 1.0],
@@ -378,13 +462,13 @@ impl AnsiPalette {
 
 ```rust
 // attrs.rs
-/// Текстовые атрибуты
+/// Text attributes
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub struct TextAttrs {
+pub struct CellFlags {
     bits: u8,
 }
 
-impl TextAttrs {
+impl CellFlags {
     pub const BOLD: u8      = 1 << 0;
     pub const FAINT: u8     = 1 << 1;
     pub const ITALIC: u8    = 1 << 2;
@@ -411,9 +495,9 @@ impl TextAttrs {
 
 ```rust
 // parser.rs
-//! Минимальный VT/ANSI parser — state machine для Claude Code
+//! Minimal VT/ANSI parser — state machine for Claude Code
 
-use crate::{TermColor, TextAttrs};
+use crate::{TermColor, CellFlags};
 
 const MAX_PARAMS: usize = 16;
 const MAX_OSC: usize = 256;
@@ -432,7 +516,7 @@ enum State {
     Utf8_4(u8, u8, u8),  // 3 bytes accumulated
 }
 
-/// Действия парсера — передаются в Grid/Emulator
+/// Parser actions — dispatched to Grid/Emulator
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     /// Printable character
@@ -504,8 +588,8 @@ pub enum EraseMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SgrAction {
     Reset,
-    SetAttr(u8),       // TextAttrs flag to set
-    ClearAttr(u8),     // TextAttrs flag to clear
+    SetAttr(u8),       // CellFlags flag to set
+    ClearAttr(u8),     // CellFlags flag to clear
     Foreground(TermColor),
     Background(TermColor),
     DefaultForeground,
@@ -540,8 +624,8 @@ impl Parser {
         }
     }
 
-    /// Парсит bytes, вызывает callback для каждого действия.
-    /// Zero-allocation для стандартных sequence.
+    /// Parses bytes, invokes callback for each action.
+    /// Zero-allocation for standard sequences.
     pub fn advance<F: FnMut(Action)>(&mut self, input: &[u8], mut emit: F) {
         for &byte in input {
             self.feed(byte, &mut emit);
@@ -549,7 +633,7 @@ impl Parser {
     }
 
     fn feed<F: FnMut(Action)>(&mut self, byte: u8, emit: &mut F) {
-        // ESC и C0 обрабатываются из любого состояния (кроме OSC для ESC)
+        // ESC and C0 are handled from any state (except OSC for ESC)
         if byte == 0x1B && self.state != State::OscString {
             self.state = State::Escape;
             return;
@@ -813,21 +897,21 @@ impl Parser {
             let p = self.params[i];
             match p {
                 0 => emit(Action::SetAttr(SgrAction::Reset)),
-                1 => emit(Action::SetAttr(SgrAction::SetAttr(TextAttrs::BOLD))),
-                2 => emit(Action::SetAttr(SgrAction::SetAttr(TextAttrs::FAINT))),
-                3 => emit(Action::SetAttr(SgrAction::SetAttr(TextAttrs::ITALIC))),
-                4 => emit(Action::SetAttr(SgrAction::SetAttr(TextAttrs::UNDERLINE))),
-                5 => emit(Action::SetAttr(SgrAction::SetAttr(TextAttrs::BLINK))),
-                7 => emit(Action::SetAttr(SgrAction::SetAttr(TextAttrs::INVERSE))),
-                9 => emit(Action::SetAttr(SgrAction::SetAttr(TextAttrs::STRIKE))),
+                1 => emit(Action::SetAttr(SgrAction::SetAttr(CellFlags::BOLD))),
+                2 => emit(Action::SetAttr(SgrAction::SetAttr(CellFlags::FAINT))),
+                3 => emit(Action::SetAttr(SgrAction::SetAttr(CellFlags::ITALIC))),
+                4 => emit(Action::SetAttr(SgrAction::SetAttr(CellFlags::UNDERLINE))),
+                5 => emit(Action::SetAttr(SgrAction::SetAttr(CellFlags::BLINK))),
+                7 => emit(Action::SetAttr(SgrAction::SetAttr(CellFlags::INVERSE))),
+                9 => emit(Action::SetAttr(SgrAction::SetAttr(CellFlags::STRIKE))),
                 22 => {
-                    emit(Action::SetAttr(SgrAction::ClearAttr(TextAttrs::BOLD)));
-                    emit(Action::SetAttr(SgrAction::ClearAttr(TextAttrs::FAINT)));
+                    emit(Action::SetAttr(SgrAction::ClearAttr(CellFlags::BOLD)));
+                    emit(Action::SetAttr(SgrAction::ClearAttr(CellFlags::FAINT)));
                 }
-                23 => emit(Action::SetAttr(SgrAction::ClearAttr(TextAttrs::ITALIC))),
-                24 => emit(Action::SetAttr(SgrAction::ClearAttr(TextAttrs::UNDERLINE))),
-                27 => emit(Action::SetAttr(SgrAction::ClearAttr(TextAttrs::INVERSE))),
-                29 => emit(Action::SetAttr(SgrAction::ClearAttr(TextAttrs::STRIKE))),
+                23 => emit(Action::SetAttr(SgrAction::ClearAttr(CellFlags::ITALIC))),
+                24 => emit(Action::SetAttr(SgrAction::ClearAttr(CellFlags::UNDERLINE))),
+                27 => emit(Action::SetAttr(SgrAction::ClearAttr(CellFlags::INVERSE))),
+                29 => emit(Action::SetAttr(SgrAction::ClearAttr(CellFlags::STRIKE))),
                 30..=37 => emit(Action::SetAttr(SgrAction::Foreground(TermColor::Indexed(p as u8 - 30)))),
                 38 => {
                     if let Some(color) = self.parse_extended_color(&mut i) {
@@ -912,412 +996,473 @@ impl Default for Parser {
 }
 ```
 
-### 4.7 Variable-Width Grid (grid.rs)
+### 4.7 Fixed-Cell Grid (grid.rs)
+
+> Adapted from `alacritty_terminal` (Apache-2.0) — same model Warp uses
+> (see [`analysis/warp-vt-parser-research.md`](analysis/warp-vt-parser-research.md) §1).
+> Cell holds a single grapheme cluster; wide characters use a `WIDE_CHAR`
+> + `WIDE_CHAR_SPACER` flag pair so column arithmetic stays simple.
+> Variable-width *rendering* happens in `term_gpu` — `term_core` is
+> logically monospace-grid for VT correctness.
 
 ```rust
 // grid.rs
-//! Variable-width terminal grid — строки содержат TextRun спаны,
-//! не фиксированные ячейки
+//! Fixed-cell terminal grid.
 
-use crate::{TermColor, TextAttrs};
+use crate::{CellFlags, TermColor};
 
-/// Пиксельная позиция
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct PixelPos {
-    pub x: f32,
-    pub y: f32,
-}
-
-/// Текстовый спан с однородными атрибутами
-#[derive(Debug, Clone, PartialEq)]
-pub struct TextRun {
-    /// Текст (UTF-8)
-    pub text: String,
-    /// Цвет текста
-    pub fg: TermColor,
-    /// Цвет фона
-    pub bg: TermColor,
-    /// Атрибуты
-    pub attrs: TextAttrs,
-}
-
-/// Строка терминала
+/// One grid cell. ~24 bytes target; we use a Box for the rare
+/// per-cell metadata (combining marks, prompt markers) to keep the
+/// hot path compact. For Claude Code we don't expect huge cell
+/// volumes, so the packing isn't load-bearing — readability wins.
 #[derive(Debug, Clone)]
-pub struct Line {
-    /// Текстовые спаны
-    pub runs: Vec<TextRun>,
-    /// Строка была изменена с последнего рендера
-    pub dirty: bool,
+pub struct Cell {
+    /// Primary character. For wide characters this is on the left half;
+    /// the right half is a spacer cell with `WIDE_CHAR_SPACER`.
+    pub c: char,
+    pub fg: TermColor,
+    pub bg: TermColor,
+    pub flags: CellFlags,
+    /// Combining marks and other per-cell extras. `None` in the common case.
+    pub extra: Option<Box<CellExtra>>,
 }
 
-impl Line {
-    pub fn new() -> Self {
-        Self { runs: Vec::new(), dirty: true }
-    }
-
-    pub fn clear(&mut self) {
-        self.runs.clear();
-        self.dirty = true;
-    }
-
-    /// Получить весь текст строки
-    pub fn text(&self) -> String {
-        let mut s = String::new();
-        for run in &self.runs {
-            s.push_str(&run.text);
+impl Cell {
+    pub const fn space() -> Self {
+        Self {
+            c: ' ',
+            fg: TermColor::Default,
+            bg: TermColor::Default,
+            flags: CellFlags::empty(),
+            extra: None,
         }
-        s
     }
 
-    /// Длина строки в символах (для VT cursor positioning)
-    pub fn char_count(&self) -> usize {
-        self.runs.iter().map(|r| r.text.chars().count()).sum()
+    pub fn reset(&mut self) {
+        *self = Cell::space();
+    }
+
+    /// Push a zero-width / combining codepoint onto this cell. Bounded by
+    /// `MAX_ZEROWIDTH_BYTES` to avoid pathological input.
+    pub fn push_zerowidth(&mut self, c: char) {
+        let extra = self.extra.get_or_insert_with(Box::default);
+        extra.push_zerowidth(c);
+    }
+
+    /// URL hyperlink target from OSC 8, if any.
+    pub fn hyperlink(&self) -> Option<&str> {
+        self.extra.as_ref().and_then(|e| e.hyperlink.as_deref())
     }
 }
 
-impl Default for Line {
-    fn default() -> Self { Self::new() }
+/// Rare per-cell metadata, heap-allocated so the common cell stays small.
+#[derive(Debug, Default, Clone)]
+pub struct CellExtra {
+    /// Combining / zero-width codepoints stacked onto the base char.
+    /// Soft cap at 128 bytes, hard cap at 256 (warn at the soft cap).
+    pub zerowidth: Vec<char>,
+    /// OSC 8 hyperlink target, if set.
+    pub hyperlink: Option<String>,
+    /// OSC 133 prompt marker payload, if set.
+    pub prompt: Option<PromptMarker>,
 }
 
-/// Основная структура — хранит все строки + scrollback
+const MAX_ZEROWIDTH_BYTES: usize = 256;
+
+impl CellExtra {
+    pub fn push_zerowidth(&mut self, c: char) {
+        let used: usize = self.zerowidth.iter().map(|c| c.len_utf8()).sum();
+        if used + c.len_utf8() <= MAX_ZEROWIDTH_BYTES {
+            self.zerowidth.push(c);
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptMarker {
+    Start, // OSC 133 ; A
+    End,   // OSC 133 ; B
+    Cont,  // OSC 133 ; P
+}
+
+/// A row of fixed-width cells.
+#[derive(Debug, Clone)]
+pub struct Row {
+    pub cells: Vec<Cell>,
+}
+
+impl Row {
+    pub fn new(cols: usize) -> Self {
+        Self { cells: vec![Cell::space(); cols] }
+    }
+
+    pub fn resize(&mut self, cols: usize) {
+        self.cells.resize(cols, Cell::space());
+    }
+
+    /// Clear cells in `range`. Used by EL/ECH variants.
+    pub fn clear_range(&mut self, range: std::ops::Range<usize>) {
+        for cell in &mut self.cells[range] {
+            cell.reset();
+        }
+    }
+}
+
+/// Main grid — visible rows plus scrollback, fixed column count.
 pub struct Grid {
-    /// Строки: [scrollback..., visible...]
-    lines: Vec<Line>,
-    /// Количество видимых строк (остальные — scrollback)
+    /// Rows: `[scrollback..., visible...]`. Visible region is the last
+    /// `visible_rows` entries.
+    rows: Vec<Row>,
     visible_rows: usize,
-    /// Максимальный scrollback
+    cols: usize,
     max_scrollback: usize,
-    /// Пиксельные размеры viewport
-    pub width_px: u32,
-    pub height_px: u32,
 
     // Cursor state
-    /// Строка курсора (0-based, относительно visible area)
     pub cursor_row: usize,
-    /// Колонка курсора (0-based, в символах — для VT совместимости)
     pub cursor_col: usize,
     pub cursor_visible: bool,
     pub cursor_style: CursorStyle,
 
-    /// Saved cursor (DECSC/DECRC)
+    /// Saved cursor (DECSC / DECRC)
     saved_cursor: Option<(usize, usize)>,
 
-    /// Scroll region (top, bottom) — 0-based, включительно
+    /// Scroll region (top, bottom) — 0-based, inclusive
     scroll_top: usize,
     scroll_bottom: usize,
 
-    /// Текущие атрибуты рисования
+    /// Current drawing attributes used to fill freshly printed cells.
     pub current_fg: TermColor,
     pub current_bg: TermColor,
-    pub current_attrs: TextAttrs,
+    pub current_flags: CellFlags,
 
-    /// Alternate screen buffer
-    alt_lines: Option<Vec<Line>>,
+    /// Alt screen state
+    alt_rows: Option<Vec<Row>>,
     alt_cursor: Option<(usize, usize)>,
 
-    /// Режимы
-    pub origin_mode: bool,
-    pub auto_wrap: bool,
+    /// Modes
+    pub origin_mode: bool,    // DEC private 6
+    pub auto_wrap: bool,      // DEC private 7
     pub bracketed_paste: bool,
+    pub focus_reporting: bool, // DEC private 1004
+    pub sync_output: bool,     // DEC private 2026 (flush boundary)
     pub mouse_mode: MouseMode,
     pub cursor_keys_app: bool,
 
-    /// Scrollback offset для просмотра (0 = live)
-    pub scrollback_offset: usize,
+    /// Scrollback offset in **pixels** (rendered by term_gpu). Logical
+    /// grid is fixed-cell; scroll is pixel-precise for smooth motion.
+    /// See docs/design/gpu-terminal-scroll.md.
+    pub scroll_offset_y: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum CursorStyle { #[default] Block, Beam, Underline }
+pub enum CursorStyle {
+    #[default]
+    BlockSteady,
+    BlockBlink,
+    UnderlineSteady,
+    UnderlineBlink,
+    BeamSteady,
+    BeamBlink,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MouseMode { #[default] None, X10, ButtonEvent, AnyEvent, Sgr }
 
 impl Grid {
-    pub fn new(visible_rows: usize, max_scrollback: usize) -> Self {
-        let mut lines = Vec::with_capacity(visible_rows);
-        for _ in 0..visible_rows {
-            lines.push(Line::new());
-        }
+    pub fn new(cols: usize, rows: usize, max_scrollback: usize) -> Self {
+        let visible = (0..rows).map(|_| Row::new(cols)).collect();
         Self {
-            lines,
-            visible_rows,
+            rows: visible,
+            visible_rows: rows,
+            cols,
             max_scrollback,
-            width_px: 0,
-            height_px: 0,
             cursor_row: 0,
             cursor_col: 0,
             cursor_visible: true,
-            cursor_style: CursorStyle::Block,
+            cursor_style: CursorStyle::BlockSteady,
             saved_cursor: None,
             scroll_top: 0,
-            scroll_bottom: visible_rows.saturating_sub(1),
+            scroll_bottom: rows.saturating_sub(1),
             current_fg: TermColor::Default,
             current_bg: TermColor::Default,
-            current_attrs: TextAttrs::empty(),
-            alt_lines: None,
+            current_flags: CellFlags::empty(),
+            alt_rows: None,
             alt_cursor: None,
             origin_mode: false,
             auto_wrap: true,
             bracketed_paste: false,
+            focus_reporting: false,
+            sync_output: false,
             mouse_mode: MouseMode::None,
             cursor_keys_app: false,
-            scrollback_offset: 0,
+            scroll_offset_y: 0.0,
         }
     }
 
-    /// Количество строк в scrollback
+    pub fn cols(&self) -> usize { self.cols }
+    pub fn visible_rows(&self) -> usize { self.visible_rows }
     pub fn scrollback_len(&self) -> usize {
-        self.lines.len().saturating_sub(self.visible_rows)
+        self.rows.len().saturating_sub(self.visible_rows)
     }
 
-    /// Индекс первой видимой строки
+    /// Visible-area starting index into `self.rows`.
     fn visible_start(&self) -> usize {
-        self.lines.len().saturating_sub(self.visible_rows)
+        self.rows.len().saturating_sub(self.visible_rows)
     }
 
-    /// Получить мутабельную ссылку на строку по visible row index
-    fn line_mut(&mut self, row: usize) -> &mut Line {
+    fn row_mut(&mut self, row: usize) -> &mut Row {
         let idx = self.visible_start() + row;
-        &mut self.lines[idx]
+        &mut self.rows[idx]
     }
 
-    /// Получить ссылку на строку по visible row index
-    fn line(&self, row: usize) -> &Line {
+    pub fn row(&self, row: usize) -> &Row {
         let idx = self.visible_start() + row;
-        &self.lines[idx]
+        &self.rows[idx]
     }
 
-    /// Напечатать символ в текущей позиции курсора
+    /// Print a single grapheme base character at the cursor. Handles
+    /// autowrap (DEC 7) and advances the cursor by 1 (wide chars by 2,
+    /// not shown here for brevity).
     pub fn print(&mut self, c: char) {
-        if self.cursor_row >= self.visible_rows {
-            return;
+        if self.auto_wrap && self.cursor_col >= self.cols {
+            self.cursor_col = 0;
+            self.linefeed();
         }
-        let line = self.line_mut(self.cursor_row);
-
-        // Попытаться добавить к последнему run если атрибуты совпадают
-        if let Some(last) = line.runs.last_mut() {
-            if last.fg == self.current_fg
-                && last.bg == self.current_bg
-                && last.attrs == self.current_attrs
-            {
-                // Проверяем, что курсор в конце строки
-                let total_chars = line.char_count();
-                if self.cursor_col >= total_chars.saturating_sub(last.text.chars().count())  {
-                    last.text.push(c);
-                    line.dirty = true;
-                    self.cursor_col += 1;
-                    return;
-                }
-            }
+        if self.cursor_col >= self.cols {
+            self.cursor_col = self.cols - 1;
         }
-
-        // Создаём новый run
-        line.runs.push(TextRun {
-            text: c.to_string(),
-            fg: self.current_fg,
-            bg: self.current_bg,
-            attrs: self.current_attrs,
-        });
-        line.dirty = true;
+        let (fg, bg, flags) = (self.current_fg, self.current_bg, self.current_flags);
+        let cell = &mut self.row_mut(self.cursor_row).cells[self.cursor_col];
+        *cell = Cell {
+            c,
+            fg,
+            bg,
+            flags,
+            extra: None,
+        };
         self.cursor_col += 1;
     }
 
-    /// Новая строка (LF)
+    /// Append a combining mark to the last printed cell (does not move
+    /// the cursor).
+    pub fn push_zerowidth(&mut self, c: char) {
+        let col = self.cursor_col.saturating_sub(1).min(self.cols - 1);
+        let cell = &mut self.row_mut(self.cursor_row).cells[col];
+        cell.push_zerowidth(c);
+    }
+
+    /// **ECH** — erase N cells at the cursor without moving it.
+    pub fn erase_chars(&mut self, n: usize) {
+        let start = self.cursor_col;
+        let end = (start + n).min(self.cols);
+        self.row_mut(self.cursor_row).clear_range(start..end);
+    }
+
+    /// **ICH** — insert N blank cells at the cursor, shifting cells right.
+    pub fn insert_chars(&mut self, n: usize) {
+        let cols = self.cols;
+        let row = self.row_mut(self.cursor_row);
+        let insert_at = self.cursor_col.min(cols);
+        let count = n.min(cols - insert_at);
+        row.cells[insert_at..].rotate_right(count);
+        for cell in &mut row.cells[insert_at..insert_at + count] {
+            cell.reset();
+        }
+    }
+
+    /// **DCH** — delete N cells at the cursor, shifting cells left.
+    pub fn delete_chars(&mut self, n: usize) {
+        let cols = self.cols;
+        let row = self.row_mut(self.cursor_row);
+        let delete_at = self.cursor_col.min(cols);
+        let count = n.min(cols - delete_at);
+        row.cells[delete_at..].rotate_left(count);
+        for cell in &mut row.cells[cols - count..] {
+            cell.reset();
+        }
+    }
+
+    /// **REP** — repeat the last printed character N times.
+    pub fn repeat_last(&mut self, n: usize, last: char) {
+        for _ in 0..n {
+            self.print(last);
+        }
+    }
+
+    /// Line feed (LF). Wraps into scroll-up at the bottom of the scroll region.
     pub fn linefeed(&mut self) {
         if self.cursor_row == self.scroll_bottom {
             self.scroll_up(1);
-        } else if self.cursor_row < self.visible_rows - 1 {
+        } else if self.cursor_row + 1 < self.visible_rows {
             self.cursor_row += 1;
         }
     }
 
-    /// Carriage return
+    /// Carriage return (CR).
     pub fn carriage_return(&mut self) {
         self.cursor_col = 0;
     }
 
-    /// Scroll region up by N lines
+    /// Scroll region up by N rows (rows leave the top into scrollback if the
+    /// top equals the scroll region top).
     pub fn scroll_up(&mut self, n: usize) {
+        let cols = self.cols;
         for _ in 0..n {
-            let remove_idx = self.visible_start() + self.scroll_top;
             if self.scroll_top == 0 {
-                // Строка уходит в scrollback
                 if self.scrollback_len() >= self.max_scrollback {
-                    self.lines.remove(0); // Remove oldest scrollback
+                    self.rows.remove(0);
                 }
-                // Вставляем пустую строку в scroll_bottom
-                let insert_idx = self.visible_start() + self.scroll_bottom;
-                self.lines.insert(insert_idx + 1, Line::new());
+                let insert_idx = self.visible_start() + self.scroll_bottom + 1;
+                self.rows.insert(insert_idx, Row::new(cols));
             } else {
-                self.lines.remove(remove_idx);
+                let remove_idx = self.visible_start() + self.scroll_top;
+                self.rows.remove(remove_idx);
                 let insert_idx = self.visible_start() + self.scroll_bottom;
-                self.lines.insert(insert_idx, Line::new());
+                self.rows.insert(insert_idx, Row::new(cols));
             }
-        }
-        // Mark all visible as dirty
-        for row in self.scroll_top..=self.scroll_bottom {
-            self.line_mut(row).dirty = true;
         }
     }
 
-    /// Scroll region down by N lines
+    /// Scroll region down by N rows (rows leave the bottom and are discarded).
     pub fn scroll_down(&mut self, n: usize) {
+        let cols = self.cols;
         for _ in 0..n {
             let remove_idx = self.visible_start() + self.scroll_bottom;
-            if remove_idx < self.lines.len() {
-                self.lines.remove(remove_idx);
+            if remove_idx < self.rows.len() {
+                self.rows.remove(remove_idx);
             }
             let insert_idx = self.visible_start() + self.scroll_top;
-            self.lines.insert(insert_idx, Line::new());
-        }
-        for row in self.scroll_top..=self.scroll_bottom {
-            self.line_mut(row).dirty = true;
+            self.rows.insert(insert_idx, Row::new(cols));
         }
     }
 
-    /// Erase display
+    /// ED — erase display in one of four modes.
     pub fn erase_display(&mut self, mode: super::parser::EraseMode) {
         use super::parser::EraseMode;
         match mode {
             EraseMode::ToEnd => {
-                // Erase from cursor to end
                 self.erase_line(EraseMode::ToEnd);
-                for row in (self.cursor_row + 1)..self.visible_rows {
-                    self.line_mut(row).clear();
+                for r in (self.cursor_row + 1)..self.visible_rows {
+                    for cell in &mut self.row_mut(r).cells {
+                        cell.reset();
+                    }
                 }
             }
             EraseMode::ToStart => {
-                for row in 0..self.cursor_row {
-                    self.line_mut(row).clear();
+                for r in 0..self.cursor_row {
+                    for cell in &mut self.row_mut(r).cells {
+                        cell.reset();
+                    }
                 }
                 self.erase_line(EraseMode::ToStart);
             }
             EraseMode::All => {
-                for row in 0..self.visible_rows {
-                    self.line_mut(row).clear();
+                for r in 0..self.visible_rows {
+                    for cell in &mut self.row_mut(r).cells {
+                        cell.reset();
+                    }
                 }
             }
             EraseMode::Scrollback => {
                 let start = self.visible_start();
-                self.lines.drain(0..start);
+                self.rows.drain(0..start);
             }
         }
     }
 
-    /// Erase line
+    /// EL — erase line in one of three modes.
     pub fn erase_line(&mut self, mode: super::parser::EraseMode) {
         use super::parser::EraseMode;
-        let line = self.line_mut(self.cursor_row);
+        let cols = self.cols;
+        let col = self.cursor_col;
+        let row = self.row_mut(self.cursor_row);
         match mode {
-            EraseMode::All => line.clear(),
-            EraseMode::ToEnd => {
-                // Truncate runs at cursor position
-                let mut char_pos = 0;
-                let cursor = self.cursor_col;
-                let mut truncate_idx = line.runs.len();
-                for (i, run) in line.runs.iter_mut().enumerate() {
-                    let run_chars = run.text.chars().count();
-                    if char_pos + run_chars > cursor {
-                        // Trim this run
-                        let trim_at = cursor - char_pos;
-                        let new_text: String = run.text.chars().take(trim_at).collect();
-                        run.text = new_text;
-                        truncate_idx = if run.text.is_empty() { i } else { i + 1 };
-                        break;
-                    }
-                    char_pos += run_chars;
-                }
-                line.runs.truncate(truncate_idx);
-                line.dirty = true;
-            }
-            EraseMode::ToStart => {
-                // Similar logic for erasing from start to cursor
-                line.clear(); // Simplified
-            }
-            EraseMode::Scrollback => {} // N/A for line
+            EraseMode::All => row.clear_range(0..cols),
+            EraseMode::ToEnd => row.clear_range(col..cols),
+            EraseMode::ToStart => row.clear_range(0..(col + 1).min(cols)),
+            EraseMode::Scrollback => {}
         }
     }
 
-    /// Enter alternate screen buffer
     pub fn enter_alt_screen(&mut self) {
-        let mut alt = Vec::with_capacity(self.visible_rows);
-        for _ in 0..self.visible_rows {
-            alt.push(Line::new());
-        }
-        self.alt_lines = Some(std::mem::replace(
-            &mut self.lines,
-            alt,
-        ));
+        let cols = self.cols;
+        let rows = self.visible_rows;
+        let alt: Vec<Row> = (0..rows).map(|_| Row::new(cols)).collect();
+        self.alt_rows = Some(std::mem::replace(&mut self.rows, alt));
         self.alt_cursor = Some((self.cursor_row, self.cursor_col));
         self.cursor_row = 0;
         self.cursor_col = 0;
     }
 
-    /// Exit alternate screen buffer
     pub fn exit_alt_screen(&mut self) {
-        if let Some(lines) = self.alt_lines.take() {
-            self.lines = lines;
+        if let Some(rows) = self.alt_rows.take() {
+            self.rows = rows;
         }
-        if let Some((row, col)) = self.alt_cursor.take() {
-            self.cursor_row = row;
-            self.cursor_col = col;
-        }
-        // Mark all dirty
-        for row in 0..self.visible_rows {
-            self.line_mut(row).dirty = true;
+        if let Some((r, c)) = self.alt_cursor.take() {
+            self.cursor_row = r;
+            self.cursor_col = c;
         }
     }
 
-    /// Получить видимые строки для рендера
-    pub fn visible_lines(&self) -> &[Line] {
-        let start = self.visible_start().saturating_sub(self.scrollback_offset);
-        let end = (start + self.visible_rows).min(self.lines.len());
-        &self.lines[start..end]
-    }
-
-    /// Set visible rows (on resize)
-    pub fn set_visible_rows(&mut self, rows: usize) {
-        while self.lines.len() < self.visible_start() + rows {
-            self.lines.push(Line::new());
+    /// Resize the visible grid. Cells in newly-added columns/rows are blank.
+    pub fn resize(&mut self, cols: usize, rows: usize) {
+        for row in &mut self.rows {
+            row.resize(cols);
         }
+        while self.rows.len() < self.visible_start() + rows {
+            self.rows.push(Row::new(cols));
+        }
+        self.cols = cols;
         self.visible_rows = rows;
         self.scroll_bottom = rows.saturating_sub(1);
         if self.cursor_row >= rows {
             self.cursor_row = rows.saturating_sub(1);
         }
+        if self.cursor_col >= cols {
+            self.cursor_col = cols.saturating_sub(1);
+        }
     }
 
-    /// Full reset
     pub fn reset(&mut self) {
         self.cursor_row = 0;
         self.cursor_col = 0;
         self.cursor_visible = true;
         self.current_fg = TermColor::Default;
         self.current_bg = TermColor::Default;
-        self.current_attrs = TextAttrs::empty();
+        self.current_flags = CellFlags::empty();
         self.scroll_top = 0;
         self.scroll_bottom = self.visible_rows.saturating_sub(1);
         self.origin_mode = false;
         self.auto_wrap = true;
         self.bracketed_paste = false;
+        self.focus_reporting = false;
+        self.sync_output = false;
         self.mouse_mode = MouseMode::None;
         self.cursor_keys_app = false;
-        for row in 0..self.visible_rows {
-            self.line_mut(row).clear();
+        for r in 0..self.visible_rows {
+            for cell in &mut self.row_mut(r).cells {
+                cell.reset();
+            }
         }
     }
 }
 ```
 
+**Notable methods missing from this sketch** (implement in commit 5):
+`save_cursor`/`restore_cursor`, `set_scroll_region`, `next_tab` /
+`previous_tab` for CHT/CBT, `move_cursor_origin_aware` for CUP under
+DECOM, `insert_lines` / `delete_lines` (IL/DL — same logic as scroll
+but relative to cursor row, not scroll_top).
+
 ### 4.8 VT Emulator (emulator.rs)
 
 ```rust
 // emulator.rs
-use crate::grid::{CursorStyle, Grid, Line, MouseMode, PixelPos, TextRun};
+use crate::grid::{Cell, CursorStyle, Grid, MouseMode, Row};
 use crate::parser::{Action, EraseMode, Parser, SgrAction};
-use crate::{TermColor, TextAttrs};
+use crate::{TermColor, CellFlags};
 
-/// Cursor state для рендерера
+/// Cursor state for the renderer
 #[derive(Debug, Clone, Copy)]
 pub struct CursorState {
     pub row: usize,
@@ -1326,26 +1471,28 @@ pub struct CursorState {
     pub style: CursorStyle,
 }
 
-/// Snapshot для рендера — все данные нужные GPU
+/// Render snapshot — all data the GPU needs
 pub struct RenderSnapshot {
-    pub lines: Vec<Line>,
+    pub rows: Vec<Row>,
     pub cursor: CursorState,
     pub title: String,
 }
 
-/// Трейт терминального эмулятора
+/// Terminal emulator trait
 pub trait TerminalEmulator: Send {
     /// Feed raw bytes from PTY
     fn process(&mut self, bytes: &[u8]);
-    /// Resize — visible_rows определяется рендерером
+    /// Resize — visible_rows is determined by the renderer
     fn set_visible_rows(&mut self, rows: usize);
-    /// Pixel size для рендерера
+    /// Pixel size for the renderer
     fn set_pixel_size(&mut self, width: u32, height: u32);
-    /// Snapshot для GPU рендера
+    /// Snapshot for the GPU renderer
     fn snapshot(&self) -> RenderSnapshot;
-    /// Scrollback offset
-    fn scrollback(&self) -> usize;
-    fn set_scrollback(&mut self, offset: usize);
+    /// Scrollback offset in pixels (0.0 = live tail). See docs/design/gpu-terminal-scroll.md.
+    fn scrollback_px(&self) -> f32;
+    fn set_scrollback_px(&mut self, offset_px: f32);
+    /// Total scrollable height in pixels (visible viewport + scrollback).
+    fn total_scroll_height_px(&self) -> f32;
     /// Mouse mode
     fn mouse_mode(&self) -> MouseMode;
     /// Bracketed paste
@@ -1360,13 +1507,13 @@ pub struct VtEmulator {
     parser: Parser,
     grid: Grid,
     title: String,
-    /// Ответы для PTY (DSR, etc.)
+    /// Responses to the PTY (DSR, etc.)
     response_buf: Vec<u8>,
 }
 
 impl VtEmulator {
     pub fn new(width_px: u32, height_px: u32, scrollback: usize) -> Self {
-        // Начальное кол-во строк — будет обновлено рендерером
+        // Initial row count — will be updated by the renderer
         let rows = 24;
         let mut grid = Grid::new(rows, scrollback);
         grid.width_px = width_px;
@@ -1379,7 +1526,7 @@ impl VtEmulator {
         }
     }
 
-    /// Получить и очистить буфер ответов (для записи в PTY)
+    /// Take and clear the response buffer (for writing back to the PTY)
     pub fn take_responses(&mut self) -> Vec<u8> {
         std::mem::take(&mut self.response_buf)
     }
@@ -1556,9 +1703,10 @@ impl TerminalEmulator for VtEmulator {
         }
     }
 
-    fn scrollback(&self) -> usize { self.grid.scrollback_offset }
-    fn set_scrollback(&mut self, offset: usize) {
-        self.grid.scrollback_offset = offset.min(self.grid.scrollback_len());
+    fn scrollback_px(&self) -> f32 { self.grid.scroll_offset_y }
+    fn set_scrollback_px(&mut self, offset: f32) {
+        let max = self.grid.scrollback_height_px();
+        self.grid.scroll_offset_y = offset.clamp(0.0, max);
     }
 
     fn mouse_mode(&self) -> MouseMode { self.grid.mouse_mode }
@@ -1570,34 +1718,35 @@ impl TerminalEmulator for VtEmulator {
 
 ---
 
-## 5. term_gpu: GPU Рендерер
+## 5. term_gpu: GPU renderer
 
-> Подробная спецификация в отдельном файле: [gpu-renderer-spec.md](gpu-renderer-spec.md)
+> Detailed specification in a separate file: [gpu-renderer-spec.md](gpu-renderer-spec.md)
 
-### 5.1 Структура файлов
+### 5.1 File structure
 
 ```
 crates/term_gpu/src/
-├── lib.rs              # Публичный API
-├── renderer.rs         # GpuRenderer — главный рендерер
+├── lib.rs              # Public API
+├── renderer.rs         # GpuRenderer — main renderer
 ├── surface.rs          # Surface management (wgpu::Surface)
 ├── pipeline.rs         # Render pipelines (text + prim)
 ├── atlas.rs            # GlyphAtlas + ShelfPacker + LRU Cache
-├── text.rs             # cosmic-text интеграция, text shaping
+├── text.rs             # cosmic-text integration, text shaping
 ├── instances.rs        # Instance buffers (GlyphInstance, PrimInstance)
-├── color.rs            # TermColor → RGBA конвертация для GPU
+├── color.rs            # TermColor → RGBA conversion for GPU
 └── shaders/
-    ├── text.wgsl       # Шейдер текста
-    └── prim.wgsl       # Шейдер примитивов
+    ├── text.wgsl       # Text shader
+    └── prim.wgsl       # Primitive shader
 ```
 
-### 5.2 WGSL шейдеры
+### 5.2 WGSL shaders
 
 #### text.wgsl
 ```wgsl
 struct Uniforms {
     screen_size: vec2<f32>,
-    _pad: vec2<f32>,
+    scroll_offset: vec2<f32>,   // {0.0, scroll_offset_y}; see §5.7
+    _pad: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -1605,7 +1754,7 @@ struct Uniforms {
 @group(1) @binding(1) var atlas_samp: sampler;
 
 struct GlyphInput {
-    @location(0) pos: vec2<f32>,       // pixel position
+    @location(0) pos: vec2<f32>,       // pixel position (pre-scroll)
     @location(1) size: vec2<f32>,      // glyph size in pixels
     @location(2) uv_min: vec2<f32>,    // atlas UV min
     @location(3) uv_max: vec2<f32>,    // atlas UV max
@@ -1627,7 +1776,9 @@ const QUAD: array<vec2<f32>, 6> = array(
 @vertex
 fn vs_main(@builtin(vertex_index) vi: u32, g: GlyphInput) -> VsOut {
     let q = QUAD[vi];
-    let px = g.pos + q * g.size;
+    // Subpixel-correct glyph images come from cosmic-text's SubpixelBin
+    // (see §5.6) — no shader-side snap needed. Just subtract scroll offset.
+    let px = g.pos + q * g.size - uniforms.scroll_offset;
     let ndc = (px / uniforms.screen_size) * 2.0 - 1.0;
 
     var out: VsOut;
@@ -1637,9 +1788,24 @@ fn vs_main(@builtin(vertex_index) vi: u32, g: GlyphInput) -> VsOut {
     return out;
 }
 
+/// Brightness-scaled contrast enhancement, adapted from Windows Terminal's
+/// DirectWrite shader (and used by Warp). Lifts the perceived weight of thin
+/// glyphs on dark backgrounds without changing the rasterizer.
+fn enhance_contrast(alpha: f32, k: f32) -> f32 {
+    // k ≈ 0.5 .. 1.0 (lower = stronger). 0.7 is a good default.
+    return alpha + alpha * (1.0 - alpha) * k;
+}
+
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    let alpha = textureSample(atlas_tex, atlas_samp, in.uv).r;
+    // Atlas is RGBA8Unorm (see §5.4). For mono glyphs we use the .a channel;
+    // for colour glyphs (emoji) we use rgb directly.
+    let sample = textureSample(atlas_tex, atlas_samp, in.uv);
+    let is_color = sample.r + sample.g + sample.b > 0.0;
+    if is_color {
+        return sample;  // emoji: pre-multiplied colour
+    }
+    let alpha = enhance_contrast(sample.a, 0.7);
     return vec4(in.color.rgb, in.color.a * alpha);
 }
 ```
@@ -1648,7 +1814,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 ```wgsl
 struct Uniforms {
     screen_size: vec2<f32>,
-    _pad: vec2<f32>,
+    scroll_offset: vec2<f32>,   // {0.0, scroll_offset_y}; see §5.7
+    _pad: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -1672,7 +1839,7 @@ const QUAD: array<vec2<f32>, 6> = array(
 @vertex
 fn vs_main(@builtin(vertex_index) vi: u32, r: RectInput) -> VsOut {
     let q = QUAD[vi];
-    let px = r.pos + q * r.size;
+    let px = r.pos + q * r.size - uniforms.scroll_offset;
     let ndc = (px / uniforms.screen_size) * 2.0 - 1.0;
 
     var out: VsOut;
@@ -1692,7 +1859,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 ```rust
 // instances.rs
 
-/// Instance data для одного глифа
+/// Instance data for a single glyph
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct GlyphInstance {
@@ -1703,7 +1870,7 @@ pub struct GlyphInstance {
     pub color: [f32; 4],     // RGBA
 }
 
-/// Instance data для примитива (bg rect, cursor, selection)
+/// Instance data for a primitive (bg rect, cursor, selection)
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct PrimInstance {
@@ -1712,7 +1879,7 @@ pub struct PrimInstance {
     pub color: [f32; 4],
 }
 
-// Вместо bytemuck — свой unsafe cast
+// Custom unsafe cast in place of bytemuck
 impl GlyphInstance {
     pub fn as_bytes(slice: &[Self]) -> &[u8] {
         unsafe {
@@ -1738,53 +1905,65 @@ impl PrimInstance {
 
 ### 5.4 Glyph Atlas (atlas.rs)
 
+> Adapted from `warpdotdev/warp` ([crates/warpui/src/rendering/atlas/allocator.rs](https://github.com/warpdotdev/warp/blob/main/crates/warpui/src/rendering/atlas/allocator.rs), MIT). Two notable departures from the original draft of this spec:
+>
+> 1. **Atlas format is `RGBA8Unorm`, not `R8Unorm`.** A single atlas serves both monochrome glyphs (data lives in the alpha channel) and colour glyphs (emoji). Without this, emoji silently break.
+> 2. **Eviction is a per-glyph frame counter, not a doubly-linked LRU.** Warp uses `MAX_UNUSED_FRAMES = 10`; a glyph not sampled for 10 consecutive frames is dropped on `end_frame()`. This is far simpler than an intrusive linked list and is sufficient for terminal workloads.
+>
+> **As built (2026-05-29): the atlas is a texture ARRAY that grows by layer.** The single-1024²-texture sketch below had a latent bug — the shelf packer only grew and never reclaimed space, so heavy/Cyrillic scrolling marched it to the bottom and then *silently dropped every new glyph* (garbage on screen). Fixed by mirroring Warp's atlas `Manager` (which allocates a new texture on `AllocationError::Full`, [crates/warpui/src/rendering/atlas/manager.rs](https://github.com/warpdotdev/warp/blob/main/crates/warpui/src/rendering/atlas/manager.rs)) as array LAYERS: `MAX_LAYERS = 4`, one `ShelfPacker` per layer, `insert_raw` advances to the next layer on full, and `end_frame()` reclaims layers whose glyphs are all gone (the array analogue of Warp's whole-texture eviction); an all-layers-full frame triggers a wholesale compact + redraw as a last resort. `PlacedGlyph`/`GlyphInstance` carry a `layer` index, `text.wgsl` samples `texture_2d_array`, and the atlas bind-group layout is `D2Array`. The single-texture code below is kept as the original design sketch.
+
 ```rust
-// atlas.rs — собственный bin-packer + LRU cache
+// atlas.rs — shelf bin-packer + frame-counter eviction.
 
 use cosmic_text::CacheKey;
 use std::collections::HashMap;
 
-const ATLAS_SIZE: u32 = 2048;
-const GLYPH_PAD: u32 = 1;
+const ATLAS_SIZE: u32 = 1024;       // matches Warp's allocator
+const GLYPH_PAD: u32 = 1;           // 1 px H + V padding per glyph
+const MAX_UNUSED_FRAMES: u32 = 10;  // Warp's empirical cutoff
 
-/// Shelf-based bin packer
+/// Shelf-based bin packer (Shelf-Next-Fit).
 pub struct ShelfPacker {
     width: u32,
     height: u32,
-    shelf_y: u32,
-    shelf_height: u32,
-    cursor_x: u32,
+    /// Y of the current shelf's top edge.
+    row_baseline: u32,
+    /// Tallest item on the current shelf.
+    row_tallest: u32,
+    /// Right edge of items already placed on the current shelf.
+    row_extent: u32,
 }
 
 impl ShelfPacker {
     pub fn new(width: u32, height: u32) -> Self {
-        Self { width, height, shelf_y: 0, shelf_height: 0, cursor_x: 0 }
+        Self { width, height, row_baseline: 0, row_tallest: 0, row_extent: 0 }
     }
 
     pub fn pack(&mut self, w: u32, h: u32) -> Option<(u32, u32)> {
         let w = w + GLYPH_PAD * 2;
         let h = h + GLYPH_PAD * 2;
         if w > self.width { return None; }
-        if self.cursor_x + w > self.width {
-            self.shelf_y += self.shelf_height;
-            self.cursor_x = 0;
-            self.shelf_height = 0;
+        if self.row_extent + w > self.width {
+            // Advance to the next shelf.
+            self.row_baseline += self.row_tallest + GLYPH_PAD;
+            self.row_extent = 0;
+            self.row_tallest = 0;
         }
-        if self.shelf_y + h > self.height { return None; }
-        let pos = (self.cursor_x + GLYPH_PAD, self.shelf_y + GLYPH_PAD);
-        self.cursor_x += w;
-        self.shelf_height = self.shelf_height.max(h);
+        if self.row_baseline + h > self.height { return None; }
+        let pos = (self.row_extent + GLYPH_PAD, self.row_baseline + GLYPH_PAD);
+        self.row_extent += w;
+        self.row_tallest = self.row_tallest.max(h);
         Some(pos)
     }
 
     pub fn reset(&mut self) {
-        self.shelf_y = 0;
-        self.shelf_height = 0;
-        self.cursor_x = 0;
+        self.row_baseline = 0;
+        self.row_tallest = 0;
+        self.row_extent = 0;
     }
 }
 
-/// Cached glyph info
+/// Cached glyph info.
 #[derive(Debug, Clone, Copy)]
 pub struct CachedGlyph {
     pub uv_min: [f32; 2],
@@ -1793,98 +1972,27 @@ pub struct CachedGlyph {
     pub offset_y: f32,
     pub width: f32,
     pub height: f32,
+    /// Frame index when this glyph was last sampled. Updated by `get`.
+    pub last_used_frame: u32,
 }
 
-/// LRU node
-struct LruNode {
-    key: CacheKey,
-    glyph: CachedGlyph,
-    prev: usize,
-    next: usize,
+/// Glyph cache key. Includes subpixel alignment (3 X-variants, see §5.6) so
+/// each subpixel offset gets its own atlas entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct GlyphCacheKey {
+    pub base: CacheKey,
+    pub subpixel_x: u8,   // 0..3, see §5.6
 }
 
-const NIL: usize = usize::MAX;
-
-/// LRU cache — intrusive doubly-linked list + HashMap
-pub struct GlyphLru {
-    nodes: Vec<LruNode>,
-    map: HashMap<CacheKey, usize>,
-    head: usize,   // MRU
-    tail: usize,   // LRU
-    len: usize,
-    cap: usize,
-}
-
-impl GlyphLru {
-    pub fn new(capacity: usize) -> Self {
-        Self {
-            nodes: Vec::with_capacity(capacity),
-            map: HashMap::with_capacity(capacity),
-            head: NIL,
-            tail: NIL,
-            len: 0,
-            cap: capacity,
-        }
-    }
-
-    pub fn get(&mut self, key: &CacheKey) -> Option<CachedGlyph> {
-        let &idx = self.map.get(key)?;
-        self.touch(idx);
-        Some(self.nodes[idx].glyph)
-    }
-
-    pub fn insert(&mut self, key: CacheKey, glyph: CachedGlyph) {
-        if let Some(&idx) = self.map.get(&key) {
-            self.nodes[idx].glyph = glyph;
-            self.touch(idx);
-            return;
-        }
-        if self.len >= self.cap {
-            self.evict_lru();
-        }
-        let idx = self.nodes.len();
-        self.nodes.push(LruNode { key, glyph, prev: NIL, next: self.head });
-        if self.head != NIL { self.nodes[self.head].prev = idx; }
-        self.head = idx;
-        if self.tail == NIL { self.tail = idx; }
-        self.map.insert(key, idx);
-        self.len += 1;
-    }
-
-    fn touch(&mut self, idx: usize) {
-        if self.head == idx { return; }
-        self.detach(idx);
-        self.nodes[idx].prev = NIL;
-        self.nodes[idx].next = self.head;
-        if self.head != NIL { self.nodes[self.head].prev = idx; }
-        self.head = idx;
-    }
-
-    fn detach(&mut self, idx: usize) {
-        let prev = self.nodes[idx].prev;
-        let next = self.nodes[idx].next;
-        if prev != NIL { self.nodes[prev].next = next; } else { self.head = next; }
-        if next != NIL { self.nodes[next].prev = prev; } else { self.tail = prev; }
-    }
-
-    fn evict_lru(&mut self) {
-        if self.tail == NIL { return; }
-        let idx = self.tail;
-        self.detach(idx);
-        self.map.remove(&self.nodes[idx].key);
-        self.len -= 1;
-        // Note: node stays in Vec (tombstone), could compact periodically
-    }
-}
-
-/// Main atlas struct
+/// Main atlas struct.
 pub struct GlyphAtlas {
     packer: ShelfPacker,
-    lru: GlyphLru,
-    cpu_data: Vec<u8>,       // R8 pixel data
+    entries: HashMap<GlyphCacheKey, CachedGlyph>,
+    cpu_data: Vec<u8>,       // RGBA8 (4 bytes per pixel)
     texture: wgpu::Texture,
     texture_view: wgpu::TextureView,
     dirty: bool,
+    frame: u32,
 }
 
 impl GlyphAtlas {
@@ -1895,7 +2003,8 @@ impl GlyphAtlas {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::R8Unorm,
+            // RGBA8Unorm: alpha channel for mono glyphs, RGB for emoji. See note above.
+            format: wgpu::TextureFormat::Rgba8Unorm,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
@@ -1903,31 +2012,45 @@ impl GlyphAtlas {
 
         Self {
             packer: ShelfPacker::new(ATLAS_SIZE, ATLAS_SIZE),
-            lru: GlyphLru::new(4096),
-            cpu_data: vec![0u8; (ATLAS_SIZE * ATLAS_SIZE) as usize],
+            entries: HashMap::with_capacity(4096),
+            cpu_data: vec![0u8; (ATLAS_SIZE * ATLAS_SIZE * 4) as usize],
             texture,
             texture_view,
             dirty: false,
+            frame: 0,
         }
     }
 
     pub fn get_or_insert(
         &mut self,
-        key: CacheKey,
+        key: GlyphCacheKey,
         rasterize: impl FnOnce() -> Option<RasterizedGlyph>,
     ) -> Option<CachedGlyph> {
-        if let Some(cached) = self.lru.get(&key) {
-            return Some(cached);
+        if let Some(g) = self.entries.get_mut(&key) {
+            g.last_used_frame = self.frame;
+            return Some(*g);
         }
         let raster = rasterize()?;
         let (x, y) = self.packer.pack(raster.width, raster.height)?;
 
-        // Copy glyph bitmap into CPU buffer
+        // Copy glyph bitmap into the RGBA8 CPU buffer.
         for row in 0..raster.height {
-            let src_off = (row * raster.width) as usize;
-            let dst_off = ((y + row) * ATLAS_SIZE + x) as usize;
-            self.cpu_data[dst_off..dst_off + raster.width as usize]
-                .copy_from_slice(&raster.data[src_off..src_off + raster.width as usize]);
+            for col in 0..raster.width {
+                let src = (row * raster.width + col) as usize * raster.bytes_per_pixel();
+                let dst = (((y + row) * ATLAS_SIZE + (x + col)) * 4) as usize;
+                match raster.format {
+                    GlyphFormat::Alpha => {
+                        // Mono: write alpha; RGB defaults to 0 — the shader knows to use .a.
+                        self.cpu_data[dst]     = 0;
+                        self.cpu_data[dst + 1] = 0;
+                        self.cpu_data[dst + 2] = 0;
+                        self.cpu_data[dst + 3] = raster.data[src];
+                    }
+                    GlyphFormat::Rgba => {
+                        self.cpu_data[dst..dst + 4].copy_from_slice(&raster.data[src..src + 4]);
+                    }
+                }
+            }
         }
         self.dirty = true;
 
@@ -1938,9 +2061,20 @@ impl GlyphAtlas {
             offset_y: raster.top as f32,
             width: raster.width as f32,
             height: raster.height as f32,
+            last_used_frame: self.frame,
         };
-        self.lru.insert(key, cached);
+        self.entries.insert(key, cached);
         Some(cached)
+    }
+
+    /// Call at the end of each rendered frame. Increments the frame counter
+    /// and evicts entries that have not been sampled for `MAX_UNUSED_FRAMES`.
+    /// Evictions free entries but do not compact the atlas — `reset()` does
+    /// that when fragmentation crosses a threshold.
+    pub fn end_frame(&mut self) {
+        self.frame = self.frame.wrapping_add(1);
+        let cutoff = self.frame.wrapping_sub(MAX_UNUSED_FRAMES);
+        self.entries.retain(|_, g| g.last_used_frame.wrapping_sub(cutoff) <= MAX_UNUSED_FRAMES);
     }
 
     pub fn upload(&mut self, queue: &wgpu::Queue) {
@@ -1950,7 +2084,7 @@ impl GlyphAtlas {
             &self.cpu_data,
             wgpu::ImageDataLayout {
                 offset: 0,
-                bytes_per_row: Some(ATLAS_SIZE),
+                bytes_per_row: Some(ATLAS_SIZE * 4),
                 rows_per_image: Some(ATLAS_SIZE),
             },
             wgpu::Extent3d { width: ATLAS_SIZE, height: ATLAS_SIZE, depth_or_array_layers: 1 },
@@ -1961,30 +2095,104 @@ impl GlyphAtlas {
     pub fn view(&self) -> &wgpu::TextureView { &self.texture_view }
 }
 
-/// Rasterized glyph data (from cosmic-text/swash)
+/// Rasterized glyph data (from cosmic-text / swash / fontdb).
 pub struct RasterizedGlyph {
-    pub data: Vec<u8>,   // Alpha values
+    pub data: Vec<u8>,   // Alpha or RGBA depending on `format`
     pub width: u32,
     pub height: u32,
     pub left: i32,       // Bearing X
     pub top: i32,        // Bearing Y
+    pub format: GlyphFormat,
+}
+
+impl RasterizedGlyph {
+    fn bytes_per_pixel(&self) -> usize {
+        match self.format {
+            GlyphFormat::Alpha => 1,
+            GlyphFormat::Rgba => 4,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GlyphFormat {
+    /// Single-channel coverage (most fonts).
+    Alpha,
+    /// Pre-multiplied colour (emoji, CBDT/COLR fonts).
+    Rgba,
 }
 ```
 
-### 5.5 Render pass порядок
+### 5.6 Subpixel positioning
 
-1. **Clear** — wgpu::LoadOp::Clear (фоновый цвет терминала)
-2. **Background rects** — PrimInstance для каждого TextRun с bg != Default
-3. **Glyphs** — GlyphInstance для каждого глифа из shaped text
-4. **Cursor** — PrimInstance для курсора
-5. **Selection overlay** — PrimInstance с полупрозрачным цветом
-6. **Present** — output.present()
+> Originally inspired by Warp's `SubpixelAlignment` ([crates/warpui_core/src/fonts.rs#L135-L159](https://github.com/warpdotdev/warp/blob/main/crates/warpui_core/src/fonts.rs#L135-L159), MIT). While prototyping we discovered cosmic-text already ships subpixel positioning, so we use the built-in mechanism instead of hand-rolling Warp's.
+
+`cosmic_text::CacheKey` includes `x_bin: SubpixelBin` and `y_bin: SubpixelBin`, each a 4-variant enum (`Zero`, `One`, `Two`, `Three`). When the shaper produces a glyph, `glyph.physical(offset, scale)` bins the fractional part of the position into one of 16 combinations, and swash rasterizes the image aligned to that subpixel offset.
+
+For us this means **no hand-rolled subpixel code**. Cache by the full `CacheKey` (which already encodes the bins) and the correct image lands in the atlas:
+
+```rust
+// text.rs (sketch) — at shape time the cache key is built for us.
+
+for run in buffer.layout_runs() {
+    for glyph in run.glyphs {
+        let physical = glyph.physical((pen_x, pen_y), scale);
+        // physical.cache_key.x_bin / .y_bin are already set.
+        let placed = atlas.get_or_insert(physical.cache_key, || {
+            rasterize_glyph(font_system, swash_cache, physical.cache_key)
+        })?;
+        // ... emit GlyphInstance at (physical.x, physical.y) + placed.offset_*
+    }
+}
+```
+
+Trade-off vs Warp: memory cost is ×16 per glyph variant (4×4 bins) vs Warp's ×3 (X-only, snap Y). We accept the extra memory for crisper Y positioning and zero hand-rolled code. The Y snap pattern from earlier drafts (`px.y = floor(px.y)` in `text.wgsl`) is therefore unnecessary and removed.
+
+### 5.7 Scroll uniform & viewport culling
+
+Both `text.wgsl` and `prim.wgsl` read `uniforms.scroll_offset` (a `vec2<f32>` with `{0.0, scroll_offset_y}`) and subtract it before the NDC transform. This is **the entire scroll mechanism on the GPU** — no buffer rebuild, no atlas change, just one uniform write per frame.
+
+CPU-side, the renderer culls rows that fall outside the viewport:
+
+```rust
+// renderer.rs (excerpt)
+
+fn build_glyph_instances(&self, lines: &[Line], scroll: &ScrollState) -> Vec<GlyphInstance> {
+    let top = scroll.offset_y;
+    let bottom = scroll.offset_y + scroll.visible_px;
+    let first = self.row_layout.partition_point(|r| r.y_bottom < top);
+    let last = self.row_layout.partition_point(|r| r.y_top < bottom);
+    (first..last)
+        .flat_map(|i| self.glyphs_for_row(&lines[i], &self.row_layout[i]))
+        .collect()
+}
+```
+
+Full scroll integrator (velocity tracking, momentum timer, `EventLoopProxy<CustomEvent::MomentumTick>`) is specified in [docs/design/gpu-terminal-scroll.md](design/gpu-terminal-scroll.md). The 7 momentum constants are copied verbatim from Warp.
+
+### 5.5 Render pass order
+
+1. **Clear** — `wgpu::LoadOp::Clear` with the terminal background colour.
+2. **Background rects** — one `PrimInstance` per run of contiguous cells sharing a `bg != Default` (computed in `term_gpu` from the cell grid).
+3. **Glyphs** — one `GlyphInstance` per shaped glyph (subpixel-aware, see §5.6).
+4. **Cursor** — one `PrimInstance` for the cursor (style controlled by `CursorStyle`).
+5. **Selection overlay** — one `PrimInstance` with a semi-transparent colour.
+6. **Present** — `output.present()`.
+
+End of frame: call `atlas.end_frame()` so unused glyphs age toward eviction (§5.4).
 
 ---
 
 ## 6. term_layout: BSP Panel Manager
 
-### 6.1 Структура
+### 6.1 Structure
+
+Recursive `Box<Node>` BSP — no arena, no `SlotMap`, zero external
+dependencies. Two stable id namespaces (`PanelId` for leaves,
+`BranchId` for dividers) so a mouse drag can hold a handle across
+operations without worrying about reuse. Ratios clamp to
+`[MIN_RATIO, MAX_RATIO] = [0.05, 0.95]` so no panel ever ends up
+zero-sized.
 
 ```rust
 // lib.rs
@@ -1992,94 +2200,516 @@ pub struct RasterizedGlyph {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PanelId(pub u64);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct BranchId(pub u64);
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Rect { pub x: f32, pub y: f32, pub w: f32, pub h: f32 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Split { Horizontal, Vertical }
 
-pub enum Node {
-    Leaf { id: PanelId, bounds: Rect },
-    Branch { split: Split, ratio: f32, bounds: Rect, left: Box<Node>, right: Box<Node> },
+pub const MIN_RATIO: f32 = 0.05;
+pub const MAX_RATIO: f32 = 0.95;
+
+/// Returned by `dividers()`. `rect` is the 1-px-thin line for drawing,
+/// `bounds` is the parent branch's rectangle (used by drag handlers to
+/// translate a cursor position into a new ratio).
+#[derive(Debug, Clone, Copy)]
+pub struct Divider {
+    pub id: BranchId,
+    pub split: Split,
+    pub rect: Rect,
+    pub bounds: Rect,
 }
 
-pub struct PanelTree {
-    root: Option<Node>,
-    next_id: u64,
-    pub focus: PanelId,
-}
+// `Node` is private — callers interact only via `PanelTree`, `PanelId`,
+// and `BranchId`.
+
+pub struct PanelTree { /* root, id counters, focus */ }
 
 impl PanelTree {
-    pub fn new(w: f32, h: f32) -> Self { ... }
-    pub fn split(&mut self, target: PanelId, split: Split, ratio: f32) -> PanelId { ... }
-    pub fn close(&mut self, target: PanelId) { ... }
-    pub fn resize(&mut self, w: f32, h: f32) { ... }
-    pub fn hit_test(&self, x: f32, y: f32) -> Option<PanelId> { ... }
-    pub fn panels(&self) -> Vec<(PanelId, Rect)> { ... }
+    pub fn new(w: f32, h: f32) -> Self;
+    pub fn focus(&self) -> PanelId;
+    pub fn set_focus(&mut self, id: PanelId) -> bool;
+    pub fn is_empty(&self) -> bool;
+    pub fn panels(&self) -> Vec<(PanelId, Rect)>;
+    pub fn dividers(&self) -> Vec<Divider>;
+
+    pub fn split(&mut self, target: PanelId, split: Split, ratio: f32) -> Option<PanelId>;
+    pub fn close(&mut self, target: PanelId);
+    pub fn resize(&mut self, w: f32, h: f32);
+    pub fn drag_divider(&mut self, id: BranchId, new_ratio: f32) -> bool;
+    pub fn hit_test(&self, x: f32, y: f32) -> Option<PanelId>;
 }
 ```
 
+### 6.2 Semantics
+
+- **Top-anchored on resize.** `resize(w, h)` walks the tree top-down,
+  redividing each `Branch`'s new bounds by its stored ratio. Splits
+  keep their proportions; no content scrolls in response to window
+  size changes.
+- **Sibling promotion on close.** `close(target)` collapses the
+  `Branch` containing `target` — the surviving sibling subtree
+  inherits the Branch's bounds, reflowed via the same
+  `recompute_bounds` helper used by `resize`. Closing the only panel
+  empties the tree; the calling code reacts to `is_empty()`.
+- **Focus moves to the new split on `split`** and to the
+  depth-first first remaining leaf when the focused panel is closed.
+  `set_focus(id)` lets click handlers re-focus arbitrarily.
+- **Half-open hit-test edges.** `hit_test` treats panel rectangles as
+  `[x, x+w) × [y, y+h)` so an exact-divider-pixel hit doesn't claim
+  membership in two panels.
+
+### 6.3 Status
+
+Phase 4 complete (May 2026). 28 integration tests in
+`crates/term_layout/tests/{basic,split,close,resize,hit_test,drag_divider}.rs`.
+Visual demo at `crates/term_gpu/examples/layout_demo.rs` — Cmd+D /
+Cmd+Shift+D / Cmd+W keyboard shortcuts, click-to-focus, drag-to-resize
+dividers. term_layout is wired as a `dev-dependency` of `term_gpu`;
+the library itself stays unaware of layout (matching how `term_core`
+relates to `term_gpu`'s `render_term`).
+
 ---
 
-## 7. Интеграция с текущим кодом
+## 7. Integration with existing code
 
-### Удаляемые файлы
+### Removed files
 
-| Файл | Причина |
+| File | Reason |
 |------|---------|
-| `src/ui/terminal.rs` | Заменяется GPU рендерером |
-| `src/ui/render.rs` | Заменяется GPU рендерером |
-| `src/ui/layout.rs` | Заменяется term_layout |
-| `src/ui/terminal_guard.rs` | crossterm setup — заменяется winit |
-| `src/ui/events.rs` | EventHandler через crossterm → winit |
-| `src/ui/theme.rs` | Цвета → AnsiPalette в term_core |
-| `src/ui/header.rs` | Будет перенесён в GPU рендер |
-| `src/ui/footer.rs` | Будет перенесён в GPU рендер |
-| `src/pty/emulator/alacritty_impl.rs` | Заменяется term_core::VtEmulator |
+| `src/ui/terminal.rs` | Replaced by GPU renderer |
+| `src/ui/render.rs` | Replaced by GPU renderer |
+| `src/ui/layout.rs` | Replaced by term_layout |
+| `src/ui/terminal_guard.rs` | crossterm setup — replaced by winit |
+| `src/ui/events.rs` | EventHandler via crossterm → winit |
+| `src/ui/theme.rs` | Colors → AnsiPalette in term_core |
+| `src/ui/header.rs` | Will be moved into the GPU renderer |
+| `src/ui/footer.rs` | Will be moved into the GPU renderer |
+| `src/pty/emulator/alacritty_impl.rs` | Replaced by term_core::VtEmulator |
 
-### Изменяемые файлы
+### Modified files
 
-| Файл | Изменения |
+| File | Changes |
 |------|-----------|
-| `src/pty/emulator/mod.rs` | `pub use term_core::emulator::TerminalEmulator;` — трейт из term_core |
+| `src/pty/emulator/mod.rs` | `pub use term_core::emulator::TerminalEmulator;` — trait from term_core |
 | `src/pty/session.rs` | `emulator::create()` → `term_core::create_emulator()` |
-| `src/pty/handle.rs` | Адаптировать под новый трейт (set_visible_rows вместо set_size) |
-| `src/ui/runtime.rs` | Главная перестройка: ratatui loop → winit ApplicationHandler |
-| `src/ui/app.rs` | Адаптировать под новый трейт TerminalEmulator |
-| `src/ui/input.rs` | classify_key адаптировать под winit KeyEvent |
-| `src/ui/selection.rs` | Pixel-based selection вместо grid-based |
-| `Cargo.toml` | Описано в секции 3 |
+| `src/pty/handle.rs` | Adapt to the new trait (set_visible_rows instead of set_size) |
+| `src/ui/runtime.rs` | Main rewrite: ratatui loop → winit ApplicationHandler |
+| `src/ui/app.rs` | Adapt to the new TerminalEmulator trait |
+| `src/ui/input.rs` | Adapt classify_key to winit KeyEvent |
+| `src/ui/selection.rs` | Pixel-based selection instead of grid-based |
+| `Cargo.toml` | Described in section 3 |
 
-### Файлы без изменений
+### Unchanged files
 
-Всё в `src/proxy/`, `src/config/`, `src/metrics/`, `src/ipc/`, `src/shim/`, `src/args/`, `src/clipboard/`, `src/error/`, `src/shutdown/`.
+Everything in `src/proxy/`, `src/config/`, `src/metrics/`, `src/ipc/`, `src/shim/`, `src/args/`, `src/clipboard/`, `src/error/`, `src/shutdown/`.
 
 ---
 
 ## 8. Roadmap
 
-### Фаза 1: term_core (2 недели)
-**Файлы:** `crates/term_core/src/{lib,parser,color,attrs,grid,emulator}.rs`
-**Deliverable:** VT парсер проходит тесты с выводом Claude Code
-**Тесты:** Захватить реальный вывод Claude Code, воспроизвести через парсер
+### Phase 1 — term_core ✅ done (May 2026)
+**Files:** `crates/term_core/src/{lib,parser,color,attrs,grid,emulator}.rs`
+**Delivered:** Hand-rolled Paul Williams VT parser (0 deps, ~770 LoC),
+alacritty-style fixed-cell grid, `VtEmulator` wiring parser→grid.
+22 integration tests; `examples/dump.rs` for visual smoke testing.
 
-### Фаза 2: term_gpu — base (2 недели)
-**Файлы:** `crates/term_gpu/src/{lib,renderer,surface,pipeline,instances,shaders/}.rs`
-**Deliverable:** Окно с цветным текстом через wgpu
+### Phase 2 — term_gpu base ✅ done (folded into Phase 3 / 3.5)
+**Files:** `crates/term_gpu/src/{lib,renderer,pipeline,instances,shaders/}.rs`
+**Delivered:** wgpu 24 + winit 0.30 stack, dual `rect`/`text` pipelines,
+instanced quads, shared uniform bind group.
 
-### Фаза 3: term_gpu — text (2 недели)
-**Файлы:** `crates/term_gpu/src/{atlas,text,color}.rs`
-**Deliverable:** Variable-width текст с cosmic-text, glyph atlas, LRU cache
+### Phase 3 — term_gpu text ✅ done (May 2026)
+**Files:** `crates/term_gpu/src/{atlas,text}.rs`
+**Delivered:** Variable-width text via cosmic-text, RGBA8 glyph atlas
+with Shelf-Next-Fit packer and frame-counter eviction
+(§5.4). Subpixel positioning via cosmic-text's built-in `SubpixelBin`
+(§5.6) — discovered during implementation, simpler than Warp's
+hand-rolled 3-step. `TextShapeCache` with `font_size + scale_factor +
+wrap_width` keying, frame eviction at 60.
 
-### Фаза 4: term_layout (1 неделя)
-**Файлы:** `crates/term_layout/src/lib.rs`
-**Deliverable:** BSP панели, split/close/resize
+### Phase 3.5 — Smooth scroll integration ✅ done (May 2026)
+**Files:** `crates/term_gpu/src/scroll.rs`, uniform additions to
+`text.wgsl` and `prim.wgsl`.
+**Delivered:** All seven Warp momentum constants, `EventLoopProxy<
+CustomEvent::MomentumTick>` pump via `futures-timer`. `TouchPhase::Ended`
+for trackpad gesture end (fixes scroll-fling collision); silence
+timeout for wheel mice.
 
-### Фаза 5: Integration (2 недели)
-**Файлы:** `src/ui/runtime.rs`, `src/pty/emulator/mod.rs`, `src/pty/session.rs`, `src/pty/handle.rs`
-**Deliverable:** AnyClaude работает с GPU терминалом, Claude Code отображается корректно
+### Phase 4 — term_layout ✅ done (May 2026)
+**Files:** `crates/term_layout/src/lib.rs`, tests in `crates/term_layout/tests/`,
+demo in `crates/term_gpu/examples/layout_demo.rs`.
+**Delivered:** BSP `PanelTree` with `split` / `close` / `resize` /
+`hit_test` / `dividers` / `drag_divider` / `set_focus`. Top-anchored
+resize, sibling promotion on close, ratio clamp `[0.05, 0.95]`,
+separate `PanelId` / `BranchId` namespaces. 28 integration tests,
+visual demo with keyboard shortcuts and mouse drag.
 
-### Фаза 6: Polish (1 неделя)
-**Deliverable:** Selection, clipboard, scrollback, font fallback, performance tuning
+### Mini-integration — term_core × term_gpu ✅ done (May 2026)
+**Files:** `crates/term_gpu/examples/render_term.rs`.
+**Delivered:** End-to-end pipe — stdin → `VtEmulator` → snapshot →
+per-cell shaped glyphs at `(col × cell_width_physical, row ×
+cell_height_physical)`. Integer physical cell metrics (Warp parity:
+`round(advance('M'))`). Cursor (Block/Underline/Bar), background
+rects, INVERSE swap. Top-anchored grid resize. Documented in
+[docs/articles/warp-gpu-terminal/](articles/warp-gpu-terminal/).
 
-**Итого: ~10 недель**
+### term_grid — multi-panel PTY demo ✅ done (May 2026)
+**Files:** `crates/term_gpu/examples/term_grid.rs`.
+**Delivered:** First end-to-end virtual terminal. Every leaf in
+`PanelTree` owns a real `portable-pty` shell. Reader thread per
+panel via `EventLoopProxy<CustomEvent::BytesArrived(PanelId)>`;
+keyboard input encoded to ANSI bytes (printable text, `Ctrl+letter`
+control codes, `Alt+key` ESC-prefix, named keys with their
+canonical CSI sequences); emulator DA/DSR responses flow back to
+the PTY. Cmd+D / Cmd+Shift+D / Cmd+W shortcuts (Cmd is the app
+modifier, Ctrl belongs to the shell). Mouse click focus,
+drag-divider with sync deferred to `on_mouse_release` (avoids
+SIGWINCH spam). Render-side culling so glyphs/cursor don't spill
+past the panel during a drag. Per-panel `grid_size` cache guards
+against redundant resizes. `PanelExited(PanelId)` event triggers
+panel + PTY teardown; closing the last panel exits the demo.
+
+
+### Reflow on column resize ✅ done (May 2026)
+**Files:** `crates/term_core/src/attrs.rs`, `crates/term_core/src/grid.rs`,
+`crates/term_core/tests/reflow.rs`.
+**Delivered:** Column-resize now rewraps content via the WRAPLINE
+chain instead of truncating. Algorithm is adapted from Warp's
+`crates/warp_terminal/src/model/grid/flat_storage/index.rs::Index::rebuild`
+(walk old content in order, re-emit at new width), simplified for
+our cell-based model:
+
+1. `CellFlags::WRAPLINE` (bit 12) marks the last cell of any row
+   whose content soft-wrapped to the next row. `Grid::print` sets
+   it on the auto-wrap branch; CR/LF/CUP leave it clear.
+2. `Grid::resize` checks for a column change, collects logical
+   lines from the WRAPLINE chain, drops trailing all-blank lines
+   (the outer pad-with-blanks step recreates them), re-emits rows
+   at the new width, and tracks the cursor by absolute row across
+   reflow + pad/truncate.
+3. On visible-rows grow, existing scrollback is absorbed into the
+   new viewport (`scrollback_to_keep = prev_scrollback -
+   visible_increment`), so "content does not move on resize".
+
+`term_grid` picks this up via the unchanged `Grid::resize`
+signature — drag-divider release no longer leaves history
+fragments. 12 integration tests in `tests/reflow.rs` pin the
+behavior.
+
+### Phase 5 — Integration ✅ done (May 2026)
+**Files:** `src/ui/gpu/{mod,app,pty}.rs`, `src/main.rs`,
+`crates/term_gpu/src/{panel_render,label,input,paste,selection}.rs`,
+`crates/term_core/src/parser.rs`.
+
+**Status (2026-05-28):** GPU UI is the default and only entry. No
+known visible bugs. Legacy ratatui path and all its supporting
+modules are deleted (see "Phase 5 cutover" below).
+
+> **Superseded direction (2026-05-29):** the MVI-based UI layer
+> (the `GpuApp` god-object + 3 popup `Store<Actor>`s) is being
+> **replaced** by `term_ui` — a retained+reactive UI kit over one
+> plain `AppState` (no MVI). The MVI mandate is reversed. See
+> **`docs/design/term-ui-design.md`** (ratified; R1–R15) for the full
+> design + phased migration. `GpuApp`/`main.rs` stay live until the
+> migration's final swap.
+
+**Delivered**
+1. winit ApplicationHandler skeleton + wgpu setup (C1).
+2. Shell PTY rendering through `term_gpu::populate_panel` (C2).
+3. Keyboard / scroll+momentum+follow / drag-select / Cmd+C+V with
+   image-paste (C3).
+4. Top header + bottom footer on GPU canvas via `push_label` (C4-C5).
+5. Drop-shadow shader + layered `RenderLayer { shadows, rects,
+   glyphs }` API + `render(base, overlay, scroll)` (C6).
+6. Backend switch / History / Settings popups as GPU overlays with
+   shared `draw_string_list_popup` chrome (C7-C9).
+7. Full anyclaude bootstrap — Config, DebugLogger, ProxyServer +
+   try_bind, TeammateShim, subagent hook injection, claude PTY
+   spawn (C10a).
+8. MVI refactor of popups — `Store<BackendSwitchActor>` /
+   `Store<HistoryActor>` / `Store<SettingsActor>` replace inline
+   field-mutating state.
+
+**Warp-parity fixes** (after C10a shipped, four targeted commits)
+- FIX-1: cell metrics from real ttf-parser ascent + descent + line_gap.
+- FIX-2: native block-char painter for U+2580-259F (solid rects, not shaped glyphs).
+- FIX-3: non-sRGB swap chain + luma-aware glyph contrast (matches Warp / iTerm2 / Windows Terminal).
+- FIX-4: VT parser — `:` sub-param separator, sub-param tracking (`param_is_sub`), alt-screen SGR isolation, XTERM private-marker (`>`/`<`/`=`) rejection. Root cause of stuck-underline-everywhere was `CSI > 4 ; 2 m` (modifyOtherKeys) being misdispatched as SGR 4;2.
+
+**Phase 5 closing pass** (FIX-5..FIX-9, one session — eleven commits)
+After FIX-4 shipped, seven visible bugs remained. One session closed
+all of them; two were the same root cause.
+
+- FIX-5: backend popup gets its 3 sections back (Active / Subagent /
+  Teammate). New `BackendSwitchIntent::Clear` (Del/Backspace resets
+  override to Disabled). Section-aware Enter: Active → `switch_backend`;
+  Subagent/Teammate → `AgentBackendState::set`. Commits `9ac9b85`,
+  `af009a3`, `af339db`.
+- FIX-6: header reads live `subagent_backend` / `teammate_backend` /
+  `ObservabilityHub.snapshot()` instead of hardcoded `"—"` / 0. New
+  `UserEvent::TickRedraw` fires once per second so Uptime / Reqs
+  refresh when the PTY is silent. Commits `a87cda5`, `9366f79`.
+- FIX-7: `restart_pty()` drops the current `ChildPty` (master close
+  signals child via SIGHUP), rebuilds emulator, resets scroll/selection,
+  re-spawns with stored params. Wired to Cmd+R. Plus 1px dim-grey
+  separator rects below the header and above the footer. Commits
+  `3927b2b`, `db8b212`.
+- FIX-8: **OSC 0x9C must not terminate the string in UTF-8 mode**.
+  The 8-bit C1 String Terminator collides with UTF-8 continuation
+  bytes — e.g. the middle byte of `✳` (U+2733, `e2 9c b3`) was
+  prematurely terminating Claude's `ESC ] 0 ; ✳ Claude Code BEL`
+  startup OSC. The leftover payload bytes ` Claude Code` were
+  printed into row 0 cells 0-11; subsequent CHA-positioned BOLD
+  "Claude"/"Code" partially overrode them, producing the visible
+  "Claude CodClaude Code v2.1.152" duplicate. Same bug accounted
+  for the stray `█` at col 17 (a surviving alpaca char from the
+  cell-position mismatch). Fix is one branch removal: only BEL
+  (0x07) and ESC \ (0x1B 0x5C) terminate OSC. Commit `dbce0f9`.
+- FIX-9: **INVERSE on default fg/bg must render as a visible block**.
+  The swap operated on `TermColor` enum values; swapping two
+  `Default`s produced two more `Default`s, the bg-rect push was
+  skipped, and the blank-glyph short-circuit fired → zero pixels
+  rendered. Claude's faux-cursor (`CSI 7 m SP CSI 27 m`) was
+  collapsing to invisible. Fix resolves `TermColor::Default` to
+  concrete RGBA before the swap; new `DEFAULT_BG = [0.04, 0.04,
+  0.06, 1.0]` matches the renderer surface clear color. Commit
+  `440794f`.
+
+**Diagnostics infrastructure** added during the closing pass:
+
+- `ANYCLAUDE_DEBUG_PTY=<path>` env tees raw PTY bytes to a file
+  (`145c6fe`). No external `script`/`tee` needed.
+- `Cmd+Shift+D` one-shot snapshot dump of grid_size, cursor state,
+  visible rows + flags to stderr (`948e490`).
+
+**Phase 5 cutover ✅ done (May 28 2026)** — four commits, all
+green:
+
+- `13d50f2` — `main.rs` drops the `--gpu` flag and the raw-mode /
+  legacy branch, routes directly to `ui::gpu::run`. The crossterm
+  + `IsTerminal` probe go away.
+- `08faeb7` — deletes the entire legacy UI runtime
+  (`src/ui/{app,events,footer,header,input,layout,render,runtime,
+  selection,terminal,terminal_guard,theme}.rs` and
+  `src/ui/components/`), the ratatui dialog renderers
+  (`src/ui/{backend_switch,history}/dialog.rs`), and the legacy
+  non-UI helpers (`src/pty/`, `src/clipboard.rs`, `src/ipc/`,
+  `src/shutdown.rs`, `src/error.rs`). Updates `src/lib.rs` and
+  every relevant `mod.rs` to drop the removed declarations.
+- `f9d07d5` — prunes tests that targeted the removed code
+  (`app_lifecycle`, `app_startup`, `args_pipeline`, `clipboard`,
+  `error_registry`, `ipc`, `pty_passthrough`, `restart_claude`,
+  `test_shutdown`, `word_selection`) and strips App / PTY helpers
+  from `tests/common/mod.rs`. All remaining tests pass.
+- `f0693bd` — removes the legacy dependencies from `Cargo.toml`
+  (`ratatui`, `crossterm`, `signal-hook`, `alacritty_terminal`,
+  `arboard`, `term_input`) and drops the `crates/term_input`
+  workspace member.
+
+**Preserved per user mandate "ВЕСЬ UI должен быть на mvi"**: the
+`mvi` crate and the `src/ui/{backend_switch,history,settings,pty}/
+{actor,intent,state,mod}.rs` MVI store modules. The PtyActor /
+PtyLifecycleState aren't wired into the GPU UI yet — kept so a
+future async-attach refactor can use them without re-implementing
+the state machine.
+
+### SGR visual flags ✅ done (May 2026)
+**Files:** `crates/term_gpu/src/text.rs`, `crates/term_gpu/src/lib.rs`,
+`crates/term_gpu/examples/term_grid.rs`,
+`crates/term_gpu/examples/render_term.rs`.
+**Delivered:** Bold, italic, underline, double-underline, strike,
+faint, and hidden render in both `term_grid` and `render_term`.
+The emulator was already setting the matching `CellFlags` bits;
+this phase plumbed them through the renderer:
+
+1. `TextShapeCache::shape` accepts `Weight` and `Style`, both
+   re-exported from `term_gpu`. Bold and italic resolve to distinct
+   cosmic-text faces (SF Pro Bold / Italic on macOS).
+2. Underline / double-underline / strike are `RectInstance`s in
+   the rect pass at fixed cell-height fractions
+   (0.78 / 0.72-0.84 / 0.42). Color = effective fg.
+3. Faint multiplies fg alpha by 0.5. Hidden suppresses the glyph
+   push but keeps bg + decoration rects (xterm/iTerm behavior).
+4. Blank cells with decoration flags bypass the
+   "nothing-to-render" short-circuit so an underlined space still
+   draws its underline.
+
+`term_grid` and `render_term` carry copy-pasted SGR logic — DRY
+threshold not reached at two consumers (YAGNI). Eventual extraction
+when a third consumer arrives.
+
+### Scrollback in term_grid ✅ done (May 2026)
+**Files:** `crates/term_core/src/emulator.rs`,
+`crates/term_core/src/grid.rs`,
+`crates/term_gpu/examples/term_grid.rs`,
+`crates/term_core/examples/dump.rs`,
+`crates/term_gpu/examples/render_term.rs`.
+**Delivered:** Per-panel pixel-precise scroll with momentum
+(ported from `scroll_demo`), follow mode, and `Cmd+Home`/`Cmd+End`
+jumps.
+
+1. `RenderSnapshot.rows` now exposes the entire buffer
+   (scrollback + visible) and gains a `visible_rows: usize` field
+   plus `visible_start()` / `visible_iter()` helpers. Existing
+   consumers that only want the visible region switch to
+   `visible_iter()`.
+2. `PanelState` carries a `ScrollState`. Mouse wheel events
+   hit-test against the panel tree to find the panel under the
+   cursor and route the delta there. `App.scrolling_panel`,
+   `momentum_abort`, `gesture_end_abort` are single fields keyed
+   by panel id — only one panel has in-flight inertia at a time.
+3. `populate_panel` and `build_cursor_rect` walk all snapshot rows
+   and apply a baseline + offset transform so the visible region
+   is anchored to the bottom at `offset_y == 0`.
+4. Follow mode: `drain_panel` captures `was_at_bottom =
+   offset_y <= SCROLL_BOTTOM_EPSILON` BEFORE applying PTY bytes;
+   if so, re-pins `offset_y = 0.0` after the buffer grows so the
+   cursor stays in view.
+5. `Cmd+End` snaps to bottom (`offset = 0`); `Cmd+Home` snaps to
+   top of scrollback (`offset = max_offset`).
+
+**Convention note:** `term_grid` inverts the `ScrollState` docs
+convention. `offset_y == 0` is the BOTTOM (cursor visible);
+`offset_y == max_offset` is the TOP of scrollback. The terminal
+default state is "at the cursor", and natural-scrolling positive
+wheel deltas increase `offset_y` to reveal scrollback — no manual
+sign inversion needed. See the comment block in `populate_panel`.
+
+### Selection in term_grid ✅ done (May 2026)
+**Files:** `crates/term_gpu/examples/term_grid.rs`.
+**Delivered:** Drag-to-select cells inside a panel, double-click
+selects a word, triple-click selects a row, `Esc` clears.
+
+1. `Selection { anchor, cursor }` lives on `PanelState`. Both
+   ends are `CellPoint { row, col }` where `row` is the absolute
+   index into `RenderSnapshot::rows` — so selection survives
+   user scroll without coordinate translation.
+2. `App.dragging_selection: Option<PanelId>` routes CursorMoved
+   updates to the panel that got mouse-down.
+3. Mouse-mode gate: selection only starts when
+   `emulator.mouse_mode() == MouseMode::None` — Vim / htop / fzf
+   own the drag in mouse-reporting mode.
+4. Multi-click detection: consecutive presses within 400 ms at
+   the same cell increment a count. 1 → linear, 2 → word, 3 →
+   row. Word expansion uses Warp's `DEFAULT_WORD_BOUNDARY_CHARS`
+   list verbatim (`crates/warpui_core/src/text/words.rs`).
+5. Lifecycle (Warp's
+   `app/src/terminal/model/selection.rs:1-6` intent):
+   - Cleared on PTY bytes (text changed) — except for the panel
+     actively being dragged.
+   - Cleared on `Grid::resize` (column / row change reflow).
+   - Cleared on Esc (still forwarded to PTY so Vim's "leave
+     insert mode" works).
+   - Cleared on a no-drag click (empty selection on release).
+   - Preserved across user scroll (absolute row indices).
+6. Render: one `RectInstance` per selected cell row in
+   `push_selection_rects`, color
+   `rgba(118, 167, 250, 0.4)` — Warp's `text_selection_color`.
+   Linear (row-wrapping) selection only; block (rect) mode
+   deferred.
+
+Copy / paste are clipboard work (next deliverable).
+
+### Clipboard ✅ done (May 2026)
+**Files:** `crates/term_clipboard/src/lib.rs`,
+`crates/term_clipboard/src/mac.rs`,
+`crates/term_clipboard/tests/in_memory.rs`,
+`crates/term_clipboard/tests/mac_smoke.rs`,
+`crates/term_gpu/examples/term_grid.rs`.
+**Delivered:** New sibling crate `term_clipboard` with full
+Warp parity for plain text, HTML, file paths, and images
+(PNG / JPEG / GIF / WebP / SVG). Wire-up in `term_grid` covers
+Cmd+C / Cmd+V end-to-end including image-data paste.
+
+1. `Clipboard` trait + `ClipboardContent {
+   plain_text, paths, html, images }` + `ImageData {
+   data, mime_type, filename }`. Matches Warp's
+   `warpui_core::clipboard` data model.
+2. `InMemoryClipboard` for tests / non-mac fallback.
+3. `MacClipboard` via `objc2-app-kit::NSPasteboard`:
+   plain-text + HTML via `setString_forType` /
+   `stringForType`; images by MIME ↔ pasteboard UTI mapping
+   (mirrors Warp's `pasteboard_type_for_image_mime_type`);
+   file paths via `readObjectsForClasses_options(NSURL)`.
+4. `should_insert_text_on_paste`, `has_image_extension`,
+   `get_image_filepaths_from_paths`, `CLIPBOARD_IMAGE_MIME_TYPES`
+   helpers ported verbatim from Warp's `clipboard_utils`.
+5. `term_grid` Cmd+C reads `selection_to_text` (warp's
+   `bounds_to_string` rules: trim trailing blanks per row,
+   `WRAPLINE` soft-wrap = no newline, hard break = newline),
+   writes `ClipboardContent::plain_text`.
+6. `term_grid` Cmd+V follows Warp's `process_paste_event`
+   (`app/src/terminal/input.rs:10573`):
+   plain text gated by `should_insert_text_on_paste` →
+   image filepaths from `content.paths` → best image data
+   saved to `$TMPDIR/term_grid_clipboard_<nanos>.<ext>` and
+   path appended. All parts joined with spaces, shell-quoted
+   with single quotes for POSIX safety. Wrapped in
+   `\x1b[200~`…`\x1b[201~` when the emulator has bracketed
+   paste enabled.
+7. Cmd shortcuts match on `event.physical_key` (`KeyCode::KeyC` etc.)
+   instead of `event.logical_key`, so Cmd+C / Cmd+V / Cmd+D /
+   Cmd+W / Cmd+Q work on any keyboard layout.
+
+The image-data → temp-file → path flow is what makes Claude
+Code's image input work: copy a screenshot, Cmd+V in CC's chat,
+CC reads the temp file.
+
+### Glyph cache fast-path ✅ done (May 2026)
+**Files:** `crates/term_gpu/src/text.rs`,
+`crates/term_gpu/examples/term_grid.rs`.
+**Delivered:** Two-tier text shape cache mirroring Warp's
+`CellGlyphCache.glyph_cache` (char → glyph) vs `string_cache`
+(`String` → shaped run) split. Single-codepoint cells — the 99%
+case for terminal grids — resolve through direct `ttf_parser` cmap,
+bypassing cosmic-text's `Buffer` and `String` cache key entirely.
+
+1. `TextShapeCache::shape_char(font_system, ch, font_size,
+   scale_factor, weight, style) -> Option<CharGlyph>` — fast
+   path. Key is `(char, font_id)`, no allocation. On miss:
+   resolve primary face via `FontSystem::db().query(&fontdb::Query
+   { families, weight, style, stretch })`, look up glyph via
+   `Font::rustybuzz().glyph_index(ch)`. `CharGlyph` carries
+   `(font_id, glyph_id, baseline_y_physical)` — enough to build
+   a `CacheKey` and place the glyph at the cell's origin without
+   ever shaping.
+2. `baseline_y_physical` derived from face's
+   `ascender() / units_per_em()` at the requested physical font
+   size. Per-face value cached for the lifetime of the
+   `TextShapeCache`; per-char glyph lookups cached by frame
+   counter alongside the existing string cache.
+3. `prepare_shape_for_panel` in `term_grid` picks fast vs slow
+   path per cell: `cell.extra.zerowidth.is_empty()` → fast path
+   via `shape_char`, `CacheKey::new(font_id, glyph_id,
+   font_size_physical, (cell_origin_x, baseline_y), CacheKeyFlags::
+   empty())` → atlas; combining clusters and missing-glyph
+   cases drop through to the existing String-keyed `shape()`.
+4. Cosmic-text's `SubpixelBin` binning preserved via
+   `CacheKey::new`'s tuple return — atlas keys remain identical
+   to what `LayoutGlyph::physical` would produce, so existing
+   rasterized glyphs continue to hit.
+
+Removes the per-cell `String::from(text)` allocation that
+`TextShapeCache::shape` did on every call for cache-key
+construction. At 200×60 cells × 60 fps that's ~720k allocations
+per second removed from the steady-state render loop.
+
+### Phase 6 — Polish (1 week, partial) ⏳ in progress
+**Delivered:**
+- Reflow on column shrink/grow — see "Reflow on column resize" entry.
+- SGR visual flags — see "SGR visual flags" entry.
+- Scrollback navigation in `term_grid` — see "Scrollback in
+  term_grid" entry.
+- Text selection in `term_grid` — see "Selection in term_grid" entry.
+- Clipboard — see "Clipboard" entry.
+- Glyph cache fast-path — see "Glyph cache fast-path" entry.
+
+**Remaining (no fixed order):**
+- Font fallback configuration.
+- Drop-shadow shader for overlays (§3.4).
+
+**Progress: ~7 weeks done of ~11 planned.**

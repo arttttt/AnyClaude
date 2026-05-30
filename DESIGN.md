@@ -1,5 +1,12 @@
 # Config Integration for Upstream — Design Document
 
+> **Historical design doc (point-in-time).** An early design for wiring the
+> config system into the proxy. Parts of it diverged from what shipped — in
+> particular there is **no IPC**: backend switching is in-process, and the proxy
+> lives in `src/proxy/` (`server.rs` / `router.rs` / `connection.rs` / `pool.rs`),
+> not an `UpstreamClient`. Kept for context. For the current architecture see
+> [`ARCHITECTURE.md`](ARCHITECTURE.md).
+
 ## Problem Statement
 
 The `UpstreamClient` currently has a hardcoded upstream URL (`https://api.anthropic.com`). The proxy module needs to integrate with the config system to:

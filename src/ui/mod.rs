@@ -1,19 +1,10 @@
-pub mod app;
+pub mod app_state;
 pub mod backend_switch;
-pub mod events;
-pub mod footer;
-pub mod header;
+pub mod chrome_labels;
+pub mod gpu;
 pub mod history;
 pub mod input;
-pub mod layout;
-pub mod components;
-pub mod pty;
-pub mod render;
-pub mod selection;
+pub mod popup_anim;
+pub mod popup_view;
 pub mod settings;
-pub mod runtime;
-pub mod terminal;
-pub mod terminal_guard;
-pub mod theme;
-
-pub use runtime::run;
+pub mod term_geometry;

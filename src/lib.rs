@@ -1,13 +1,8 @@
 pub mod args;
 pub mod backend;
-pub mod clipboard;
 pub mod config;
-pub mod error;
-pub mod ipc;
 pub mod metrics;
 pub mod proxy;
-pub mod pty;
 pub mod shim;
-pub mod shutdown;
 pub mod sse;
 pub mod ui;

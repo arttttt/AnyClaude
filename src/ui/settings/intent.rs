@@ -1,6 +1,7 @@
 use crate::config::SettingsFieldSnapshot;
-use mvi::Intent;
 
+/// Settings popup intents — the message vocabulary consumed by
+/// [`SettingsDialogState::apply`]. Plain enum (no MVI traits).
 #[derive(Debug, Clone)]
 pub enum SettingsIntent {
     Load { fields: Vec<SettingsFieldSnapshot> },
@@ -12,5 +13,3 @@ pub enum SettingsIntent {
     MoveDown,
     Toggle,
 }
-
-impl Intent for SettingsIntent {}

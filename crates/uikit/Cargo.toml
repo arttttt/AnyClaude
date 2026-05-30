@@ -1,0 +1,22 @@
+[package]
+name = "uikit"
+version = "0.1.0"
+edition = "2021"
+description = "Reusable, domain-agnostic widget kit for AnyClaude, composed over term_ui. Provides chrome bars (header/footer) and shared Segment primitives; it knows nothing of anyclaude's domain (no BackendState, no session, no PTY). See docs/design/term-ui-design.md (Phase C)."
+
+[lints]
+workspace = true
+
+[dependencies]
+# uikit composes term_ui Elements (Stack/Text/Spacer/Block) into reusable
+# widgets. It depends ONLY on term_ui — never on term_gpu directly and never
+# on anyclaude — so the kit stays a clean lower layer (the layering the
+# whole term_ui pivot is about).
+term_ui = { path = "../term_ui" }
+
+[dev-dependencies]
+# The layout tests drive measure/place headlessly, which needs a real
+# FontSystem/TextShapeCache (term_gpu) and Vec2 (glam) to construct
+# constraints and inspect placed bounds. Test-only — not a lib dependency.
+term_gpu = { path = "../term_gpu" }
+glam = "0.30"

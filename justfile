@@ -1,18 +1,18 @@
 # AnyClaude task runner
 
-# Run all checks (lint + test)
+# Run all checks (lint + test) across the whole workspace
 check:
     @just lint-test-location
-    cargo clippy --all-targets -p anyclaude
-    cargo test
+    cargo clippy --workspace --all-targets
+    cargo test --workspace
 
-# Ensure no inline #[cfg(test)] in source files
+# Ensure no inline #[cfg(test)] in source files (anyclaude + all workspace crates)
 lint-test-location:
     #!/usr/bin/env bash
     set -euo pipefail
-    violations=$(grep -rn '#\[cfg(test)\]' src/ --include='*.rs' || true)
+    violations=$(grep -rn '#\[cfg(test)\]' src/ crates/*/src/ --include='*.rs' || true)
     if [ -n "$violations" ]; then
-        echo "ERROR: #[cfg(test)] found in src/. All tests must be in tests/."
+        echo "ERROR: #[cfg(test)] found in src/ or crates/*/src/. All tests must be in tests/."
         echo "$violations"
         exit 1
     fi

@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/term_input", "crates/mvi"]
+members = [".", "crates/term_gpu", "crates/term_core", "crates/term_layout", "crates/term_clipboard", "crates/term_ui", "crates/uikit"]
 
 [workspace.lints.rust]
 dead_code = "deny"
@@ -18,16 +18,23 @@ default = []
 workspace = true
 
 [dependencies]
-# PTY & Terminal
+# PTY (spawned by the GPU UI's ChildPty).
 portable-pty = "0.9"
-alacritty_terminal = "0.25"
-crossterm = "0.29"
-signal-hook = "0.4"
-term_input = { path = "crates/term_input" }
-mvi = { path = "crates/mvi" }
 
-# TUI
-ratatui = "0.30"
+# GPU UI stack.
+term_gpu = { path = "crates/term_gpu" }
+term_core = { path = "crates/term_core" }
+term_clipboard = { path = "crates/term_clipboard" }
+# Reusable widget kit (term_ui-based chrome bars); fed by ui::chrome_labels.
+uikit = { path = "crates/uikit" }
+# Retained+reactive engine the chrome_preview example assembles views with.
+term_ui = { path = "crates/term_ui" }
+winit = "0.30"
+# Scroll plumbing: glam::Vec2 backs ScrollVelocity, futures + futures-timer
+# drive the momentum tick loop without polling.
+glam = "0.30"
+futures = "0.3"
+futures-timer = "3"
 
 # Async runtime
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-util", "signal", "time"] }
@@ -57,9 +64,6 @@ parking_lot = "0.12"
 # Utilities
 scopeguard = "1.2"
 libc = "0.2"
-
-# Clipboard
-arboard = { version = "3.6", default-features = true }
 
 # Error handling
 anyhow = "1.0.102"

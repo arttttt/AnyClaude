@@ -1,0 +1,46 @@
+[package]
+name = "term_gpu"
+version = "0.1.0"
+edition = "2021"
+description = "GPU-accelerated terminal renderer for AnyClaude. Phase 3.5 prototype validates pixel-based scroll with momentum (see docs/design/gpu-terminal-scroll.md)."
+
+[lints]
+workspace = true
+
+[dependencies]
+wgpu = "24"
+winit = "0.30"
+futures = "0.3"
+futures-timer = "3"
+glam = "0.30"
+pollster = "0.4"
+cosmic-text = "0.14"
+# `panel_render` consumes term_core's `RenderSnapshot` / `AnsiPalette` /
+# `CursorState` to project a VT grid onto the GPU. The bridge module is
+# the only term_core touchpoint — the rest of term_gpu (atlas, text,
+# instances, scroll) stays VT-agnostic.
+term_core = { path = "../term_core" }
+
+[dev-dependencies]
+# layout_demo visualises the BSP tree as coloured panels.
+term_layout = { path = "../term_layout" }
+# term_grid spawns a real shell PTY per panel.
+portable-pty = "0.9"
+# term_clipboard backs the term_grid example's Cmd+C / Cmd+V flow.
+term_clipboard = { path = "../term_clipboard" }
+
+[[example]]
+name = "scroll_demo"
+path = "examples/scroll_demo.rs"
+
+[[example]]
+name = "render_term"
+path = "examples/render_term.rs"
+
+[[example]]
+name = "layout_demo"
+path = "examples/layout_demo.rs"
+
+[[example]]
+name = "term_grid"
+path = "examples/term_grid.rs"

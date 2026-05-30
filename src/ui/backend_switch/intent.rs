@@ -1,5 +1,5 @@
-use mvi::Intent;
-
+/// Backend-switch popup intents — the message vocabulary consumed by
+/// [`BackendSwitchState::apply`]. Plain enum (no MVI traits).
 #[derive(Debug, Clone)]
 pub enum BackendSwitchIntent {
     Open {
@@ -12,6 +12,9 @@ pub enum BackendSwitchIntent {
     NextSection,
     MoveUp,
     MoveDown,
+    /// Reset the current section's selection to "Disabled" (index 0).
+    /// No-op in the Active section — the active backend cannot be
+    /// cleared (the proxy always has one). Wired to Del / Backspace
+    /// while the popup is open.
+    Clear,
 }
-
-impl Intent for BackendSwitchIntent {}

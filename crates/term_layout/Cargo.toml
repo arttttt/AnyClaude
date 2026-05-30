@@ -1,0 +1,10 @@
+[package]
+name = "term_layout"
+version = "0.1.0"
+edition = "2021"
+description = "BSP panel layout tree for AnyClaude's GPU terminal. Pure data structure — no rendering, no PTY, no UX. See docs/gpu-terminal-spec.md §6."
+
+[lints]
+workspace = true
+
+# No dependencies. Tree is `Box<Node>`, rectangles are plain `f32`.
