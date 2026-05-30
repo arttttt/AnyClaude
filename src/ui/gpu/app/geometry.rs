@@ -6,8 +6,8 @@ use std::time::Instant;
 
 use term_core::MouseEncoding;
 use term_gpu::{
-    encode_mouse_report, measure_cell_metrics, CellMetrics, CellPoint, MouseButton, MouseEventKind,
-    PanelRect,
+    encode_motion_report, encode_mouse_report, measure_cell_metrics, CellMetrics, CellPoint,
+    MouseButton, MouseEventKind, PanelRect,
 };
 
 use crate::ui::app_state::{ApplyCtx, Msg};
@@ -201,5 +201,23 @@ impl super::GpuApp {
         let (x, y) = self.state.cursor_pos?;
         let p = self.cell_at(x, y)?;
         self.mouse_report(button, kind, p.col as u16 + 1, p.row as u16 + 1)
+    }
+
+    /// Build a motion (drag / move) report for the already-resolved cell when a
+    /// mouse-tracking app wants motion. Applies the Shift bypass (keeps the drag
+    /// a local selection) and the per-cell dedup, then delegates the tracking /
+    /// encoding decision to the pure `encode_motion_report`.
+    pub(super) fn motion_report(&self, point: Option<CellPoint>) -> Option<Vec<u8>> {
+        if self.state.modifiers.shift_key() {
+            return None;
+        }
+        let proto = self.session.emulator.as_ref()?.mouse_protocol();
+        let p = point?;
+        encode_motion_report(
+            proto,
+            self.state.mouse_left_held,
+            self.state.mouse_motion_cell,
+            (p.col as u16, p.row as u16),
+        )
     }
 }

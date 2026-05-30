@@ -2,9 +2,15 @@
 //! (xterm), so these pin the exact output — the one reliable check, since the
 //! feature has no consumer to verify against live in a keyboard-driven app.
 
+use term_core::{MouseEncoding, MouseProtocol, MouseTracking};
 use term_gpu::{
-    encode_mouse_report, encode_mouse_sgr, encode_mouse_x10, MouseButton, MouseEventKind,
+    encode_motion_report, encode_mouse_report, encode_mouse_sgr, encode_mouse_x10, MouseButton,
+    MouseEventKind,
 };
+
+fn proto(tracking: MouseTracking, encoding: MouseEncoding) -> MouseProtocol {
+    MouseProtocol { tracking, encoding }
+}
 
 #[test]
 fn x10_left_press_offsets_every_field_by_32() {
@@ -107,6 +113,20 @@ fn report_legacy_motion_sets_plus_32_in_the_button_byte() {
 }
 
 #[test]
+fn report_bare_motion_uses_no_button_code_three() {
+    // Any-event (1003) motion with no button held = code 3 + 32 motion = 35.
+    assert_eq!(
+        encode_mouse_report(MouseButton::None, MouseEventKind::Motion, 9, 9, true),
+        b"\x1b[<35;9;9M".to_vec()
+    );
+    // Legacy form: 35 → button byte 32+35 = 67.
+    assert_eq!(
+        encode_mouse_report(MouseButton::None, MouseEventKind::Motion, 9, 9, false)[3],
+        67
+    );
+}
+
+#[test]
 fn report_wheel_maps_to_64_and_65_in_both_encodings() {
     assert_eq!(
         encode_mouse_report(MouseButton::WheelUp, MouseEventKind::Press, 1, 1, true),
@@ -116,4 +136,56 @@ fn report_wheel_maps_to_64_and_65_in_both_encodings() {
         encode_mouse_report(MouseButton::WheelDown, MouseEventKind::Press, 1, 1, false)[3],
         32 + 65
     );
+}
+
+// --- encode_motion_report (the tracking-level / dedup gating) ---
+
+#[test]
+fn motion_off_and_normal_never_report() {
+    // 1-based cell sent is (col+1, row+1); cell arg is 0-based (2,3).
+    assert!(encode_motion_report(proto(MouseTracking::Off, MouseEncoding::Sgr), true, None, (2, 3)).is_none());
+    assert!(encode_motion_report(proto(MouseTracking::Normal, MouseEncoding::Sgr), true, None, (2, 3)).is_none());
+}
+
+#[test]
+fn motion_button_event_needs_a_held_button() {
+    let p = proto(MouseTracking::ButtonEvent, MouseEncoding::Sgr);
+    // No button held → no drag report.
+    assert!(encode_motion_report(p, false, None, (2, 3)).is_none());
+    // Left held → left-drag (button 0 + 32 = 32) at 1-based (3,4).
+    assert_eq!(
+        encode_motion_report(p, true, None, (2, 3)).unwrap(),
+        b"\x1b[<32;3;4M".to_vec()
+    );
+}
+
+#[test]
+fn motion_any_event_reports_bare_and_drag() {
+    let p = proto(MouseTracking::AnyEvent, MouseEncoding::Sgr);
+    // No button → bare motion (None=3, +32 = 35).
+    assert_eq!(
+        encode_motion_report(p, false, None, (0, 0)).unwrap(),
+        b"\x1b[<35;1;1M".to_vec()
+    );
+    // Held → left drag.
+    assert_eq!(
+        encode_motion_report(p, true, None, (0, 0)).unwrap(),
+        b"\x1b[<32;1;1M".to_vec()
+    );
+}
+
+#[test]
+fn motion_dedups_within_the_same_cell() {
+    let p = proto(MouseTracking::AnyEvent, MouseEncoding::Sgr);
+    // Same cell as last_cell → no report.
+    assert!(encode_motion_report(p, false, Some((5, 6)), (5, 6)).is_none());
+    // Different cell → reports.
+    assert!(encode_motion_report(p, false, Some((5, 6)), (5, 7)).is_some());
+}
+
+#[test]
+fn motion_honours_legacy_encoding() {
+    let p = proto(MouseTracking::AnyEvent, MouseEncoding::Default);
+    // Bare motion legacy = 35 → button byte 32+35 = 67.
+    assert_eq!(encode_motion_report(p, false, None, (0, 0)).unwrap()[3], 67);
 }

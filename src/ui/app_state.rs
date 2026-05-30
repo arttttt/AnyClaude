@@ -45,6 +45,13 @@ pub struct AppState {
     pub dragging_selection: bool,
     pub selection: Option<Selection>,
     pub last_click: Option<LastClick>,
+    /// Whether the left button is held while a mouse-tracking app is active —
+    /// gates drag (motion-with-button) reporting (§6). Distinct from
+    /// `dragging_selection`, which is suppressed under tracking.
+    pub mouse_left_held: bool,
+    /// The last cell a motion report was emitted for, so drag / any-event
+    /// motion is reported once per cell crossed, not once per pixel (§6).
+    pub mouse_motion_cell: Option<(u16, u16)>,
 
     // Session header state.
     pub session_id: String,
@@ -137,8 +144,16 @@ pub enum Msg {
     /// `AppState`, and emits effects for everything that touches a resource.
     Key { logical: Key, physical: PhysicalKey },
     /// The cursor moved to `(x, y)` logical px. `point` is the cell under it,
-    /// pre-resolved by the coordinator (only when a drag is in flight).
-    CursorMoved { x: f32, y: f32, point: Option<CellPoint> },
+    /// pre-resolved by the coordinator (when a selection drag is in flight OR a
+    /// mouse-reporting app wants motion). `motion_report` is the encoded drag /
+    /// move to forward when an app is tracking motion (§6), already deduped per
+    /// cell by the coordinator; `None` otherwise.
+    CursorMoved {
+        x: f32,
+        y: f32,
+        point: Option<CellPoint>,
+        motion_report: Option<Vec<u8>>,
+    },
     /// A left mouse press. The coordinator pre-resolves the header / session-zone
     /// / mouse-reporting gates + the cell under the cursor; `apply` decides
     /// dismiss-popup vs copy-session vs begin-selection.
@@ -207,8 +222,17 @@ impl AppState {
                 fx
             }
             Msg::Key { logical, physical } => self.on_key(logical, physical),
-            Msg::CursorMoved { x, y, point } => {
+            Msg::CursorMoved { x, y, point, motion_report } => {
                 self.set_cursor_pos(x, y);
+                // A mouse-reporting app owns motion — forward the drag / move
+                // report (the coordinator already deduped it per cell) and skip
+                // local selection.
+                if let Some(bytes) = motion_report {
+                    if let Some(p) = point {
+                        self.mouse_motion_cell = Some((p.col as u16, p.row as u16));
+                    }
+                    return vec![Effect::WriteToPty(bytes)];
+                }
                 if self.dragging_selection {
                     if let Some(p) = point {
                         if self.drag_selection_to(p) {
@@ -228,7 +252,11 @@ impl AppState {
                     return if in_session_zone { vec![Effect::CopySessionId] } else { Vec::new() };
                 }
                 // A mouse-reporting app owns the click — forward, don't select.
+                // Mark the left button held + seed the motion-dedup cell so a
+                // following drag reports per cell crossed (§6).
                 if let Some(bytes) = mouse_report {
+                    self.mouse_left_held = true;
+                    self.mouse_motion_cell = point.map(|p| (p.col as u16, p.row as u16));
                     return vec![Effect::WriteToPty(bytes)];
                 }
                 let (Some(p), Some(snap)) = (point, ctx.snapshot) else {
@@ -239,6 +267,7 @@ impl AppState {
                 vec![Effect::Redraw]
             }
             Msg::MouseRelease { mouse_report } => {
+                self.mouse_left_held = false;
                 if let Some(bytes) = mouse_report {
                     return vec![Effect::WriteToPty(bytes)];
                 }
@@ -347,6 +376,8 @@ impl AppState {
             dragging_selection: false,
             selection: None,
             last_click: None,
+            mouse_left_held: false,
+            mouse_motion_cell: None,
             session_id,
             start_time,
             session_copied_until: None,

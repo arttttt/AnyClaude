@@ -222,14 +222,22 @@ impl ApplicationHandler<UserEvent> for super::GpuApp {
                 let PhysicalPosition { x, y } = position;
                 let sf = self.scale_factor.max(0.0001);
                 let (lx, ly) = (x as f32 / sf, y as f32 / sf);
-                // Resolve the cell under the cursor only mid-drag (it reads the
-                // emulator snapshot — skip the cost otherwise).
-                let point = if self.state.dragging_selection {
+                // Resolve the cell when a selection drag is in flight OR a
+                // mouse-reporting app wants motion (both read the emulator
+                // snapshot — skip the cost otherwise).
+                let reports_motion = self
+                    .session
+                    .emulator
+                    .as_ref()
+                    .map(|e| e.mouse_protocol().reports_motion())
+                    .unwrap_or(false);
+                let point = if self.state.dragging_selection || reports_motion {
                     self.cell_at(lx, ly)
                 } else {
                     None
                 };
-                self.dispatch(Msg::CursorMoved { x: lx, y: ly, point });
+                let motion_report = if reports_motion { self.motion_report(point) } else { None };
+                self.dispatch(Msg::CursorMoved { x: lx, y: ly, point, motion_report });
             }
             WindowEvent::MouseInput {
                 state,

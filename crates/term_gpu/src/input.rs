@@ -8,6 +8,7 @@
 //! (modifier keys alone, function keys we don't translate, IME
 //! composition events).
 
+use term_core::{MouseEncoding, MouseProtocol, MouseTracking};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 /// Encode `(key, modifiers)` as PTY input bytes. Returns `None` when
@@ -92,6 +93,9 @@ pub enum MouseButton {
     Right,
     WheelUp,
     WheelDown,
+    /// No button — the "no buttons pressed" code (3), used for bare any-event
+    /// (1003) pointer motion.
+    None,
 }
 
 impl MouseButton {
@@ -103,6 +107,7 @@ impl MouseButton {
             MouseButton::Right => 2,
             MouseButton::WheelUp => 64,
             MouseButton::WheelDown => 65,
+            MouseButton::None => 3,
         }
     }
 }
@@ -143,4 +148,41 @@ pub fn encode_mouse_report(
         let raw = if matches!(kind, MouseEventKind::Release) { 3 } else { cb };
         encode_mouse_x10(raw, col, row)
     }
+}
+
+/// Decide the motion (drag / move) report when the pointer moves to 0-based
+/// `cell`, for a mouse-tracking app. Returns `None` when motion isn't reported:
+/// off / click-only (1000) tracking, button-event (1002) tracking with no
+/// button held, or the pointer is still in `last_cell` (report once per cell
+/// crossed, not once per pixel). Under any-event (1003) tracking a held button
+/// reports a drag, otherwise a bare `None`-button move. The caller owns the
+/// Shift bypass and updating `last_cell` once a report is produced.
+pub fn encode_motion_report(
+    proto: MouseProtocol,
+    left_held: bool,
+    last_cell: Option<(u16, u16)>,
+    cell: (u16, u16),
+) -> Option<Vec<u8>> {
+    if last_cell == Some(cell) {
+        return None;
+    }
+    let button = match proto.tracking {
+        MouseTracking::ButtonEvent if left_held => MouseButton::Left,
+        MouseTracking::AnyEvent => {
+            if left_held {
+                MouseButton::Left
+            } else {
+                MouseButton::None
+            }
+        }
+        _ => return None,
+    };
+    let sgr = matches!(proto.encoding, MouseEncoding::Sgr);
+    Some(encode_mouse_report(
+        button,
+        MouseEventKind::Motion,
+        cell.0 + 1,
+        cell.1 + 1,
+        sgr,
+    ))
 }
