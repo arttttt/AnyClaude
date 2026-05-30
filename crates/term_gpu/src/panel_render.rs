@@ -269,11 +269,16 @@ pub fn populate_panel(
                 // CellGlyphCache.glyph_cache hot path. Combining
                 // clusters and missing-glyph fallbacks drop through to
                 // the slow String-keyed path below.
+                // Substitute symbols the mono font lacks (else they fall to the
+                // colour-emoji font and render as a boxed bitmap). cell.c stays
+                // the original — only the glyph lookup is remapped, so selection
+                // / copy are unaffected.
+                let glyph_ch = mono_symbol_substitute(cell.c);
                 let zerowidth_count = cell.extra.as_ref().map_or(0, |e| e.zerowidth.len());
                 let mut fast_path_handled = false;
                 if zerowidth_count == 0 {
                     if let Some(cg) = shape_cache
-                        .shape_char(font_system, cell.c, font_size, sf, weight, style)
+                        .shape_char(font_system, glyph_ch, font_size, sf, weight, style)
                     {
                         let font_size_physical = font_size * sf;
                         let baseline_y_phys = cell_origin_y_phys + cg.baseline_y_physical;
@@ -304,7 +309,7 @@ pub fn populate_panel(
 
                 if !fast_path_handled {
                     cell_text.clear();
-                    cell_text.push(cell.c);
+                    cell_text.push(glyph_ch);
                     if let Some(extra) = &cell.extra {
                         for c in &extra.zerowidth {
                             cell_text.push(*c);
@@ -439,6 +444,23 @@ pub fn build_cursor_rect(
     })
 }
 
+/// Remap a symbol codepoint the system monospace font lacks to a visually
+/// equivalent one it has, so it rasterizes as a tinted monochrome glyph instead
+/// of falling through to the colour-emoji font (a boxed bitmap).
+///
+/// `U+23FA` (⏺, Claude Code's bullet) → `U+25CF` (●): macOS's default monospace
+/// (Menlo) has ● but not ⏺ — and no installed monochrome font has ⏺, so it would
+/// otherwise resolve to Apple Color Emoji and paint a boxed colour bitmap that
+/// ignores the SGR text colour. ● is the same filled circle, renders monochrome
+/// (tinted to fg), and matches Warp (whose configured font merely happens to
+/// cover U+23FA). Only the glyph lookup is remapped; the cell keeps the original
+/// char, so selection / copy are unaffected.
+fn mono_symbol_substitute(ch: char) -> char {
+    match ch {
+        '\u{23FA}' => '\u{25CF}',
+        _ => ch,
+    }
+}
 
 /// Paint a Unicode block / shade character (U+2580–U+259F) as
 /// one or more solid rects filling specific fractions of the
