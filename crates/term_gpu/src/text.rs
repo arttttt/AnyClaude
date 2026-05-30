@@ -154,6 +154,16 @@ use crate::atlas::{GlyphFormat, RasterizedGlyph};
 /// growth becomes a problem when callers shape unique text per row.
 const SHAPE_CACHE_MAX_UNUSED_FRAMES: u32 = 60;
 
+/// Monochrome symbol fallback face, tried for a char the primary face lacks
+/// BEFORE cosmic-text's automatic fallback. cosmic-text's fallback on macOS
+/// routes symbols like U+23FA (⏺, the Claude Code bullet) to the colour emoji
+/// font, which rasterizes a boxed colour bitmap; "Apple Symbols" is a monochrome
+/// symbol font that covers those ranges, so its glyph comes back as a `Mask` and
+/// the renderer tints it to the text colour (a clean filled circle). Mirrors
+/// Warp, which force-appends Apple Symbols ahead of colour emoji in its cascade.
+/// Absent off macOS → the query returns `None` and the path no-ops.
+const SYMBOL_FALLBACK_FAMILY: &str = "Apple Symbols";
+
 /// One layout line of a shaped text run, with the line's baseline Y relative
 /// to the text origin. Each `LayoutGlyph` retains the layout-relative `x`/`y`
 /// it was placed at; on draw, callers add their own origin and call
@@ -210,6 +220,9 @@ pub struct TextShapeCache {
     entries: HashMap<ShapeKey, CachedShape>,
     char_entries: HashMap<CharGlyphKey, CachedCharGlyph>,
     face_cache: HashMap<FaceKey, Option<FaceInfo>>,
+    /// Resolved [`SYMBOL_FALLBACK_FAMILY`] font id, looked up once. Outer
+    /// `Option` = "resolved yet"; inner = "found in the font db".
+    symbol_face: Option<Option<fontdb::ID>>,
     frame: u32,
     family: FontFamily,
 }
@@ -231,6 +244,7 @@ impl TextShapeCache {
             entries: HashMap::new(),
             char_entries: HashMap::new(),
             face_cache: HashMap::new(),
+            symbol_face: None,
             frame: 0,
             family,
         }
@@ -313,25 +327,76 @@ impl TextShapeCache {
         style: Style,
     ) -> Option<CharGlyph> {
         let face_info = self.resolve_face(font_system, weight, style)?;
-        let key = CharGlyphKey { ch, font_id: face_info.font_id };
-        let frame = self.frame;
-        let entry = self.char_entries.entry(key).or_insert_with(|| {
-            let glyph_id = font_system
-                .get_font(face_info.font_id)
-                .and_then(|font| font.rustybuzz().glyph_index(ch).map(|g| g.0));
-            CachedCharGlyph {
+        // Baseline is the primary face's ascent so the glyph sits on the cell
+        // baseline regardless of which face actually supplies it.
+        let baseline_y_physical = face_info.ascent_em * font_size * scale_factor;
+
+        // Primary face first.
+        if let Some(glyph_id) = self.cmap_glyph(font_system, ch, face_info.font_id) {
+            return Some(CharGlyph {
+                font_id: face_info.font_id,
                 glyph_id,
-                last_used_frame: frame,
+                baseline_y_physical,
+            });
+        }
+
+        // The primary face lacks this glyph. Try the monochrome symbol fallback
+        // (see [`SYMBOL_FALLBACK_FAMILY`]) before returning `None` and letting
+        // the caller drop to cosmic-text's emoji-prone fallback — this keeps
+        // symbols like U+23FA a tinted `Mask`, not a boxed colour emoji. Real
+        // emoji / CJK aren't in this font, so they still fall through correctly.
+        if let Some(sym_id) = self.resolve_symbol_fallback(font_system) {
+            if let Some(glyph_id) = self.cmap_glyph(font_system, ch, sym_id) {
+                return Some(CharGlyph {
+                    font_id: sym_id,
+                    glyph_id,
+                    baseline_y_physical,
+                });
             }
-        });
+        }
+        None
+    }
+
+    /// Cached single-codepoint `cmap` lookup in a specific face. Returns the
+    /// glyph id, or `None` when the face has no glyph for `ch`.
+    fn cmap_glyph(
+        &mut self,
+        font_system: &mut FontSystem,
+        ch: char,
+        font_id: fontdb::ID,
+    ) -> Option<u16> {
+        let frame = self.frame;
+        let entry = self
+            .char_entries
+            .entry(CharGlyphKey { ch, font_id })
+            .or_insert_with(|| {
+                let glyph_id = font_system
+                    .get_font(font_id)
+                    .and_then(|font| font.rustybuzz().glyph_index(ch).map(|g| g.0));
+                CachedCharGlyph {
+                    glyph_id,
+                    last_used_frame: frame,
+                }
+            });
         entry.last_used_frame = frame;
-        let glyph_id = entry.glyph_id?;
-        let font_size_physical = font_size * scale_factor;
-        Some(CharGlyph {
-            font_id: face_info.font_id,
-            glyph_id,
-            baseline_y_physical: face_info.ascent_em * font_size_physical,
-        })
+        entry.glyph_id
+    }
+
+    /// Resolve [`SYMBOL_FALLBACK_FAMILY`] in the font db, once. `None` when it's
+    /// not installed (e.g. off macOS) — the symbol-fallback path then no-ops.
+    fn resolve_symbol_fallback(&mut self, font_system: &mut FontSystem) -> Option<fontdb::ID> {
+        if let Some(cached) = self.symbol_face {
+            return cached;
+        }
+        let query = fontdb::Query {
+            families: &[Family::Name(SYMBOL_FALLBACK_FAMILY)],
+            weight: Weight::NORMAL,
+            stretch: fontdb::Stretch::Normal,
+            style: Style::Normal,
+        };
+        let id = font_system.db().query(&query);
+        self.symbol_face = Some(id);
+        id
     }
 
     /// Scaled metrics for the primary face under the given
