@@ -11,7 +11,6 @@ Embed Claude Code via PTY, run local reverse proxy for routing requests to backe
 - **SOLID** — single responsibility, open/closed, etc.
 - **DRY** — don't repeat yourself
 - **KISS** — keep it simple
-- **YAGNI** — you aren't gonna need it
 
 ## Modules
 
