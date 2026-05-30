@@ -13,7 +13,7 @@ Claude Code is great, but sometimes you need a different provider — maybe Anth
 AnyClaude solves this:
 
 - Configure all backends once
-- Switch with `Ctrl+B` mid-session
+- Switch with `Ctrl+T` mid-session
 - No restarts, no config edits
 
 ## Features
@@ -51,7 +51,7 @@ AnyClaude solves this:
    └───────┘ └─────────────┘ └─────────────┘
 ```
 
-The main agent's requests go through the active backend (switchable via `Ctrl+B`).
+The main agent's requests go through the active backend (switchable via `Ctrl+T`).
 Subagents are pinned to a backend via session affinity (AC markers in CC hooks).
 Teammate agents are routed via `/teammate/{agent_id}` URL path prefix.
 
@@ -80,12 +80,16 @@ The wrapper automatically:
 
 | Key | Action |
 |-----|--------|
-| `Ctrl+B` | Backend switcher popup |
+| `Ctrl+T` | Backend switcher popup |
 | `Ctrl+H` | Backend switch history |
 | `Ctrl+E` | Settings dialog |
 | `Ctrl+R` | Restart Claude Code (preserves session) |
 | `Ctrl+Q` | Quit |
-| `1-9` | Quick-select backend (in switcher) |
+| `Cmd+C` / `Cmd+V` | Copy selection / paste |
+
+In the backend switcher: `↑`/`↓` move, `Tab` cycles section (active / subagent / teammate), `Enter` applies, `Esc` closes.
+
+> Backend switch is `Ctrl+T` (not `Ctrl+B`): `Ctrl+B` is forwarded to Claude Code, which uses it. App shortcuts sit on `Ctrl`; clipboard stays on `Cmd` (since `Ctrl+C`/`Ctrl+V` are interrupt / literal-next in the terminal). Shortcuts match the physical key, so they work on any keyboard layout.
 
 ## Configuration
 
@@ -220,8 +224,8 @@ subagent_backend = "alternative"  # Backend for subagents (optional)
 ```
 
 How it works:
-- The main agent's requests go to the active backend (switchable via `Ctrl+B`)
-- **Subagents** are registered via CC hooks (SubagentStart/SubagentStop) and pinned to a backend for their lifetime via session affinity. The subagent backend is also switchable via `Ctrl+B`
+- The main agent's requests go to the active backend (switchable via `Ctrl+T`)
+- **Subagents** are registered via CC hooks (SubagentStart/SubagentStop) and pinned to a backend for their lifetime via session affinity. The subagent backend is also switchable via `Ctrl+T`
 - **Teammates** are intercepted via a tmux shim and routed through `/teammate/{agent_id}/*` to the fixed `teammate_backend`
 - Thinking block filtering is not applied to agent requests
 - Backend switching does not affect agent routing
