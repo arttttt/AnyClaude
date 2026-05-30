@@ -21,10 +21,7 @@ use term_gpu::{
     GESTURE_END_TIMEOUT, MOMENTUM_FRAME_INTERVAL, NUM_PIXELS_PER_LINE,
 };
 use glam::Vec2;
-use term_ui::{
-    apply_overlay_alpha, build_root, free_subtree, measure, paint, place, place_centered,
-    reconcile_root, Block, NodeId, PaintOutput, RetainedTree, SizeConstraint, Stack,
-};
+use term_ui::Block;
 use uuid::Uuid;
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition};
@@ -41,7 +38,6 @@ use crate::config::{
 use crate::metrics::ObservabilityHub;
 use crate::ui::app_state::{ApplyCtx, AppState, Effect, Msg};
 use crate::ui::chrome_labels;
-use crate::ui::popup_anim::{popup_fade_alpha, step_popup_anim, PopupAnim};
 use crate::ui::popup_view;
 use crate::ui::backend_switch::{
     override_selection_to_backend_id, BackendPopupSection, BackendSwitchIntent, BackendSwitchState,
@@ -72,6 +68,7 @@ const MULTI_CLICK_THRESHOLD_MS: u128 = 400;
 const POPUP_FADE_SECS: f32 = 0.12;
 
 use super::backends::Backends;
+use super::overlay::OverlayRenderer;
 use super::session::Session;
 use super::text::TextResources;
 use super::timers::Timers;
@@ -103,27 +100,10 @@ pub(super) struct GpuApp {
     /// shape caches, palette, cached cell metrics). See [`TextResources`].
     text: TextResources,
 
-    /// Retained term_ui tree for the chrome overlay (header + footer). Built
-    /// from `chrome_labels::chrome_view(&AppState)` each frame and reconciled
-    /// against the prior view (bucket 2 — derived from AppState).
-    chrome_tree: RetainedTree,
-    chrome_root: Option<NodeId>,
-    chrome_prev: Option<Stack>,
-    chrome_scratch: PaintOutput,
-
-    /// Retained term_ui tree for the popup overlay (history / settings / backend
-    /// switch). Built from [`popup_view`] when a popup is open, centred with
-    /// `place_centered`, and painted into the overlay on top of the chrome. A
-    /// tree distinct from the chrome so the two reconcile independently. Every
-    /// popup view is a `Block` (the popup box), so `popup_prev` is `Block`.
-    /// (bucket 2 — derived from AppState.)
-    popup_tree: RetainedTree,
-    popup_root: Option<NodeId>,
-    popup_prev: Option<Block>,
-    popup_scratch: PaintOutput,
-    /// Open/close fade epoch for the popup overlay (bucket 3-S). `None` when no
-    /// fade is in flight; the alpha is derived from this + the frame clock.
-    popup_anim: Option<PopupAnim>,
+    /// The overlay renderer: the chrome + popup retained term_ui trees and the
+    /// popup fade epoch, plus the term_ui pipeline that paints them on top of
+    /// the terminal grid. See [`OverlayRenderer`].
+    overlay: OverlayRenderer,
 
     /// Terminal session — the PTY child, the VT emulator, and the spawn params.
     /// Lazily populated in `resumed`. See [`Session`].
@@ -170,15 +150,7 @@ impl GpuApp {
             renderer: None,
             scale_factor: 1.0,
             text: TextResources::new(),
-            chrome_tree: RetainedTree::new(),
-            chrome_root: None,
-            chrome_prev: None,
-            chrome_scratch: PaintOutput::default(),
-            popup_tree: RetainedTree::new(),
-            popup_root: None,
-            popup_prev: None,
-            popup_scratch: PaintOutput::default(),
-            popup_anim: None,
+            overlay: OverlayRenderer::new(),
             session: Session::new(spawn_command, spawn_args, spawn_env),
             state: AppState::new(
                 Uuid::new_v4().to_string(),
@@ -859,11 +831,11 @@ impl GpuApp {
             .map(|m| m.total)
             .sum();
         let window_size = window.inner_size();
-        let window_w_logical = window_size.width as f32 / sf;
-        let window_h_logical = window_size.height as f32 / sf;
-        // Chrome (header + footer) is a term_ui view now: build it from the
-        // current AppState, reconcile against last frame, lay it out to the
-        // full window, and paint it into the overlay layer.
+        let window_logical =
+            Vec2::new(window_size.width as f32 / sf, window_size.height as f32 / sf);
+        // Chrome (header + footer) is a term_ui view: build it from the current
+        // AppState here (it needs the backend / observability data), then hand it
+        // to the overlay renderer for the term_ui pipeline + the session hitbox.
         let header = chrome_labels::header_segments(
             &active_backend,
             subagent_label.as_deref(),
@@ -883,52 +855,17 @@ impl GpuApp {
             FOOTER_HEIGHT_LOGICAL,
             CHROME_H_PAD,
         );
-        let chrome_root = match self.chrome_root {
-            Some(root) => {
-                let prev = self
-                    .chrome_prev
-                    .take()
-                    .expect("chrome_prev present once built");
-                reconcile_root(&mut self.chrome_tree, root, &prev, &chrome);
-                root
-            }
-            None => build_root(&mut self.chrome_tree, &chrome),
-        };
-        self.chrome_root = Some(chrome_root);
-        self.chrome_prev = Some(chrome);
-        measure(
-            &mut self.chrome_tree,
-            chrome_root,
-            SizeConstraint::tight(Vec2::new(window_w_logical, window_h_logical)),
-            &mut self.text.font_system,
-            &mut self.text.ui_shape_cache,
-            sf,
-        );
-        place(&mut self.chrome_tree, chrome_root, Vec2::ZERO);
-        self.chrome_scratch.clear();
-        paint(
-            &self.chrome_tree,
-            chrome_root,
-            &mut self.chrome_scratch,
-            renderer.atlas_mut(),
+        self.session_click_zone = self.overlay.render_chrome(
+            chrome,
+            window_logical,
             &mut self.text.font_system,
             &mut self.text.swash_cache,
+            renderer.atlas_mut(),
             &mut self.text.ui_shape_cache,
             sf,
+            &mut overlay_rects,
+            &mut overlay_glyphs,
         );
-        overlay_rects.extend_from_slice(&self.chrome_scratch.rects);
-        overlay_glyphs.extend_from_slice(&self.chrome_scratch.glyphs);
-        // Re-derive the session-click hot-zone (x-range) from the laid-out
-        // chrome tree: the "Session: …" run is tagged with a stable WidgetId,
-        // so we resolve its node + bounds. `on_mouse_press` hit-tests against
-        // it (the header-band y-gate handles the vertical extent).
-        self.session_click_zone = self
-            .chrome_tree
-            .resolve_widget(chrome_labels::session_widget_id())
-            .map(|nid| {
-                let b = self.chrome_tree.node(nid).bounds;
-                (b.origin.x, b.right())
-            });
         // Popup overlay — all three popups render via the term_ui SECOND TREE.
         // The backend switch needs runtime data AppState doesn't carry (the
         // backend list + active/override ids), so it is built here via
@@ -959,82 +896,23 @@ impl GpuApp {
         } else {
             popup_view::popup_view(&self.state)
         };
-        // Open/close fade (R12): advance the epoch on a visibility EDGE, then
-        // derive this frame's alpha from the frame clock (pure helpers in
-        // `popup_anim`). `popup_animating` keeps the redraw loop alive
-        // (self-requested below) until the fade completes.
-        let visible = popup.is_some();
-        self.popup_anim = step_popup_anim(self.popup_anim, visible, now);
-        let (popup_alpha, popup_animating) =
-            popup_fade_alpha(self.popup_anim, now, POPUP_FADE_SECS);
-
-        // Pick the root to paint this frame: the live popup (reconciled into the
-        // tree), or — during a fade-OUT, when the store is already Hidden — the
-        // retained tree kept alive at the decreasing alpha until the fade ends.
-        let popup_root_to_paint: Option<NodeId> = if let Some(view) = popup {
-            let root = match self.popup_root {
-                Some(root) => {
-                    let prev = self
-                        .popup_prev
-                        .take()
-                        .expect("popup_prev present once built");
-                    reconcile_root(&mut self.popup_tree, root, &prev, &view);
-                    root
-                }
-                None => build_root(&mut self.popup_tree, &view),
-            };
-            self.popup_root = Some(root);
-            self.popup_prev = Some(view);
-            Some(root)
-        } else if popup_animating {
-            // Fade-OUT in flight: keep painting the frozen retained tree.
-            self.popup_root
-        } else {
-            // No popup + no fade — release the retained tree and reset the epoch.
-            if let Some(root) = self.popup_root.take() {
-                free_subtree(&mut self.popup_tree, root);
-            }
-            self.popup_prev = None;
-            self.popup_anim = None;
-            None
-        };
-        if let Some(root) = popup_root_to_paint {
-            measure(
-                &mut self.popup_tree,
-                root,
-                SizeConstraint::new(
-                    Vec2::new(popup_view::POPUP_MIN_WIDTH, 0.0),
-                    Vec2::new(window_w_logical, window_h_logical),
-                ),
-                &mut self.text.font_system,
-                &mut self.text.ui_shape_cache,
-                sf,
-            );
-            place_centered(
-                &mut self.popup_tree,
-                root,
-                Vec2::new(window_w_logical, window_h_logical),
-            );
-            self.popup_scratch.clear();
-            paint(
-                &self.popup_tree,
-                root,
-                &mut self.popup_scratch,
-                renderer.atlas_mut(),
-                &mut self.text.font_system,
-                &mut self.text.swash_cache,
-                &mut self.text.ui_shape_cache,
-                sf,
-            );
-            // Bake the fade alpha into the popup's instances only (the chrome
-            // beneath, already merged, keeps full opacity).
-            if popup_alpha < 1.0 {
-                apply_overlay_alpha(&mut self.popup_scratch, popup_alpha);
-            }
-            overlay_shadows.extend_from_slice(&self.popup_scratch.shadows);
-            overlay_rects.extend_from_slice(&self.popup_scratch.rects);
-            overlay_glyphs.extend_from_slice(&self.popup_scratch.glyphs);
-        }
+        // Reconcile + lay out + paint the popup (fade-aware) on top of the
+        // chrome; `popup_animating` keeps the redraw loop alive until a fade ends.
+        let popup_animating = self.overlay.render_popup(
+            popup,
+            window_logical,
+            now,
+            POPUP_FADE_SECS,
+            popup_view::POPUP_MIN_WIDTH,
+            &mut self.text.font_system,
+            &mut self.text.swash_cache,
+            renderer.atlas_mut(),
+            &mut self.text.ui_shape_cache,
+            sf,
+            &mut overlay_shadows,
+            &mut overlay_rects,
+            &mut overlay_glyphs,
+        );
         // The overlay always carries the chrome bars (and a popup when one is
         // open), so it is never empty.
         window.pre_present_notify();

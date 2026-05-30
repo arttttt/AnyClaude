@@ -12,6 +12,7 @@ mod backends;
 mod bootstrap;
 mod chrome;
 mod diagnostic;
+mod overlay;
 pub mod pty;
 mod session;
 mod text;
