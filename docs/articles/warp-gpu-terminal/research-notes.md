@@ -2582,3 +2582,35 @@ encoder ever runs. The encoder — previously the single most render-blind,
 Verification split cleanly along the consumer line: the mouse encoders are
 pinned only by exact-byte tests (no consumer to eyeball), while the keyboard was
 verified live before the docs were written.
+
+A small render-blind bug that turned into two findings. Claude Code's tool
+bullet `⏺` (U+23FA) rendered as a boxed glyph instead of Warp's clean tinted
+circle. The instinct was "wrong font," but render-blindness means you can't just
+look — so the debugging went through the stack, not the screen. First the PTY
+byte-tee (`ANYCLAUDE_DEBUG_PTY`) confirmed the exact input: a *bare* U+23FA
+(`e2 8f ba`), no variation selector, with an SGR truecolor set just before it —
+killing the "it's an emoji-presentation VS16" theory. Then an in-stack font
+probe (query the real `FontSystem`, not guess) surfaced the actual cause and a
+bonus: (1) a bare-codepoint scan found U+23FA in only **4 of 888** installed
+faces — `.LastResort` (which *is* the box), `Apple Color Emoji` (colour), and
+`STIX Two Math` (monochrome, but not guaranteed across macOS versions); the
+default monospace **Menlo lacks it**, so cosmic-text's fallback resolved it to
+the colour/box font, ignoring the SGR colour. (2) The per-char fast path
+(`shape_char`, the "Warp `glyph_for_char` hot path") is **dead on macOS**:
+`db().query(Family::Monospace)` returns `None` because cosmic-text doesn't
+register generic-family aliases in fontdb's name index (it resolves them only in
+higher-level `Buffer` shaping), so every terminal glyph silently takes the slow
+path. The first fix attempt — a monochrome "Apple Symbols" fast-path fallback —
+was therefore dead twice over (the path never runs, and Apple Symbols lacks
+U+23FA too); it was reverted. The honest conclusion about Warp: it has no special
+handling for U+23FA — it renders monochrome only because its *configured* font
+happens to cover the codepoint; its `native_glyph_for_cell` table paints block
+elements and Nerd-Font powerline dividers but not record circles. With no
+guaranteed monochrome font for U+23FA, the robust equivalent was a glyph
+substitution — remap the lookup U+23FA → U+25CF (`●`, which Menlo is guaranteed
+to have), leaving the stored cell char untouched so copy/selection are
+unaffected. It is visibly heavier than Warp's record-circle (a known, accepted
+trade), but it tints correctly and drops the box. The lesson worth keeping: for
+a render-blind bug, the byte-tee and an in-stack font probe are the eyes —
+guessing the codepoint (and trusting a fallback that an agent assumed covered
+it) cost two wrong commits before the probe gave the truth.
