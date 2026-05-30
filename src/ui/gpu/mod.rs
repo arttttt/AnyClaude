@@ -12,5 +12,6 @@ mod bootstrap;
 mod chrome;
 mod diagnostic;
 pub mod pty;
+mod timers;
 
 pub use bootstrap::run;

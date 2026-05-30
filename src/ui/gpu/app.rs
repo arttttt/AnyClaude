@@ -8,10 +8,7 @@
 //! verification; it is removed in the C10 cutover commit.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
-
-use futures::future::{abortable, AbortHandle};
-use futures_timer::Delay;
+use std::time::Instant;
 use term_clipboard::{
     get_image_filepaths_from_paths, pick_best_image, save_image_to_temp,
     should_insert_text_on_paste, Clipboard, ClipboardContent,
@@ -75,6 +72,7 @@ const MULTI_CLICK_THRESHOLD_MS: u128 = 400;
 /// Popup open/close fade duration (seconds).
 const POPUP_FADE_SECS: f32 = 0.12;
 
+use super::timers::Timers;
 use super::chrome::{
     CHROME_FONT_SIZE, CHROME_H_PAD, FOOTER_HEIGHT_LOGICAL, HEADER_HEIGHT_LOGICAL,
     SESSION_COPY_FLASH,
@@ -146,11 +144,9 @@ pub(super) struct GpuApp {
     /// here in the coordinator; bucket 3-S / 3-T.)
     state: AppState,
 
-    momentum_abort: Option<AbortHandle>,
-    gesture_end_abort: Option<AbortHandle>,
-    /// 1Hz redraw heartbeat — see [`UserEvent::TickRedraw`]. Aborted
-    /// implicitly when the proxy's send_event fails (window closed).
-    periodic_tick_abort: Option<AbortHandle>,
+    /// Background timers (momentum decay, the gesture-end silence fallback, the
+    /// 1 Hz chrome heartbeat) — see [`Timers`].
+    timers: Timers,
 
     /// X range of the session click hot-zone (logical pixels) in the
     /// header. Updated every redraw so the click handler can hit-test
@@ -225,9 +221,7 @@ impl GpuApp {
                 Instant::now(),
                 (INITIAL_GRID_COLS, INITIAL_GRID_ROWS),
             ),
-            momentum_abort: None,
-            gesture_end_abort: None,
-            periodic_tick_abort: None,
+            timers: Timers::new(),
             session_click_zone: None,
             clipboard: make_clipboard(),
             backend_state,
@@ -349,18 +343,6 @@ impl GpuApp {
         }
     }
 
-    fn cancel_momentum(&mut self) {
-        if let Some(a) = self.momentum_abort.take() {
-            a.abort();
-        }
-    }
-
-    fn cancel_gesture_end(&mut self) {
-        if let Some(a) = self.gesture_end_abort.take() {
-            a.abort();
-        }
-    }
-
     /// Translate a `Msg` to its state transition and perform the resulting
     /// effects: build the read-only `ApplyCtx`, call `AppState::apply`, then run
     /// each `Effect`. This is the single coordinator-side entry for the event
@@ -385,20 +367,13 @@ impl GpuApp {
         let mut exit = false;
         for effect in effects {
             match effect {
-                Effect::CancelMomentum => self.cancel_momentum(),
-                Effect::CancelGestureEnd => self.cancel_gesture_end(),
+                Effect::CancelMomentum => self.timers.cancel_momentum(),
+                Effect::CancelGestureEnd => self.timers.cancel_gesture_end(),
                 Effect::ScheduleMomentum => {
-                    self.momentum_abort = Some(schedule_momentum_loop(
-                        self.proxy.clone(),
-                        MOMENTUM_FRAME_INTERVAL,
-                    ));
+                    self.timers.schedule_momentum(&self.proxy, MOMENTUM_FRAME_INTERVAL);
                 }
                 Effect::ScheduleGestureEnd => {
-                    self.gesture_end_abort = Some(schedule_once(
-                        self.proxy.clone(),
-                        GESTURE_END_TIMEOUT,
-                        UserEvent::GestureEnded,
-                    ));
+                    self.timers.schedule_gesture_end(&self.proxy, GESTURE_END_TIMEOUT);
                 }
                 Effect::Redraw => self.request_redraw(),
                 Effect::ResizeEmulatorAndPty { cols, rows } => {
@@ -630,8 +605,8 @@ impl GpuApp {
         self.emulator = Some(create_emulator(cols, rows, SCROLLBACK_LINES));
         self.state.scroll = ScrollState::default();
         self.state.scroll_velocity = None;
-        self.cancel_momentum();
-        self.cancel_gesture_end();
+        self.timers.cancel_momentum();
+        self.timers.cancel_gesture_end();
         self.state.selection = None;
         self.state.dragging_selection = false;
         self.state.last_click = None;
@@ -1162,7 +1137,7 @@ impl ApplicationHandler<UserEvent> for GpuApp {
             }
         }
 
-        self.periodic_tick_abort = Some(schedule_periodic_redraw(self.proxy.clone()));
+        self.timers.start_periodic(&self.proxy);
 
         window.request_redraw();
     }
@@ -1276,57 +1251,6 @@ impl ApplicationHandler<UserEvent> for GpuApp {
 /// Spawn a one-shot abortable timer that sends `event` after `delay`.
 /// Used to fall back to `GestureEnded` after a silence timeout when
 /// the input device doesn't emit `TouchPhase::Ended` (mice).
-fn schedule_once(
-    proxy: EventLoopProxy<UserEvent>,
-    delay: Duration,
-    event: UserEvent,
-) -> AbortHandle {
-    let (fut, abort) = abortable(async move {
-        Delay::new(delay).await;
-        let _ = proxy.send_event(event);
-    });
-    std::thread::spawn(move || {
-        let _ = futures::executor::block_on(fut);
-    });
-    abort
-}
-
-/// Spawn an abortable loop that fires `TickRedraw` once per second so
-/// header chrome (Uptime / Reqs / sub / team) refreshes even when the
-/// PTY is idle. The loop exits the moment `send_event` fails — the
-/// usual "window dropped, event loop gone" path.
-fn schedule_periodic_redraw(proxy: EventLoopProxy<UserEvent>) -> AbortHandle {
-    let (fut, abort) = abortable(async move {
-        loop {
-            Delay::new(Duration::from_secs(1)).await;
-            if proxy.send_event(UserEvent::TickRedraw).is_err() {
-                break;
-            }
-        }
-    });
-    std::thread::spawn(move || {
-        let _ = futures::executor::block_on(fut);
-    });
-    abort
-}
-
-/// Spawn an abortable loop that fires `MomentumTick` every `interval`
-/// until aborted or the receiver is gone.
-fn schedule_momentum_loop(proxy: EventLoopProxy<UserEvent>, interval: Duration) -> AbortHandle {
-    let (fut, abort) = abortable(async move {
-        loop {
-            Delay::new(interval).await;
-            if proxy.send_event(UserEvent::MomentumTick).is_err() {
-                break;
-            }
-        }
-    });
-    std::thread::spawn(move || {
-        let _ = futures::executor::block_on(fut);
-    });
-    abort
-}
-
 /// Construct the platform clipboard. macOS gets `MacClipboard` with
 /// full pasteboard parity (text, HTML, file paths, images). Other
 /// platforms fall back to `InMemoryClipboard` — anyclaude is
