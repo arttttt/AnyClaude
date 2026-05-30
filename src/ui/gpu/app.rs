@@ -366,7 +366,11 @@ impl GpuApp {
     /// loop — every winit / user event funnels through here. (Mouse press builds
     /// its own ctx carrying the emulator snapshot; see `on_mouse_press`.)
     fn dispatch(&mut self, msg: Msg) -> bool {
-        let ctx = ApplyCtx { now: Instant::now(), snapshot: None };
+        let ctx = ApplyCtx {
+            now: Instant::now(),
+            snapshot: None,
+            multi_click_threshold_ms: MULTI_CLICK_THRESHOLD_MS,
+        };
         let effects = self.state.apply(msg, &ctx);
         self.perform_effects(effects)
     }
@@ -418,6 +422,7 @@ impl GpuApp {
                 Effect::ApplyBackendSelection => self.apply_backend_switch_selection(),
                 Effect::SaveSettings => self.apply_settings_and_save(),
                 Effect::CopySelection => self.copy_selection(),
+                Effect::CopySessionId => self.copy_session_id(),
                 Effect::Paste => self.paste_into_pty(),
                 Effect::RestartPty => self.restart_pty(),
                 Effect::DumpDiagnostic => self.dump_diagnostic(),
@@ -438,35 +443,12 @@ impl GpuApp {
         );
     }
 
-    /// True when any popup is in its `Visible` state. Used to gate
-    /// input routing and mouse-click priority.
-    fn any_popup_visible(&self) -> bool {
-        self.state.any_popup_visible()
-    }
-
-    /// Dispatch `Close` to every popup store. Called by Cmd+B / +H /
-    /// +E before opening a new popup, by Esc, and by click-outside.
+    /// Dispatch `Close` to every popup store. Called by the toggle handlers
+    /// before opening a new popup; Esc / click-outside go through `apply`.
     fn close_all_popups(&mut self) {
         self.state.close_all_popups();
         if let Some(w) = self.window.as_ref() {
             w.request_redraw();
-        }
-    }
-
-    /// Dismiss the open popup via Esc / click-outside. Settings gets the
-    /// two-stage dirty-confirm: a first dismiss on unsaved changes arms a
-    /// "discard?" prompt (the dialog stays open), a second discards — so it
-    /// routes through `RequestClose`. The other popups carry no unsaved state
-    /// and close immediately. (Enter-to-save still calls `close_all_popups`
-    /// directly — saving needs no confirmation.)
-    fn request_close_popups(&mut self) {
-        if self.state.settings.is_visible() {
-            self.state.settings.apply(SettingsIntent::RequestClose);
-            if let Some(w) = self.window.as_ref() {
-                w.request_redraw();
-            }
-        } else {
-            self.close_all_popups();
         }
     }
 
@@ -786,64 +768,35 @@ impl GpuApp {
         )
     }
 
-    fn on_cursor_moved(&mut self, x: f32, y: f32) {
-        self.state.set_cursor_pos(x, y);
-        if !self.state.dragging_selection {
-            return;
-        }
-        if let Some(point) = self.cell_at(x, y) {
-            if self.state.drag_selection_to(point) {
-                self.request_redraw();
-            }
-        }
-    }
-
+    /// Translate a left-press into `Msg::MousePress` and run it. The coordinator
+    /// pre-resolves the resource-backed gates — header band, session-id hot-zone,
+    /// mouse-reporting mode, and the cell under the cursor — and hands the
+    /// emulator snapshot in the ctx so `apply` can word/line-expand a
+    /// multi-click selection. The press decision itself lives in `apply`.
     fn on_mouse_press(&mut self) {
         let Some((x, y)) = self.state.cursor_pos else { return };
-        // When a popup is open, a click anywhere dismisses it
-        // (matching macOS modal-out behaviour) and is otherwise
-        // swallowed — the click never starts a selection in the
-        // terminal underneath.
-        if self.any_popup_visible() {
-            self.request_close_popups();
-            return;
-        }
-        // Header click — copy session id to clipboard and flash the
-        // label. Takes priority over selection so a header click
-        // never lands inside the terminal area's coords.
-        if y < HEADER_HEIGHT_LOGICAL {
-            if let Some((sx, ex)) = self.session_click_zone {
-                if x >= sx && x < ex {
-                    self.copy_session_id();
-                }
-            }
-            return;
-        }
-        // Apps in mouse-reporting mode (vim / htop / fzf) own the drag —
-        // selection mustn't shadow them.
+        let in_header = y < HEADER_HEIGHT_LOGICAL;
+        let in_session_zone = self
+            .session_click_zone
+            .map(|(sx, ex)| x >= sx && x < ex)
+            .unwrap_or(false);
         let owns_mouse = self
             .emulator
             .as_ref()
             .map(|e| e.mouse_mode() != MouseMode::None)
             .unwrap_or(false);
-        if owns_mouse {
-            return;
-        }
-        let Some(point) = self.cell_at(x, y) else { return };
-        let Some(snapshot) = self.emulator.as_ref().map(|e| e.snapshot()) else {
-            return;
+        let point = self.cell_at(x, y);
+        let snapshot = self.emulator.as_ref().map(|e| e.snapshot());
+        let ctx = ApplyCtx {
+            now: Instant::now(),
+            snapshot: snapshot.as_ref(),
+            multi_click_threshold_ms: MULTI_CLICK_THRESHOLD_MS,
         };
-        let count = self
-            .state
-            .next_click(point, Instant::now(), MULTI_CLICK_THRESHOLD_MS);
-        self.state.begin_selection(point, count, &snapshot);
-        self.request_redraw();
-    }
-
-    fn on_mouse_release(&mut self) {
-        if self.state.end_selection_drag() {
-            self.request_redraw();
-        }
+        let fx = self.state.apply(
+            Msg::MousePress { in_header, in_session_zone, owns_mouse, point },
+            &ctx,
+        );
+        let _ = self.perform_effects(fx);
     }
 
     /// Render one frame: clear, populate cells, push cursor, draw
@@ -1243,7 +1196,15 @@ impl ApplicationHandler<UserEvent> for GpuApp {
             WindowEvent::CursorMoved { position, .. } => {
                 let PhysicalPosition { x, y } = position;
                 let sf = self.scale_factor.max(0.0001);
-                self.on_cursor_moved(x as f32 / sf, y as f32 / sf);
+                let (lx, ly) = (x as f32 / sf, y as f32 / sf);
+                // Resolve the cell under the cursor only mid-drag (it reads the
+                // emulator snapshot — skip the cost otherwise).
+                let point = if self.state.dragging_selection {
+                    self.cell_at(lx, ly)
+                } else {
+                    None
+                };
+                self.dispatch(Msg::CursorMoved { x: lx, y: ly, point });
             }
             WindowEvent::MouseInput {
                 state,
@@ -1251,7 +1212,9 @@ impl ApplicationHandler<UserEvent> for GpuApp {
                 ..
             } => match state {
                 ElementState::Pressed => self.on_mouse_press(),
-                ElementState::Released => self.on_mouse_release(),
+                ElementState::Released => {
+                    self.dispatch(Msg::MouseRelease);
+                }
             },
             WindowEvent::KeyboardInput { event, .. }
                 if event.state == ElementState::Pressed =>

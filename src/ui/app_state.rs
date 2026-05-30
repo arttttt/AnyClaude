@@ -96,6 +96,8 @@ pub enum Effect {
     SaveSettings,
     /// Copy the current selection to the clipboard.
     CopySelection,
+    /// Copy the session id to the clipboard + arm the header "copied!" flash.
+    CopySessionId,
     /// Read the clipboard and paste into the PTY.
     Paste,
     /// Tear down + respawn the Claude session (Cmd+R).
@@ -130,6 +132,20 @@ pub enum Msg {
     /// shortcut / terminal key — reading `modifiers` + popup visibility from
     /// `AppState`, and emits effects for everything that touches a resource.
     Key { logical: Key, physical: PhysicalKey },
+    /// The cursor moved to `(x, y)` logical px. `point` is the cell under it,
+    /// pre-resolved by the coordinator (only when a drag is in flight).
+    CursorMoved { x: f32, y: f32, point: Option<CellPoint> },
+    /// A left mouse press. The coordinator pre-resolves the header / session-zone
+    /// / mouse-reporting gates + the cell under the cursor; `apply` decides
+    /// dismiss-popup vs copy-session vs begin-selection.
+    MousePress {
+        in_header: bool,
+        in_session_zone: bool,
+        owns_mouse: bool,
+        point: Option<CellPoint>,
+    },
+    /// A left mouse release (ends a drag-selection).
+    MouseRelease,
 }
 
 /// Read-only context the coordinator supplies to [`AppState::apply`]: the frame
@@ -140,6 +156,9 @@ pub struct ApplyCtx<'a> {
     /// The emulator's current content, for selection word / line expansion.
     /// `None` when no emulator is live or the transition doesn't need it.
     pub snapshot: Option<&'a RenderSnapshot>,
+    /// Max ms between presses at the same cell to count as a multi-click
+    /// (coordinator UX tuning, passed in so `AppState` stays config-free).
+    pub multi_click_threshold_ms: u128,
 }
 
 impl AppState {
@@ -165,7 +184,57 @@ impl AppState {
                 fx
             }
             Msg::Key { logical, physical } => self.on_key(logical, physical),
+            Msg::CursorMoved { x, y, point } => {
+                self.set_cursor_pos(x, y);
+                if self.dragging_selection {
+                    if let Some(p) = point {
+                        if self.drag_selection_to(p) {
+                            return vec![Effect::Redraw];
+                        }
+                    }
+                }
+                Vec::new()
+            }
+            Msg::MousePress { in_header, in_session_zone, owns_mouse, point } => {
+                // A click while a popup is open dismisses it (and is swallowed).
+                if self.any_popup_visible() {
+                    return self.close_popups_or_request();
+                }
+                // Header click: copy the session id when it lands on the run.
+                if in_header {
+                    return if in_session_zone { vec![Effect::CopySessionId] } else { Vec::new() };
+                }
+                // Apps in mouse-reporting mode own the drag — don't shadow them.
+                if owns_mouse {
+                    return Vec::new();
+                }
+                let (Some(p), Some(snap)) = (point, ctx.snapshot) else {
+                    return Vec::new();
+                };
+                let count = self.next_click(p, ctx.now, ctx.multi_click_threshold_ms);
+                self.begin_selection(p, count, snap);
+                vec![Effect::Redraw]
+            }
+            Msg::MouseRelease => {
+                if self.end_selection_drag() {
+                    vec![Effect::Redraw]
+                } else {
+                    Vec::new()
+                }
+            }
         }
+    }
+
+    /// Dismiss the open popup (Esc / click-outside): settings gets the two-stage
+    /// dirty-confirm (`RequestClose`); the others carry no unsaved state and
+    /// close immediately. Always asks for a redraw.
+    fn close_popups_or_request(&mut self) -> Vec<Effect> {
+        if self.settings.is_visible() {
+            self.settings.apply(SettingsIntent::RequestClose);
+        } else {
+            self.close_all_popups();
+        }
+        vec![Effect::Redraw]
     }
 
     /// Route a key press. Popups own input while open; Cmd/Super combos are app
@@ -206,12 +275,7 @@ impl AppState {
             return Vec::new();
         };
         if code == KeyCode::Escape {
-            if self.settings.is_visible() {
-                self.settings.apply(SettingsIntent::RequestClose);
-            } else {
-                self.close_all_popups();
-            }
-            return vec![Effect::Redraw];
+            return self.close_popups_or_request();
         }
         if self.backend_switch.is_visible() {
             if let Some(intent) = input::backend_switch_nav(code) {

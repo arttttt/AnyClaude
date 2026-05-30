@@ -252,7 +252,7 @@ fn next_click_records_and_cycles() {
 // ── keyboard routing through apply (E.8.3) ───────────────────────────────
 
 fn ctx() -> ApplyCtx<'static> {
-    ApplyCtx { now: Instant::now(), snapshot: None }
+    ApplyCtx { now: Instant::now(), snapshot: None, multi_click_threshold_ms: 400 }
 }
 
 /// A key Msg with a dummy logical key (the popup / shortcut paths read only the
@@ -332,4 +332,39 @@ fn popup_nav_redraws_and_keys_pass_to_the_popup() {
     assert_eq!(s.apply(key(KeyCode::ArrowDown), &ctx()), vec![Effect::Redraw]);
     // An unmapped key while the popup is open is swallowed (no effect).
     assert!(s.apply(key(KeyCode::KeyZ), &ctx()).is_empty());
+}
+
+// ── mouse routing through apply (E.8.4) ──────────────────────────────────
+
+fn press(in_header: bool, in_session_zone: bool, owns_mouse: bool, point: Option<CellPoint>) -> Msg {
+    Msg::MousePress { in_header, in_session_zone, owns_mouse, point }
+}
+
+#[test]
+fn click_on_open_popup_dismisses_it() {
+    let mut s = state();
+    s.history.apply(HistoryIntent::Load { entries: vec![] });
+    assert_eq!(s.apply(press(false, false, false, None), &ctx()), vec![Effect::Redraw]);
+    assert!(!s.any_popup_visible(), "a click anywhere dismisses the open popup");
+}
+
+#[test]
+fn header_session_click_copies_the_id() {
+    let mut s = state();
+    assert_eq!(s.apply(press(true, true, false, None), &ctx()), vec![Effect::CopySessionId]);
+}
+
+#[test]
+fn header_click_outside_the_session_zone_does_nothing() {
+    let mut s = state();
+    assert!(s.apply(press(true, false, false, None), &ctx()).is_empty());
+}
+
+#[test]
+fn mouse_reporting_app_owns_the_click() {
+    let mut s = state();
+    // owns_mouse short-circuits before any selection begins.
+    let fx = s.apply(press(false, false, true, Some(CellPoint { row: 1, col: 1 })), &ctx());
+    assert!(fx.is_empty());
+    assert!(s.selection.is_none(), "selection must not shadow a mouse-reporting app");
 }
