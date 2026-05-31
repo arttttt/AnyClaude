@@ -254,6 +254,7 @@ fn shape_text_into(
                 uv_max: placed.uv_max,
                 color: draw.color,
                 layer: placed.layer,
+                clip: term_gpu::NO_CLIP,
             });
         }
     }

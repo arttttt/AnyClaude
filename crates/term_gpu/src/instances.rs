@@ -5,6 +5,12 @@
 
 use std::mem::{size_of, size_of_val};
 
+/// The "no clip" sentinel for an instance's `clip` rect: bounds so large nothing
+/// is ever discarded. Logical pixels never approach `1e9`, so the four
+/// fragment-shader edge tests always pass. Instances default to this; a
+/// `term_ui` `Mod::Clip` narrows it to the clipping element's bounds.
+pub const NO_CLIP: [f32; 4] = [-1.0e9, -1.0e9, 1.0e9, 1.0e9];
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct RectInstance {
@@ -60,6 +66,10 @@ pub struct GlyphInstance {
     pub color: [f32; 4],
     /// Texture-array layer this glyph's atlas slot lives in.
     pub layer: u32,
+    /// Logical-pixel clip rect `[min_x, min_y, max_x, max_y]`: fragments outside
+    /// it are discarded. [`NO_CLIP`] (the default) clips nothing; a `term_ui`
+    /// `Mod::Clip` writes the clipping element's bounds here.
+    pub clip: [f32; 4],
 }
 
 impl GlyphInstance {
@@ -68,7 +78,7 @@ impl GlyphInstance {
         unsafe { std::slice::from_raw_parts(slice.as_ptr() as *const u8, size_of_val(slice)) }
     }
 
-    pub const ATTRIBS: [wgpu::VertexAttribute; 6] = [
+    pub const ATTRIBS: [wgpu::VertexAttribute; 7] = [
         wgpu::VertexAttribute {
             offset: 0,
             shader_location: 0,
@@ -98,6 +108,11 @@ impl GlyphInstance {
             offset: 48,
             shader_location: 5,
             format: wgpu::VertexFormat::Uint32,
+        },
+        wgpu::VertexAttribute {
+            offset: 52,
+            shader_location: 6,
+            format: wgpu::VertexFormat::Float32x4,
         },
     ];
 
@@ -196,6 +211,10 @@ pub struct RoundRectInstance {
     pub border_color: [f32; 4],
     pub border_width: f32,
     pub corner_radius: f32,
+    /// Logical-pixel clip rect `[min_x, min_y, max_x, max_y]`: fragments outside
+    /// it are discarded. [`NO_CLIP`] (the default) clips nothing; a `term_ui`
+    /// `Mod::Clip` writes the clipping element's bounds here.
+    pub clip: [f32; 4],
 }
 
 impl RoundRectInstance {
@@ -208,6 +227,7 @@ impl RoundRectInstance {
             border_color: [0.0; 4],
             border_width: 0.0,
             corner_radius,
+            clip: NO_CLIP,
         }
     }
 
@@ -221,7 +241,7 @@ impl RoundRectInstance {
         border_width: f32,
         corner_radius: f32,
     ) -> Self {
-        Self { pos, size, fill_color, border_color, border_width, corner_radius }
+        Self { pos, size, fill_color, border_color, border_width, corner_radius, clip: NO_CLIP }
     }
 
     pub fn as_bytes(slice: &[Self]) -> &[u8] {
@@ -229,13 +249,14 @@ impl RoundRectInstance {
         unsafe { std::slice::from_raw_parts(slice.as_ptr() as *const u8, size_of_val(slice)) }
     }
 
-    pub const ATTRIBS: [wgpu::VertexAttribute; 6] = [
+    pub const ATTRIBS: [wgpu::VertexAttribute; 7] = [
         wgpu::VertexAttribute { offset: 0, shader_location: 0, format: wgpu::VertexFormat::Float32x2 },
         wgpu::VertexAttribute { offset: 8, shader_location: 1, format: wgpu::VertexFormat::Float32x2 },
         wgpu::VertexAttribute { offset: 16, shader_location: 2, format: wgpu::VertexFormat::Float32x4 },
         wgpu::VertexAttribute { offset: 32, shader_location: 3, format: wgpu::VertexFormat::Float32x4 },
         wgpu::VertexAttribute { offset: 48, shader_location: 4, format: wgpu::VertexFormat::Float32 },
         wgpu::VertexAttribute { offset: 52, shader_location: 5, format: wgpu::VertexFormat::Float32 },
+        wgpu::VertexAttribute { offset: 56, shader_location: 6, format: wgpu::VertexFormat::Float32x4 },
     ];
 
     pub const fn layout() -> wgpu::VertexBufferLayout<'static> {

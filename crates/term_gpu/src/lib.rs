@@ -23,7 +23,7 @@ pub use input::{
     MouseButton, MouseEventKind,
 };
 pub use instances::{
-    GlyphInstance, RectInstance, RenderLayer, RoundRectInstance, ShadowInstance, Uniforms,
+    GlyphInstance, RectInstance, RenderLayer, RoundRectInstance, ShadowInstance, Uniforms, NO_CLIP,
 };
 pub use label::{measure_label_width, push_label};
 pub use panel_render::{

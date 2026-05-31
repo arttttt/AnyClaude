@@ -20,6 +20,7 @@ struct GlyphInput {
     @location(3) uv_max: vec2<f32>,
     @location(4) color: vec4<f32>,
     @location(5) layer: u32,        // atlas array layer
+    @location(6) clip: vec4<f32>,   // logical clip rect [min.xy, max.xy]
 };
 
 struct VsOut {
@@ -27,6 +28,8 @@ struct VsOut {
     @location(0) uv: vec2<f32>,
     @location(1) color: vec4<f32>,
     @location(2) @interpolate(flat) layer: u32,
+    // Signed distances to the four clip edges; any negative = outside.
+    @location(3) clip_dist: vec4<f32>,
 };
 
 const QUAD: array<vec2<f32>, 6> = array(
@@ -39,7 +42,8 @@ fn vs_main(@builtin(vertex_index) vi: u32, g: GlyphInput) -> VsOut {
     let q = QUAD[vi];
     // Subpixel-correct images come from cosmic-text's SubpixelBin (4x4 per
     // glyph). No shader-side snap. Scale logical pixels to physical before NDC.
-    let px_logical = g.pos + q * g.size - uniforms.scroll_offset;
+    let frag_logical = g.pos + q * g.size;
+    let px_logical = frag_logical - uniforms.scroll_offset;
     let px_physical = px_logical * uniforms.scale_factor;
     let ndc = (px_physical / uniforms.screen_size) * 2.0 - 1.0;
     var out: VsOut;
@@ -47,6 +51,12 @@ fn vs_main(@builtin(vertex_index) vi: u32, g: GlyphInput) -> VsOut {
     out.uv = mix(g.uv_min, g.uv_max, q);
     out.color = g.color;
     out.layer = g.layer;
+    out.clip_dist = vec4<f32>(
+        frag_logical.x - g.clip.x,
+        g.clip.z - frag_logical.x,
+        frag_logical.y - g.clip.y,
+        g.clip.w - frag_logical.y
+    );
     return out;
 }
 
@@ -62,6 +72,11 @@ fn enhance_contrast(alpha: f32, k: f32) -> f32 {
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+    // Clip: discard fragments outside the clip rect (transparent = no-op under
+    // ALPHA_BLENDING). NO_CLIP makes every distance huge-positive.
+    if (any(in.clip_dist < vec4<f32>(0.0))) {
+        return vec4<f32>(0.0);
+    }
     let sample = textureSample(atlas_tex, atlas_samp, in.uv, i32(in.layer));
     // Mono glyphs store coverage in the alpha channel and zero RGB; colour
     // glyphs (emoji) store premultiplied RGBA. Branch on RGB sum.

@@ -25,6 +25,7 @@ fn sample() -> PaintOutput {
         uv_max: [1.0, 1.0],
         color: [0.9, 0.8, 0.7, 1.0],
         layer: 0,
+        clip: term_gpu::NO_CLIP,
     });
     out.shadows.push(ShadowInstance {
         pos: [0.0, 0.0],

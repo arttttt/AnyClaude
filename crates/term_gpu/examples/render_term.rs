@@ -392,6 +392,7 @@ fn populate_frame(
                             uv_max: placed.uv_max,
                             color,
                             layer: placed.layer,
+                            clip: term_gpu::NO_CLIP,
                         });
                     }
                 }

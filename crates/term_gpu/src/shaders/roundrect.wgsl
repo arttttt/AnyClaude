@@ -21,6 +21,7 @@ struct RoundRectInput {
     @location(3) border_color: vec4<f32>,
     @location(4) border_width: f32,        // logical px (0 = no border)
     @location(5) corner_radius: f32,       // logical px (0 = sharp)
+    @location(6) clip: vec4<f32>,          // logical clip rect [min.xy, max.xy]
 };
 
 struct VsOut {
@@ -32,6 +33,9 @@ struct VsOut {
     @location(4) border_color: vec4<f32>,
     @location(5) border_width: f32,
     @location(6) corner_radius: f32,
+    // Signed distances to the four clip edges (left, right, top, bottom);
+    // any negative component means the fragment is outside the clip rect.
+    @location(7) clip_dist: vec4<f32>,
 };
 
 const QUAD: array<vec2<f32>, 6> = array(
@@ -56,6 +60,12 @@ fn vs_main(@builtin(vertex_index) vi: u32, r: RoundRectInput) -> VsOut {
     out.border_color = r.border_color;
     out.border_width = r.border_width;
     out.corner_radius = r.corner_radius;
+    out.clip_dist = vec4<f32>(
+        frag_logical.x - r.clip.x,
+        r.clip.z - frag_logical.x,
+        frag_logical.y - r.clip.y,
+        r.clip.w - frag_logical.y
+    );
     return out;
 }
 
@@ -67,6 +77,12 @@ fn sdf_round_rect(p: vec2<f32>, center: vec2<f32>, half: vec2<f32>, r: f32) -> f
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+    // Clip: discard fragments outside the clip rect (transparent = no-op under
+    // ALPHA_BLENDING). NO_CLIP makes every distance huge-positive, so unclipped
+    // instances always pass.
+    if (any(in.clip_dist < vec4<f32>(0.0))) {
+        return vec4<f32>(0.0);
+    }
     // Clamp the radius to half the shorter side so a large value (capsule
     // intent) becomes a fully-rounded pill rather than inverting the SDF.
     let r = min(max(in.corner_radius, 0.0), min(in.half_size.x, in.half_size.y));

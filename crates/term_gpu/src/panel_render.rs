@@ -301,6 +301,7 @@ pub fn populate_panel(
                                 uv_max: placed.uv_max,
                                 color,
                                 layer: placed.layer,
+                                clip: crate::NO_CLIP,
                             });
                         }
                         fast_path_handled = true;
@@ -342,6 +343,7 @@ pub fn populate_panel(
                                 uv_max: placed.uv_max,
                                 color,
                                 layer: placed.layer,
+                                clip: crate::NO_CLIP,
                             });
                         }
                     }
