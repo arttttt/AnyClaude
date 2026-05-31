@@ -22,6 +22,7 @@ use std::any::{Any, TypeId};
 use crate::arena::{BlockStyle, Node, NodeKind, RetainedTree, StackStyle, TextStyle};
 use crate::geometry::{Axis, CrossAxis, Insets, MainAxis, Sizing};
 use crate::id::{NodeId, WidgetId};
+use crate::modifier::Modifier;
 use crate::splice::reconcile_children;
 
 /// A retained, type-erased UI element. The view tree is a tree of these
@@ -443,6 +444,80 @@ impl Element for Block {
         self
     }
 }
+
+// ───────────────────────────── Modified composite ──────────────────────
+
+/// A modifier-decorated wrapper around one child — the Compose-style styling
+/// node (background / border / corner / shadow / padding / margin via a
+/// [`Modifier`] chain). Built with [`Modify::modify`] on any element.
+pub struct Modified {
+    pub widget_id: Option<WidgetId>,
+    pub modifier: Modifier,
+    pub child: BoxView,
+}
+
+impl Modified {
+    pub fn new<E: Element>(modifier: Modifier, child: E) -> Self {
+        Self { widget_id: None, modifier, child: Box::new(child) }
+    }
+
+    pub fn id(mut self, wid: WidgetId) -> Self {
+        self.widget_id = Some(wid);
+        self
+    }
+}
+
+impl Element for Modified {
+    fn build(&self, tree: &mut RetainedTree) -> NodeId {
+        let id = tree.alloc(NodeKind::Modified(self.modifier.clone()));
+        if let Some(wid) = self.widget_id {
+            tree.map_widget(wid, id);
+        }
+        let child_id = self.child.build(tree);
+        tree.node_mut(id).children = vec![child_id];
+        id
+    }
+
+    fn reconcile(&self, prev: &dyn Element, tree: &mut RetainedTree, id: NodeId) {
+        let prev = prev.as_any().downcast_ref::<Modified>().expect("same type");
+        if self.modifier != prev.modifier {
+            tree.node_mut(id).kind = NodeKind::Modified(self.modifier.clone());
+        }
+        if let Some(wid) = self.widget_id {
+            tree.map_widget(wid, id);
+        }
+        let prev_ids = tree.take_children(id);
+        let new_ids = reconcile_children(
+            tree,
+            std::slice::from_ref(&prev.child),
+            std::slice::from_ref(&self.child),
+            prev_ids,
+        );
+        tree.node_mut(id).children = new_ids;
+    }
+
+    fn teardown(&self, tree: &mut RetainedTree, id: NodeId) {
+        let children = tree.take_children(id);
+        if let Some(&cid) = children.first() {
+            self.child.teardown(tree, cid);
+        }
+        tree.free(id);
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+/// Extension: apply a [`Modifier`] chain to any element, wrapping it in a
+/// [`Modified`] node. `text.modify(Modifier::new().background(c).padding(p))`.
+pub trait Modify: Element + Sized {
+    fn modify(self, modifier: Modifier) -> Modified {
+        Modified::new(modifier, self)
+    }
+}
+
+impl<E: Element> Modify for E {}
 
 // ───────────────────────────── reconcile entry ─────────────────────────
 

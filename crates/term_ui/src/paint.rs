@@ -15,13 +15,14 @@
 use glam::Vec2;
 
 use term_gpu::{
-    push_label, CacheKey, FontSystem, GlyphAtlas, GlyphInstance, RectInstance, ShadowInstance,
-    Style, SwashCache, TextShapeCache, Weight,
+    push_label, CacheKey, FontSystem, GlyphAtlas, GlyphInstance, RectInstance, RoundRectInstance,
+    ShadowInstance, Style, SwashCache, TextShapeCache, Weight,
 };
 
 use crate::arena::{BlockStyle, NodeKind, RetainedTree, TextStyle};
-use crate::geometry::Bounds;
+use crate::geometry::{Bounds, Insets};
 use crate::id::{NodeId, WidgetId};
+use crate::modifier::{Mod, Modifier};
 
 /// term_gpu's `push_label` anchors text by **baseline**, computed by callers as
 /// `top + line_height * BASELINE_RATIO`. We use the same 0.75 ratio the label
@@ -33,6 +34,9 @@ const BASELINE_RATIO: f32 = 0.75;
 #[derive(Default)]
 pub struct PaintOutput {
     pub rects: Vec<RectInstance>,
+    /// Rounded-box decorations (modifier backgrounds / borders) — drawn over the
+    /// sharp `rects` and under the `glyphs`.
+    pub round_rects: Vec<RoundRectInstance>,
     pub glyphs: Vec<GlyphInstance>,
     pub shadows: Vec<ShadowInstance>,
     /// Per-frame hit geometry (bucket 2): topmost-wins in z-order is the
@@ -43,6 +47,7 @@ pub struct PaintOutput {
 impl PaintOutput {
     pub fn clear(&mut self) {
         self.rects.clear();
+        self.round_rects.clear();
         self.glyphs.clear();
         self.shadows.clear();
         self.hitboxes.clear();
@@ -88,6 +93,7 @@ pub fn paint(
                 push_border(out, bounds, style.border_width, style.border_color);
             }
         }
+        NodeKind::Modified(modifier) => paint_modifier(out, bounds, &modifier),
         NodeKind::Text(style) => {
             let baseline_y = bounds.origin.y + bounds.size.y * BASELINE_RATIO;
             let (weight, css_style) = text_attrs(&style);
@@ -112,6 +118,65 @@ pub fn paint(
 
     for child in children {
         paint(tree, child, out, atlas, fonts, swash, shape, scale_factor);
+    }
+}
+
+/// Shrink `b` by `insets` (origin moves in by the leading insets, size shrinks
+/// by the total; clamped to ≥ 0).
+fn inset_bounds(b: Bounds, insets: Insets) -> Bounds {
+    Bounds::new(b.origin + insets.top_left(), (b.size - insets.total()).max(Vec2::ZERO))
+}
+
+/// Fold a [`Modifier`] chain in order, emitting its decorations at the box
+/// bounds AT THAT POINT in the chain (R-style box model, order honoured). Layout
+/// ops shrink the running bounds; draw ops emit a [`RoundRectInstance`] /
+/// [`ShadowInstance`]; `corner_radius` sets the rounding for subsequent draws.
+/// The child is painted separately (by the generic recursion) at its placed
+/// bounds, which equal the fully-inset `b` here.
+fn paint_modifier(out: &mut PaintOutput, node_bounds: Bounds, modifier: &Modifier) {
+    let mut b = node_bounds;
+    let mut corner = 0.0_f32;
+    for op in &modifier.ops {
+        match *op {
+            Mod::Margin(i) | Mod::Padding(i) => b = inset_bounds(b, i),
+            Mod::CornerRadius(r) => corner = r,
+            Mod::Background(color) => {
+                if color[3] > 0.0 {
+                    out.round_rects.push(RoundRectInstance::fill(
+                        b.origin.into(),
+                        b.size.into(),
+                        color,
+                        corner,
+                    ));
+                }
+            }
+            Mod::Border { width, color } => {
+                if width > 0.0 && color[3] > 0.0 {
+                    out.round_rects.push(RoundRectInstance::new(
+                        b.origin.into(),
+                        b.size.into(),
+                        [0.0; 4],
+                        color,
+                        width,
+                        corner,
+                    ));
+                }
+                // Content sits inside the border.
+                b = inset_bounds(b, Insets::all(width));
+            }
+            Mod::Shadow(s) => {
+                if s.color[3] > 0.0 {
+                    out.shadows.push(ShadowInstance {
+                        pos: b.origin.into(),
+                        size: b.size.into(),
+                        blur_radius: s.blur_radius,
+                        corner_radius: s.corner_radius,
+                        offset: s.offset,
+                        color: s.color,
+                    });
+                }
+            }
+        }
     }
 }
 
@@ -179,6 +244,36 @@ pub fn paint_cpu(
                         size: b.size.into(),
                         color: style.border_color,
                     });
+                }
+            }
+        }
+        NodeKind::Modified(modifier) => {
+            // CPU geometry only (R4 gate): a RectRecord per background/border at
+            // the folded bounds; rounding + shadows are bucket-3-S, excluded.
+            let mut b = bounds;
+            for op in &modifier.ops {
+                match *op {
+                    Mod::Margin(i) | Mod::Padding(i) => b = inset_bounds(b, i),
+                    Mod::CornerRadius(_) | Mod::Shadow(_) => {}
+                    Mod::Background(color) => {
+                        if color[3] > 0.0 {
+                            out.rects.push(RectRecord {
+                                origin: b.origin.into(),
+                                size: b.size.into(),
+                                color,
+                            });
+                        }
+                    }
+                    Mod::Border { width, color } => {
+                        if width > 0.0 && color[3] > 0.0 {
+                            out.rects.push(RectRecord {
+                                origin: b.origin.into(),
+                                size: b.size.into(),
+                                color,
+                            });
+                        }
+                        b = inset_bounds(b, Insets::all(width));
+                    }
                 }
             }
         }

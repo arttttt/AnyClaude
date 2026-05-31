@@ -88,6 +88,21 @@ pub fn measure(
             let border = style.border_width * 2.0;
             constraint.apply(inner + pad + Vec2::splat(border))
         }
+        NodeKind::Modified(modifier) => {
+            // size = child + the modifier's total box insets (padding + margin +
+            // border), clamped. Order-independent for measure (the insets are
+            // additive); the paint fold honours order.
+            let insets = modifier.box_insets();
+            let pad = Vec2::new(insets.horizontal(), insets.vertical());
+            let inner_max = (constraint.max - pad).max(Vec2::ZERO);
+            let children = tree.take_children(id);
+            let mut inner = Vec2::ZERO;
+            if let Some(&child) = children.first() {
+                inner = measure(tree, child, SizeConstraint::loose(inner_max), fonts, shape, scale_factor);
+            }
+            tree.restore_children(id, children);
+            constraint.apply(inner + pad)
+        }
         NodeKind::Stack(stack) => measure_stack(
             tree, id, &stack, constraint, fonts, shape, scale_factor,
         ),
@@ -243,6 +258,20 @@ pub fn place(tree: &mut RetainedTree, id: NodeId, origin: Vec2) {
                 let inner_origin = origin
                     + style.padding.top_left()
                     + Vec2::splat(style.border_width);
+                tree.node_mut(child).measured = inner;
+                place(tree, child, inner_origin);
+            }
+            tree.restore_children(id, children);
+        }
+        NodeKind::Modified(modifier) => {
+            // Stretch the single child to the inner box (measured minus the
+            // box insets) and place it at the leading-inset offset.
+            let insets = modifier.box_insets();
+            let inner =
+                (measured - Vec2::new(insets.horizontal(), insets.vertical())).max(Vec2::ZERO);
+            let children = tree.take_children(id);
+            if let Some(&child) = children.first() {
+                let inner_origin = origin + Vec2::new(insets.left, insets.top);
                 tree.node_mut(child).measured = inner;
                 place(tree, child, inner_origin);
             }

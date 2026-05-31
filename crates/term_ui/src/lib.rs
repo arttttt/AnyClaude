@@ -22,6 +22,7 @@ pub mod arena;
 pub mod geometry;
 pub mod id;
 pub mod layout;
+pub mod modifier;
 pub mod paint;
 pub mod splice;
 pub mod text_helpers;
@@ -40,6 +41,7 @@ pub use geometry::{
 };
 pub use id::{NodeId, WidgetId};
 pub use layout::{line_height, measure, measure_text, place, place_centered};
+pub use modifier::{Mod, Modifier};
 pub use paint::{
     block_shadow, paint, paint_cpu, CpuPaint, GlyphRecord, PaintOutput, RectRecord,
 };
@@ -47,5 +49,5 @@ pub use splice::reconcile_children;
 pub use text_helpers::{byte_at_x, caret_x};
 pub use view::{
     build_root, collect_focus_order, free_subtree, reconcile_root, Block, BoxView, Element,
-    Spacer, Stack, Text,
+    Modified, Modify, Spacer, Stack, Text,
 };
