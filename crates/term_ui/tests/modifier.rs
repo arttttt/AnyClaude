@@ -3,13 +3,14 @@
 //! Headless via `paint_cpu` (RectRecords), so no atlas/GPU.
 
 use glam::Vec2;
-use term_gpu::{FontFamily, FontSystem, TextShapeCache};
+use term_gpu::{FontFamily, FontSystem, TextShapeCache, NO_CLIP};
 use term_ui::{
     build_root, measure, paint_cpu, place, CpuPaint, Element, Insets, Modify, Modifier,
     RetainedTree, SizeConstraint, Text,
 };
 
 const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
+const BLUE: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
 
 fn render_cpu<E: Element>(view: E) -> (CpuPaint, Vec2) {
     let mut fonts = FontSystem::new();
@@ -78,5 +79,38 @@ fn paint_honours_chain_order_for_the_background() {
     assert!(
         (bg_a.size[0] - bg_b.size[0] - 20.0).abs() < 0.5,
         "outer bg is wider than the inner bg by the padding"
+    );
+}
+
+#[test]
+fn clip_defaults_to_unclipped_and_honours_chain_order() {
+    // clip BEFORE background → the bg is clipped to the running bounds.
+    let (a, sz) = render_cpu(text().modify(Modifier::new().clip().background(RED)));
+    let bg_a = a.rects.iter().find(|r| r.color == RED).expect("bg A present");
+    assert_eq!(
+        bg_a.clip,
+        [0.0, 0.0, sz.x, sz.y],
+        "clip before background clips it to the bounds"
+    );
+
+    // background BEFORE clip → the bg was emitted before the clip took effect.
+    let (b, _) = render_cpu(text().modify(Modifier::new().background(RED).clip()));
+    let bg_b = b.rects.iter().find(|r| r.color == RED).expect("bg B present");
+    assert_eq!(bg_b.clip, NO_CLIP, "background before clip stays unclipped");
+}
+
+#[test]
+fn clip_flows_to_an_offset_child() {
+    // A clipping parent wraps a child that overhangs its slot via offset: the
+    // child paints at the offset position but inherits the PARENT's bounds as
+    // its clip (the pager scenario — off-edge pages clipped to the pager rect).
+    let child = text().modify(Modifier::new().background(BLUE).offset(100.0, 0.0));
+    let (cpu, sz) = render_cpu(child.modify(Modifier::new().clip()));
+    let bg = cpu.rects.iter().find(|r| r.color == BLUE).expect("child bg present");
+    assert_eq!(bg.origin, [100.0, 0.0], "child paints at its offset");
+    assert_eq!(
+        bg.clip,
+        [0.0, 0.0, sz.x, sz.y],
+        "child inherits the parent's bounds as its clip"
     );
 }

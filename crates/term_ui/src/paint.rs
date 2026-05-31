@@ -16,7 +16,7 @@ use glam::Vec2;
 
 use term_gpu::{
     push_label, CacheKey, FontSystem, GlyphAtlas, GlyphInstance, RectInstance, RoundRectInstance,
-    ShadowInstance, Style, SwashCache, TextShapeCache, Weight,
+    ShadowInstance, Style, SwashCache, TextShapeCache, Weight, NO_CLIP,
 };
 
 use crate::arena::{NodeKind, RetainedTree, TextStyle};
@@ -66,11 +66,13 @@ pub fn paint(
     shape: &mut TextShapeCache,
     scale_factor: f32,
 ) {
-    paint_inner(tree, id, out, atlas, fonts, swash, shape, scale_factor, 1.0);
+    paint_inner(tree, id, out, atlas, fonts, swash, shape, scale_factor, 1.0, NO_CLIP);
 }
 
 /// Recursive paint with an inherited subtree `alpha` (a `Mod::Alpha` multiplies
-/// it for the node + its descendants — graphicsLayer-style opacity).
+/// it for the node + its descendants — graphicsLayer-style opacity) and `clip`
+/// rect (a `Mod::Clip` intersects it — graphicsLayer-style clipping). Both are
+/// threaded into every emitted instance.
 #[allow(clippy::too_many_arguments)]
 fn paint_inner(
     tree: &RetainedTree,
@@ -82,6 +84,7 @@ fn paint_inner(
     shape: &mut TextShapeCache,
     scale_factor: f32,
     alpha: f32,
+    clip: [f32; 4],
 ) {
     let node = tree.node(id);
     let bounds = node.bounds;
@@ -93,18 +96,21 @@ fn paint_inner(
         out.hitboxes.push((bounds, wid));
     }
 
-    // The alpha carried into this node's children (a Modified's `Alpha` ops
-    // multiply it for the whole subtree).
+    // The alpha / clip carried into this node's children (a Modified's `Alpha`
+    // ops multiply the alpha; a `Clip` op intersects the clip — both for the
+    // whole subtree).
     let mut child_alpha = alpha;
+    let mut child_clip = clip;
     match kind {
         NodeKind::Spacer(_) | NodeKind::Stack(_) => {}
         NodeKind::Modified(modifier) => {
             child_alpha = alpha * modifier.total_alpha();
-            paint_modifier(out, bounds, &modifier, child_alpha);
+            child_clip = paint_modifier(out, bounds, &modifier, child_alpha, clip);
         }
         NodeKind::Text(style) => {
             let baseline_y = bounds.origin.y + bounds.size.y * BASELINE_RATIO;
             let (weight, css_style) = text_attrs(&style);
+            let start = out.glyphs.len();
             push_label(
                 fonts,
                 swash,
@@ -120,11 +126,19 @@ fn paint_inner(
                 css_style,
                 with_alpha(style.color, alpha),
             );
+            // Text isn't a clipper; its glyphs inherit the ancestor clip.
+            if clip != NO_CLIP {
+                for g in &mut out.glyphs[start..] {
+                    g.clip = clip;
+                }
+            }
         }
     }
 
     for child in children {
-        paint_inner(tree, child, out, atlas, fonts, swash, shape, scale_factor, child_alpha);
+        paint_inner(
+            tree, child, out, atlas, fonts, swash, shape, scale_factor, child_alpha, child_clip,
+        );
     }
 }
 
@@ -139,49 +153,71 @@ fn with_alpha(c: [f32; 4], a: f32) -> [f32; 4] {
     [c[0], c[1], c[2], c[3] * a]
 }
 
+/// Intersect a clip rect `[min_x, min_y, max_x, max_y]` with a bounds box —
+/// the fold a `Mod::Clip` applies as it descends the tree.
+fn intersect_clip(clip: [f32; 4], b: Bounds) -> [f32; 4] {
+    [
+        clip[0].max(b.origin.x),
+        clip[1].max(b.origin.y),
+        clip[2].min(b.origin.x + b.size.x),
+        clip[3].min(b.origin.y + b.size.y),
+    ]
+}
+
 /// Fold a [`Modifier`] chain in order, emitting its decorations at the box
 /// bounds AT THAT POINT in the chain (R-style box model, order honoured). Layout
 /// ops shrink the running bounds; draw ops emit a [`RoundRectInstance`] /
-/// [`ShadowInstance`]; `corner_radius` sets the rounding for subsequent draws.
-/// The child is painted separately (by the generic recursion) at its placed
-/// bounds, which equal the fully-inset `b` here.
-fn paint_modifier(out: &mut PaintOutput, node_bounds: Bounds, modifier: &Modifier, alpha: f32) {
+/// [`ShadowInstance`] clipped to the running `clip`; `corner_radius` sets the
+/// rounding for subsequent draws; `Mod::Clip` intersects the running clip with
+/// the running bounds. The child is painted separately (by the generic
+/// recursion) at its placed bounds; the returned clip is what it inherits.
+fn paint_modifier(
+    out: &mut PaintOutput,
+    node_bounds: Bounds,
+    modifier: &Modifier,
+    alpha: f32,
+    inherited_clip: [f32; 4],
+) -> [f32; 4] {
     let mut b = node_bounds;
     let mut corner = 0.0_f32;
+    let mut clip = inherited_clip;
     for op in &modifier.ops {
         match *op {
             Mod::Margin(i) | Mod::Padding(i) => b = inset_bounds(b, i),
             // Offset is applied in `place` (shifts node bounds); Alpha is folded
             // into `alpha` by the caller — both no-ops in the decoration loop.
             Mod::Offset(_) | Mod::Alpha(_) => {}
+            Mod::Clip => clip = intersect_clip(clip, b),
             Mod::CornerRadius(r) => corner = r,
             Mod::Background(color) => {
                 let color = with_alpha(color, alpha);
                 if color[3] > 0.0 {
-                    out.round_rects.push(RoundRectInstance::fill(
-                        b.origin.into(),
-                        b.size.into(),
-                        color,
-                        corner,
-                    ));
+                    let mut ri =
+                        RoundRectInstance::fill(b.origin.into(), b.size.into(), color, corner);
+                    ri.clip = clip;
+                    out.round_rects.push(ri);
                 }
             }
             Mod::Border { width, color } => {
                 let color = with_alpha(color, alpha);
                 if width > 0.0 && color[3] > 0.0 {
-                    out.round_rects.push(RoundRectInstance::new(
+                    let mut ri = RoundRectInstance::new(
                         b.origin.into(),
                         b.size.into(),
                         [0.0; 4],
                         color,
                         width,
                         corner,
-                    ));
+                    );
+                    ri.clip = clip;
+                    out.round_rects.push(ri);
                 }
                 // Content sits inside the border.
                 b = inset_bounds(b, Insets::all(width));
             }
             Mod::Shadow(s) => {
+                // Shadow is a soft halo extending beyond the bounds; Mod::Clip
+                // does not clip it (no consumer needs it).
                 let color = with_alpha(s.color, alpha);
                 if color[3] > 0.0 {
                     out.shadows.push(ShadowInstance {
@@ -196,6 +232,7 @@ fn paint_modifier(out: &mut PaintOutput, node_bounds: Bounds, modifier: &Modifie
             }
         }
     }
+    clip
 }
 
 /// One painted glyph's CPU-computable identity + geometry, for the R4 gate.
@@ -207,12 +244,16 @@ pub struct GlyphRecord {
     pub color: [f32; 4],
 }
 
-/// One painted rect's CPU-computable geometry + color, for the R4 gate.
+/// One painted rect's CPU-computable geometry + color + clip, for the R4 gate.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct RectRecord {
     pub origin: [f32; 2],
     pub size: [f32; 2],
     pub color: [f32; 4],
+    /// The clip rect `[min_x, min_y, max_x, max_y]` in effect when this rect was
+    /// emitted ([`NO_CLIP`] when unclipped) — mirrors the live path's per-
+    /// instance clip so the fold is testable headlessly.
+    pub clip: [f32; 4],
 }
 
 /// CPU-comparable paint output for the R4 property test. Holds only geometry,
@@ -235,6 +276,19 @@ pub fn paint_cpu(
     shape: &mut TextShapeCache,
     scale_factor: f32,
 ) {
+    paint_cpu_inner(tree, id, out, fonts, shape, scale_factor, NO_CLIP);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn paint_cpu_inner(
+    tree: &RetainedTree,
+    id: NodeId,
+    out: &mut CpuPaint,
+    fonts: &mut FontSystem,
+    shape: &mut TextShapeCache,
+    scale_factor: f32,
+    inherited_clip: [f32; 4],
+) {
     let node = tree.node(id);
     let bounds = node.bounds;
     let kind = node.kind.clone();
@@ -245,22 +299,27 @@ pub fn paint_cpu(
         out.hitboxes.push((bounds, wid));
     }
 
+    let mut child_clip = inherited_clip;
     match kind {
         NodeKind::Spacer(_) | NodeKind::Stack(_) => {}
         NodeKind::Modified(modifier) => {
             // CPU geometry only (R4 gate): a RectRecord per background/border at
-            // the folded bounds; rounding + shadows are bucket-3-S, excluded.
+            // the folded bounds + folded clip; rounding + shadows are
+            // bucket-3-S, excluded.
             let mut b = bounds;
+            let mut clip = inherited_clip;
             for op in &modifier.ops {
                 match *op {
                     Mod::Margin(i) | Mod::Padding(i) => b = inset_bounds(b, i),
                     Mod::CornerRadius(_) | Mod::Shadow(_) | Mod::Offset(_) | Mod::Alpha(_) => {}
+                    Mod::Clip => clip = intersect_clip(clip, b),
                     Mod::Background(color) => {
                         if color[3] > 0.0 {
                             out.rects.push(RectRecord {
                                 origin: b.origin.into(),
                                 size: b.size.into(),
                                 color,
+                                clip,
                             });
                         }
                     }
@@ -270,12 +329,14 @@ pub fn paint_cpu(
                                 origin: b.origin.into(),
                                 size: b.size.into(),
                                 color,
+                                clip,
                             });
                         }
                         b = inset_bounds(b, Insets::all(width));
                     }
                 }
             }
+            child_clip = clip;
         }
         NodeKind::Text(style) => {
             let baseline_y = bounds.origin.y + bounds.size.y * BASELINE_RATIO;
@@ -308,7 +369,7 @@ pub fn paint_cpu(
     }
 
     for child in children {
-        paint_cpu(tree, child, out, fonts, shape, scale_factor);
+        paint_cpu_inner(tree, child, out, fonts, shape, scale_factor, child_clip);
     }
 }
 

@@ -49,6 +49,13 @@ pub enum Mod {
     /// multiplied into every emitted instance's alpha. Composed multiplicatively
     /// down the tree.
     Alpha(f32),
+    /// Clip this element AND its whole subtree to the running box bounds AT THIS
+    /// POINT in the chain (graphicsLayer-style): every instance the element and
+    /// its descendants emit is clipped to that rect, folded by intersection down
+    /// the tree. Used by scrolling/paging widgets to keep off-edge content from
+    /// bleeding out. Currently clips round-rect + glyph instances (overlay
+    /// decorations + text); sharp grid rects and shadow halos are unaffected.
+    Clip,
 }
 
 /// An ordered chain of [`Mod`]s. Cheap value type (the diff key for reconcile).
@@ -97,6 +104,11 @@ impl Modifier {
 
     pub fn alpha(self, alpha: f32) -> Self {
         self.push(Mod::Alpha(alpha))
+    }
+
+    /// Clip the element's subtree to its bounds at this point in the chain.
+    pub fn clip(self) -> Self {
+        self.push(Mod::Clip)
     }
 
     /// Total leading inset `(left, top)` and full inset `(horizontal, vertical)`
