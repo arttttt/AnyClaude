@@ -16,8 +16,10 @@
 
 pub mod chrome;
 pub mod edge_toggle;
+pub mod pager;
 pub mod popup;
 
 pub use chrome::{footer_bar, header_bar, Segment};
 pub use edge_toggle::{edge_toggle, Chevron, EdgeTogglePalette};
+pub use pager::{pager, pager_dot_id, pager_next_id, pager_prev_id, PagerPalette};
 pub use popup::{fixed_row_window, popup_list};
