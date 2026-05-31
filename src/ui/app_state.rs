@@ -388,8 +388,10 @@ impl AppState {
         vec![Effect::Redraw]
     }
 
-    /// Route a key press. Popups own input while open; the clipboard (Cmd+C/V)
-    /// and app features (a single Ctrl chord) are app shortcuts resolved before
+    /// Route a key press. A popup-toggle shortcut resolves first (so its hotkey
+    /// closes the open popup / switches popups); otherwise an open popup owns
+    /// input (Esc / nav / Enter). With no popup open, the clipboard (Cmd+C/V) and
+    /// app features (a single Ctrl chord) are app shortcuts resolved before
     /// terminal encoding; an unbound Cmd combo is swallowed (never leaked to the
     /// PTY); everything else is a terminal key encoded via `encode_key`.
     fn on_key(
@@ -399,23 +401,29 @@ impl AppState {
         physical: PhysicalKey,
         app_cursor: bool,
     ) -> Vec<Effect> {
-        if self.any_popup_visible() {
-            return self.on_popup_key(physical);
-        }
+        // App shortcuts. A popup TOGGLE resolves even while a popup is open — so
+        // the same hotkey closes it (and a sibling hotkey switches popups);
+        // every other shortcut stays modal while a popup is open and falls
+        // through to the popup router below.
         if let PhysicalKey::Code(code) = physical {
             if let Some(shortcut) = input::app_shortcut(code, self.modifiers) {
-                return vec![match shortcut {
-                    AppShortcut::CopySelection => Effect::CopySelection,
-                    AppShortcut::Paste => Effect::Paste,
-                    AppShortcut::ToggleBackendPopup => Effect::ToggleBackendPopup,
-                    AppShortcut::ToggleHistoryPopup => Effect::ToggleHistoryPopup,
-                    AppShortcut::ToggleSettingsPopup => Effect::ToggleSettingsPopup,
-                    AppShortcut::RestartPty => Effect::RestartPty,
-                    AppShortcut::DumpDiagnostic => Effect::DumpDiagnostic,
-                    AppShortcut::DebugTogglePanels => Effect::DebugTogglePanels,
-                    AppShortcut::Quit => Effect::Quit,
-                }];
+                if shortcut.toggles_popup() || !self.any_popup_visible() {
+                    return vec![match shortcut {
+                        AppShortcut::CopySelection => Effect::CopySelection,
+                        AppShortcut::Paste => Effect::Paste,
+                        AppShortcut::ToggleBackendPopup => Effect::ToggleBackendPopup,
+                        AppShortcut::ToggleHistoryPopup => Effect::ToggleHistoryPopup,
+                        AppShortcut::ToggleSettingsPopup => Effect::ToggleSettingsPopup,
+                        AppShortcut::RestartPty => Effect::RestartPty,
+                        AppShortcut::DumpDiagnostic => Effect::DumpDiagnostic,
+                        AppShortcut::DebugTogglePanels => Effect::DebugTogglePanels,
+                        AppShortcut::Quit => Effect::Quit,
+                    }];
+                }
             }
+        }
+        if self.any_popup_visible() {
+            return self.on_popup_key(physical);
         }
         // A Cmd combo with no bound shortcut is swallowed — Cmd+key has no
         // terminal byte and must not leak to the PTY.

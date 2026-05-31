@@ -306,6 +306,28 @@ fn cmd_clipboard_maps_and_unbound_cmd_is_swallowed() {
 }
 
 #[test]
+fn popup_toggle_hotkey_resolves_over_the_open_popup() {
+    let mut s = state();
+    s.modifiers = ModifiersState::CONTROL;
+    s.backend_switch.apply(BackendSwitchIntent::Open {
+        backend_selection: 0,
+        subagent_selection: 0,
+        teammate_selection: 0,
+        backends_count: 2,
+    });
+    assert!(s.any_popup_visible());
+    // Ctrl+T again toggles the SAME popup shut (emits the toggle effect; perform
+    // performs the close).
+    assert_eq!(s.apply(key(KeyCode::KeyT), &ctx()), vec![Effect::ToggleBackendPopup]);
+    // A non-toggle shortcut stays modal: Ctrl+Q falls through to the popup nav
+    // and is ignored while the popup is open (NOT a Quit).
+    assert!(
+        s.apply(key(KeyCode::KeyQ), &ctx()).is_empty(),
+        "Ctrl+Q is swallowed by the open popup, not a Quit"
+    );
+}
+
+#[test]
 fn popup_escape_closes_and_redraws() {
     let mut s = state();
     s.backend_switch.apply(BackendSwitchIntent::Open {

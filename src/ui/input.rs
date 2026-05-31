@@ -29,6 +29,21 @@ pub enum AppShortcut {
     Quit,
 }
 
+impl AppShortcut {
+    /// Whether this shortcut opens / closes a popup. These resolve even while a
+    /// popup is already open — so the same hotkey toggles it shut and a sibling
+    /// hotkey switches popups — whereas every other shortcut is swallowed by the
+    /// open popup's Esc / nav / Enter handler.
+    pub fn toggles_popup(self) -> bool {
+        matches!(
+            self,
+            AppShortcut::ToggleBackendPopup
+                | AppShortcut::ToggleHistoryPopup
+                | AppShortcut::ToggleSettingsPopup
+        )
+    }
+}
+
 /// Map a modifier combo to its app shortcut. Clipboard is **Cmd+C / Cmd+V**;
 /// app features are a single **Ctrl** chord. `Ctrl+B` (Claude Code) and `Ctrl+D`
 /// (EOF) are deliberately left for the terminal — backend takes `Ctrl+T`,

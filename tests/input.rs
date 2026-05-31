@@ -23,6 +23,19 @@ fn clipboard_is_on_cmd_not_ctrl() {
 }
 
 #[test]
+fn only_popup_toggles_resolve_over_an_open_popup() {
+    // The popup hotkeys toggle (so a second press closes / a sibling switches).
+    assert!(AppShortcut::ToggleBackendPopup.toggles_popup());
+    assert!(AppShortcut::ToggleHistoryPopup.toggles_popup());
+    assert!(AppShortcut::ToggleSettingsPopup.toggles_popup());
+    // Everything else stays modal while a popup is open.
+    assert!(!AppShortcut::Quit.toggles_popup());
+    assert!(!AppShortcut::CopySelection.toggles_popup());
+    assert!(!AppShortcut::Paste.toggles_popup());
+    assert!(!AppShortcut::RestartPty.toggles_popup());
+}
+
+#[test]
 fn features_are_on_ctrl() {
     assert_eq!(app_shortcut(KeyCode::KeyT, CTRL), Some(AppShortcut::ToggleBackendPopup));
     assert_eq!(app_shortcut(KeyCode::KeyH, CTRL), Some(AppShortcut::ToggleHistoryPopup));
