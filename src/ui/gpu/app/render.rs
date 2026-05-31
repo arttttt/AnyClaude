@@ -13,17 +13,16 @@ use term_gpu::{
     build_cursor_rect, populate_panel, push_selection_rects, GlyphInstance, RectInstance,
     RenderLayer,
 };
-use term_ui::{lerp, Block, Bounds};
+use term_ui::{Block, Bounds};
 
 use crate::ui::chrome_labels;
 use crate::ui::gpu::chrome::{
     CHROME_FONT_SIZE, CHROME_H_PAD, FOOTER_HEIGHT_LOGICAL, HEADER_HEIGHT_LOGICAL,
 };
-use crate::ui::panel_anim::{panel_width_factor, settled, step_panel_anim};
 use crate::ui::panels_view;
 use crate::ui::popup_view;
 
-use super::{FONT_SIZE, PANEL_ANIM_SECS, POPUP_FADE_SECS};
+use super::{FONT_SIZE, POPUP_FADE_SECS};
 
 impl super::GpuApp {
     /// Render one frame: clear, populate cells, push cursor, draw
@@ -159,26 +158,23 @@ impl super::GpuApp {
         // tears the tree down and leaves the default app byte-identical. Spans
         // the content band (between header + footer), positioned at the right
         // edge; collapsed renders just the edge strip width.
-        // Right overlay width. A live hand-drag renders directly (no animation)
-        // and pins the epoch SETTLED to the side the width is on, so releasing
-        // the drag snaps without re-triggering a slide. Otherwise the
-        // collapse/expand epoch animates between the bare strip width and the
-        // target width (R12). `now` is the frame clock used above.
+        // Right overlay width via the `panel_width` tween (R12). A hand-drag
+        // snaps it to the live cursor width (instant); otherwise it retargets the
+        // collapse/expand slide between the bare strip width and the visible
+        // target width. `now` is the frame clock used above.
         let strip_w = self.state.right.policy().collapsed_width;
         let right_visible = self.state.right.is_visible();
         let right_empty = self.state.right.is_empty();
         let dragging = self.state.right.drag_width();
-        let (overlay_w, panel_animating) = if let Some(dw) = dragging {
-            let drag_expanded = dw >= self.state.right.policy().min_width;
-            self.panel_anim = Some(settled(now, drag_expanded, PANEL_ANIM_SECS));
-            (dw, false)
+        let overlay_w = if let Some(dw) = dragging {
+            self.panel_width.snap(dw);
+            dw
         } else {
-            let target_w = self.state.right.width();
-            self.panel_anim = step_panel_anim(self.panel_anim, right_visible, now);
-            let (factor, animating) =
-                panel_width_factor(self.panel_anim, right_visible, now, PANEL_ANIM_SECS);
-            (lerp(strip_w, target_w, factor), animating)
+            let target = if right_visible { self.state.right.width() } else { strip_w };
+            self.panel_width.retarget(target, now);
+            self.panel_width.value(now)
         };
+        let panel_animating = self.panel_width.animating(now);
         // Show the panel stack whenever the overlay is wider than the bare strip.
         let expanded = overlay_w > strip_w + 1.0;
         let panels = if right_empty && !right_visible && !panel_animating && dragging.is_none() {

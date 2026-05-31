@@ -17,10 +17,10 @@
 //!   - [`session_ops`] — drain the PTY / restart the session
 
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use term_clipboard::Clipboard;
 use term_gpu::GpuRenderer;
-use term_ui::Bounds;
+use term_ui::{Animation, Bounds, Interpolator};
 use uuid::Uuid;
 use winit::event_loop::EventLoopProxy;
 use winit::window::Window;
@@ -120,9 +120,11 @@ pub(super) struct GpuApp {
     panel_overlay_rect: Option<Bounds>,
     panel_toggle_zone: Option<Bounds>,
 
-    /// Right overlay collapse/expand epoch (bucket 3-S); the rendered width is
-    /// derived from it + the frame clock each frame, never stored (R12).
-    panel_anim: Option<crate::ui::panel_anim::PanelAnim>,
+    /// Right overlay width tween (bucket 3-S): the collapse/expand slide AND the
+    /// live drag width, as one `Animation`. The rendered width is `value(now)` —
+    /// derived each frame, never stored (R12). `retarget` drives the button
+    /// slide; `snap` tracks a hand-drag.
+    panel_width: Animation<f32>,
 
     clipboard: Box<dyn Clipboard>,
 
@@ -143,6 +145,19 @@ impl GpuApp {
         observability: ObservabilityHub,
         settings_manager: ClaudeSettingsManager,
     ) -> Self {
+        let state = AppState::new(
+            Uuid::new_v4().to_string(),
+            Instant::now(),
+            (INITIAL_GRID_COLS, INITIAL_GRID_ROWS),
+        );
+        // The right overlay starts collapsed at its bare strip width; the first
+        // redraw retargets it to the live state (a no-op while collapsed).
+        let panel_width = Animation::settled(
+            state.right.policy().collapsed_width,
+            Instant::now(),
+            Duration::from_secs_f32(PANEL_ANIM_SECS),
+            Interpolator::EaseInOut,
+        );
         Self {
             proxy,
             window: None,
@@ -151,16 +166,12 @@ impl GpuApp {
             text: TextResources::new(),
             overlay: OverlayRenderer::new(),
             session: Session::new(spawn_command, spawn_args, spawn_env),
-            state: AppState::new(
-                Uuid::new_v4().to_string(),
-                Instant::now(),
-                (INITIAL_GRID_COLS, INITIAL_GRID_ROWS),
-            ),
+            state,
             timers: Timers::new(),
             session_click_zone: None,
             panel_overlay_rect: None,
             panel_toggle_zone: None,
-            panel_anim: None,
+            panel_width,
             clipboard: make_clipboard(),
             backends: Backends {
                 backend_state,

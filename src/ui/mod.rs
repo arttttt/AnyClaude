@@ -4,7 +4,6 @@ pub mod chrome_labels;
 pub mod gpu;
 pub mod history;
 pub mod input;
-pub mod panel_anim;
 pub mod panel_manager;
 pub mod panels_view;
 pub mod popup_anim;
