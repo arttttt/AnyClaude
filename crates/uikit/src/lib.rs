@@ -15,7 +15,9 @@
 //! as their consumers appear, never before.
 
 pub mod chrome;
+pub mod edge_toggle;
 pub mod popup;
 
 pub use chrome::{footer_bar, header_bar, Segment};
+pub use edge_toggle::{edge_toggle, Chevron, EdgeTogglePalette};
 pub use popup::{fixed_row_window, popup_list};

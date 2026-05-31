@@ -16,8 +16,8 @@ use term_gpu::{
 };
 use term_ui::{
     apply_overlay_alpha, build_root, free_subtree, measure, paint, place, place_centered,
-    reconcile_root, Animation, Block, Bounds, Interpolator, NodeId, PaintOutput, RetainedTree,
-    SizeConstraint, Stack,
+    reconcile_root, Animation, Block, Bounds, Interpolator, Modified, NodeId, PaintOutput,
+    RetainedTree, SizeConstraint, Stack,
 };
 
 use crate::ui::chrome_labels;
@@ -39,7 +39,7 @@ pub(super) struct OverlayRenderer {
     /// positioned (not centred) at the overlay rect each frame.
     panels_tree: RetainedTree,
     panels_root: Option<NodeId>,
-    panels_prev: Option<Block>,
+    panels_prev: Option<Modified>,
     panels_scratch: PaintOutput,
 }
 
@@ -72,7 +72,7 @@ impl OverlayRenderer {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn render_panels(
         &mut self,
-        view: Option<Block>,
+        view: Option<Modified>,
         origin: Vec2,
         size: Vec2,
         fonts: &mut FontSystem,

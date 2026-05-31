@@ -67,7 +67,10 @@ fn sdf_round_rect(p: vec2<f32>, center: vec2<f32>, half: vec2<f32>, r: f32) -> f
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    let d = sdf_round_rect(in.frag_logical, in.center, in.half_size, max(in.corner_radius, 0.0));
+    // Clamp the radius to half the shorter side so a large value (capsule
+    // intent) becomes a fully-rounded pill rather than inverting the SDF.
+    let r = min(max(in.corner_radius, 0.0), min(in.half_size.x, in.half_size.y));
+    let d = sdf_round_rect(in.frag_logical, in.center, in.half_size, r);
     let aa = max(fwidth(d), 1e-4);
     // Outer coverage: 1 inside the shape, fading to 0 across ~1px at the edge.
     let outer = clamp(0.5 - d / aa, 0.0, 1.0);
