@@ -26,7 +26,7 @@ use winit::keyboard::{Key, KeyCode, ModifiersState, PhysicalKey};
 use crate::ui::backend_switch::{BackendSwitchIntent, BackendSwitchState};
 use crate::ui::history::{HistoryDialogState, HistoryIntent};
 use crate::ui::input::{self, AppShortcut};
-use crate::ui::panel_manager::{PanelManager, Policy};
+use crate::ui::panel_manager::{ManagerId, PanelManager, Policy};
 use crate::ui::settings::{SettingsDialogState, SettingsIntent};
 use crate::ui::term_geometry::LastClick;
 
@@ -203,6 +203,9 @@ pub enum Msg {
     Close,
     /// The PTY signalled that new output is ready to drain.
     PtyBytes,
+    /// Collapse/expand a panel manager's overlay (a click on its edge toggle
+    /// button, coordinator-resolved to the manager).
+    PanelToggle(ManagerId),
 }
 
 /// Read-only context the coordinator supplies to [`AppState::apply`]: the frame
@@ -333,6 +336,19 @@ impl AppState {
             Msg::Tick => vec![Effect::Redraw],
             Msg::Close => vec![Effect::Quit],
             Msg::PtyBytes => vec![Effect::Drain],
+            Msg::PanelToggle(mgr) => {
+                self.manager_mut(mgr).toggle();
+                vec![Effect::Redraw]
+            }
+        }
+    }
+
+    /// The panel manager addressed by `mgr` (mutable). One reusable type, two
+    /// instances; this is the addressing seam the panel messages route through.
+    pub fn manager_mut(&mut self, mgr: ManagerId) -> &mut PanelManager {
+        match mgr {
+            ManagerId::Left => &mut self.left,
+            ManagerId::Right => &mut self.right,
         }
     }
 

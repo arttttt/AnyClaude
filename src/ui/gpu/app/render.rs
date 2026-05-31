@@ -13,7 +13,7 @@ use term_gpu::{
     build_cursor_rect, populate_panel, push_selection_rects, GlyphInstance, RectInstance,
     RenderLayer,
 };
-use term_ui::Block;
+use term_ui::{Block, Bounds};
 
 use crate::ui::chrome_labels;
 use crate::ui::gpu::chrome::{
@@ -164,6 +164,7 @@ impl super::GpuApp {
         } else {
             Some(panels_view::panel_manager_view(right, right.is_visible()))
         };
+        let has_panels = panels.is_some();
         let overlay_w = if right.is_visible() {
             right.width()
         } else {
@@ -175,7 +176,7 @@ impl super::GpuApp {
             overlay_w,
             (window_logical.y - HEADER_HEIGHT_LOGICAL - FOOTER_HEIGHT_LOGICAL).max(0.0),
         );
-        self.overlay.render_panels(
+        self.panel_toggle_zone = self.overlay.render_panels(
             panels,
             overlay_origin,
             overlay_size,
@@ -187,6 +188,7 @@ impl super::GpuApp {
             &mut overlay_rects,
             &mut overlay_glyphs,
         );
+        self.panel_overlay_rect = has_panels.then(|| Bounds::new(overlay_origin, overlay_size));
 
         // Popup overlay — all three popups render via the term_ui SECOND TREE.
         // The backend switch needs runtime data AppState doesn't carry (the

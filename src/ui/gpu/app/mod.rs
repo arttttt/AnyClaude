@@ -20,6 +20,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use term_clipboard::Clipboard;
 use term_gpu::GpuRenderer;
+use term_ui::Bounds;
 use uuid::Uuid;
 use winit::event_loop::EventLoopProxy;
 use winit::window::Window;
@@ -108,6 +109,14 @@ pub(super) struct GpuApp {
     /// without recomputing the layout. (Derived / materialized — bucket 2.)
     session_click_zone: Option<(f32, f32)>,
 
+    /// Right teammates overlay hit-zones (logical px), materialized each redraw
+    /// so the mouse handler can hit-test without re-laying-out the tree. The
+    /// whole overlay rect (clicks inside are swallowed from the terminal) and
+    /// the toggle/indicator button bounds (click → collapse/expand). `None` when
+    /// the overlay isn't rendered. (Derived — bucket 2.)
+    panel_overlay_rect: Option<Bounds>,
+    panel_toggle_zone: Option<Bounds>,
+
     clipboard: Box<dyn Clipboard>,
 
     /// Proxy + config handles — backend state, subagent / teammate overrides,
@@ -142,6 +151,8 @@ impl GpuApp {
             ),
             timers: Timers::new(),
             session_click_zone: None,
+            panel_overlay_rect: None,
+            panel_toggle_zone: None,
             clipboard: make_clipboard(),
             backends: Backends {
                 backend_state,

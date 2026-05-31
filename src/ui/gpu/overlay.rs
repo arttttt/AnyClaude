@@ -15,10 +15,11 @@ use term_gpu::{
 };
 use term_ui::{
     apply_overlay_alpha, build_root, free_subtree, measure, paint, place, place_centered,
-    reconcile_root, Block, NodeId, PaintOutput, RetainedTree, SizeConstraint, Stack,
+    reconcile_root, Block, Bounds, NodeId, PaintOutput, RetainedTree, SizeConstraint, Stack,
 };
 
 use crate::ui::chrome_labels;
+use crate::ui::panels_view;
 use crate::ui::popup_anim::{popup_fade_alpha, step_popup_anim, PopupAnim};
 
 pub(super) struct OverlayRenderer {
@@ -63,7 +64,10 @@ impl OverlayRenderer {
     /// Reconcile + lay out (tight to `size`, placed at `origin`) + paint the
     /// panels overlay `view` into the caller's overlay buffers. `None` tears the
     /// retained tree down (overlay hidden + empty). Unlike the popup this is
-    /// POSITIONED at the overlay rect, not centred, and carries no fade.
+    /// POSITIONED at the overlay rect, not centred, and carries no fade. Returns
+    /// the toggle/indicator button's laid-out bounds (resolved from the tree by
+    /// its `WidgetId`) so the coordinator can hit-test clicks on it; `None` when
+    /// nothing was rendered.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn render_panels(
         &mut self,
@@ -77,13 +81,13 @@ impl OverlayRenderer {
         sf: f32,
         out_rects: &mut Vec<RectInstance>,
         out_glyphs: &mut Vec<GlyphInstance>,
-    ) {
+    ) -> Option<Bounds> {
         let Some(view) = view else {
             if let Some(root) = self.panels_root.take() {
                 free_subtree(&mut self.panels_tree, root);
             }
             self.panels_prev = None;
-            return;
+            return None;
         };
         let root = match self.panels_root {
             Some(root) => {
@@ -101,6 +105,9 @@ impl OverlayRenderer {
         paint(&self.panels_tree, root, &mut self.panels_scratch, atlas, fonts, swash, ui_shape, sf);
         out_rects.extend_from_slice(&self.panels_scratch.rects);
         out_glyphs.extend_from_slice(&self.panels_scratch.glyphs);
+        self.panels_tree
+            .resolve_widget(panels_view::panel_toggle_widget_id())
+            .map(|nid| self.panels_tree.node(nid).bounds)
     }
 
     /// Reconcile + lay out (tight to `window`) + paint the chrome `view` into the

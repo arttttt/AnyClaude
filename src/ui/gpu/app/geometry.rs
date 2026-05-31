@@ -4,6 +4,7 @@
 
 use std::time::Instant;
 
+use glam::Vec2;
 use term_gpu::{
     encode_motion_report, encode_mouse_report, measure_cell_metrics, CellMetrics, CellPoint,
     MouseButton, MouseEventKind, PanelRect,
@@ -11,6 +12,7 @@ use term_gpu::{
 
 use crate::ui::app_state::{ApplyCtx, Msg};
 use crate::ui::gpu::chrome::{CHROME_H_PAD, FOOTER_HEIGHT_LOGICAL, HEADER_HEIGHT_LOGICAL};
+use crate::ui::panel_manager::ManagerId;
 use crate::ui::term_geometry;
 
 use super::{FONT_SIZE, MULTI_CLICK_THRESHOLD_MS};
@@ -129,6 +131,19 @@ impl super::GpuApp {
     /// multi-click selection. The press decision itself lives in `apply`.
     pub(super) fn on_mouse_press(&mut self) {
         let Some((x, y)) = self.state.cursor_pos else { return };
+        // The right overlay floats over the terminal, so it takes the press
+        // first: a click on its toggle button collapses/expands it, and every
+        // other in-overlay click is swallowed so it doesn't start a terminal
+        // selection underneath.
+        if let Some(rect) = self.panel_overlay_rect {
+            let p = Vec2::new(x, y);
+            if rect.contains(p) {
+                if self.panel_toggle_zone.is_some_and(|b| b.contains(p)) {
+                    self.dispatch(Msg::PanelToggle(ManagerId::Right));
+                }
+                return;
+            }
+        }
         let in_header = y < HEADER_HEIGHT_LOGICAL;
         let in_session_zone = self
             .session_click_zone
