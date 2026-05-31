@@ -180,9 +180,76 @@ impl ShadowInstance {
     }
 }
 
-/// A render layer groups shadow / rect / glyph instances drawn as one
-/// stratum in a layered render call. Within a layer, draw order is
-/// fixed: shadows first, then rects, then glyphs. Between layers,
+/// A rounded rectangle with an optional border — one instance does both the
+/// fill and the border ring via a rounded-rect SDF in the fragment shader.
+/// `corner_radius == 0` is a sharp rectangle; `border_width == 0` is a plain
+/// fill. Drawn in its own pass BETWEEN the rect pass and the glyph pass, so a
+/// UI box (chrome bar / popup / panel / highlight) sits over the terminal cell
+/// rects and under the text. All dimensions are **logical pixels**; colours are
+/// non-premultiplied (`ALPHA_BLENDING`).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct RoundRectInstance {
+    pub pos: [f32; 2],
+    pub size: [f32; 2],
+    pub fill_color: [f32; 4],
+    pub border_color: [f32; 4],
+    pub border_width: f32,
+    pub corner_radius: f32,
+}
+
+impl RoundRectInstance {
+    /// A plain rounded fill (no border).
+    pub fn fill(pos: [f32; 2], size: [f32; 2], color: [f32; 4], corner_radius: f32) -> Self {
+        Self {
+            pos,
+            size,
+            fill_color: color,
+            border_color: [0.0; 4],
+            border_width: 0.0,
+            corner_radius,
+        }
+    }
+
+    /// A rounded box with a `border_width`-thick `border_color` ring around a
+    /// `fill_color` interior.
+    pub fn new(
+        pos: [f32; 2],
+        size: [f32; 2],
+        fill_color: [f32; 4],
+        border_color: [f32; 4],
+        border_width: f32,
+        corner_radius: f32,
+    ) -> Self {
+        Self { pos, size, fill_color, border_color, border_width, corner_radius }
+    }
+
+    pub fn as_bytes(slice: &[Self]) -> &[u8] {
+        // Safety: `RoundRectInstance` is `#[repr(C)]` and `Copy`.
+        unsafe { std::slice::from_raw_parts(slice.as_ptr() as *const u8, size_of_val(slice)) }
+    }
+
+    pub const ATTRIBS: [wgpu::VertexAttribute; 6] = [
+        wgpu::VertexAttribute { offset: 0, shader_location: 0, format: wgpu::VertexFormat::Float32x2 },
+        wgpu::VertexAttribute { offset: 8, shader_location: 1, format: wgpu::VertexFormat::Float32x2 },
+        wgpu::VertexAttribute { offset: 16, shader_location: 2, format: wgpu::VertexFormat::Float32x4 },
+        wgpu::VertexAttribute { offset: 32, shader_location: 3, format: wgpu::VertexFormat::Float32x4 },
+        wgpu::VertexAttribute { offset: 48, shader_location: 4, format: wgpu::VertexFormat::Float32 },
+        wgpu::VertexAttribute { offset: 52, shader_location: 5, format: wgpu::VertexFormat::Float32 },
+    ];
+
+    pub const fn layout() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: size_of::<Self>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &Self::ATTRIBS,
+        }
+    }
+}
+
+/// A render layer groups shadow / rect / round-rect / glyph instances drawn as
+/// one stratum in a layered render call. Within a layer, draw order is
+/// fixed: shadows first, then rects, then round-rects, then glyphs. Between layers,
 /// `GpuRenderer::render` draws `base` before the optional `overlay`,
 /// which is how popups (with their drop shadow) sit on top of the
 /// terminal grid.
@@ -194,6 +261,7 @@ impl ShadowInstance {
 pub struct RenderLayer<'a> {
     pub shadows: &'a [ShadowInstance],
     pub rects: &'a [RectInstance],
+    pub round_rects: &'a [RoundRectInstance],
     pub glyphs: &'a [GlyphInstance],
 }
 
@@ -201,6 +269,7 @@ impl<'a> RenderLayer<'a> {
     pub const EMPTY: RenderLayer<'static> = RenderLayer {
         shadows: &[],
         rects: &[],
+        round_rects: &[],
         glyphs: &[],
     };
 
@@ -208,6 +277,7 @@ impl<'a> RenderLayer<'a> {
         Self {
             shadows: &[],
             rects,
+            round_rects: &[],
             glyphs: &[],
         }
     }
@@ -216,12 +286,16 @@ impl<'a> RenderLayer<'a> {
         Self {
             shadows: &[],
             rects,
+            round_rects: &[],
             glyphs,
         }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.shadows.is_empty() && self.rects.is_empty() && self.glyphs.is_empty()
+        self.shadows.is_empty()
+            && self.rects.is_empty()
+            && self.round_rects.is_empty()
+            && self.glyphs.is_empty()
     }
 }
 

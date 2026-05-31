@@ -7,10 +7,12 @@ use std::sync::Arc;
 use winit::window::Window;
 
 use crate::atlas::GlyphAtlas;
-use crate::instances::{GlyphInstance, RectInstance, RenderLayer, ShadowInstance, Uniforms};
+use crate::instances::{
+    GlyphInstance, RectInstance, RenderLayer, RoundRectInstance, ShadowInstance, Uniforms,
+};
 use crate::pipeline::{
-    create_atlas_bind_group_layout, create_prim_pipeline, create_shadow_pipeline,
-    create_text_pipeline, create_uniform_bind_group_layout,
+    create_atlas_bind_group_layout, create_prim_pipeline, create_roundrect_pipeline,
+    create_shadow_pipeline, create_text_pipeline, create_uniform_bind_group_layout,
 };
 
 pub struct GpuRenderer {
@@ -19,6 +21,7 @@ pub struct GpuRenderer {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     prim_pipeline: wgpu::RenderPipeline,
+    roundrect_pipeline: wgpu::RenderPipeline,
     shadow_pipeline: wgpu::RenderPipeline,
     text_pipeline: wgpu::RenderPipeline,
     uniform_bind_group: wgpu::BindGroup,
@@ -125,6 +128,7 @@ impl GpuRenderer {
         });
 
         let prim_pipeline = create_prim_pipeline(&device, format, &uniform_bgl);
+        let roundrect_pipeline = create_roundrect_pipeline(&device, format, &uniform_bgl);
         let shadow_pipeline = create_shadow_pipeline(&device, format, &uniform_bgl);
         let text_pipeline = create_text_pipeline(&device, format, &uniform_bgl, &atlas_bgl);
 
@@ -134,6 +138,7 @@ impl GpuRenderer {
             queue,
             config,
             prim_pipeline,
+            roundrect_pipeline,
             shadow_pipeline,
             text_pipeline,
             uniform_bind_group,
@@ -275,6 +280,16 @@ impl GpuRenderer {
             self.queue
                 .write_buffer(&rect_buf, 0, RectInstance::as_bytes(&layer.rects));
         }
+        let round_rect_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(&format!("term_gpu/{name}_round_rect_buffer")),
+            size: (std::mem::size_of::<RoundRectInstance>() * layer.round_rects.len().max(1)) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        if !layer.round_rects.is_empty() {
+            self.queue
+                .write_buffer(&round_rect_buf, 0, RoundRectInstance::as_bytes(&layer.round_rects));
+        }
         let glyph_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some(&format!("term_gpu/{name}_glyph_buffer")),
             size: (std::mem::size_of::<GlyphInstance>() * layer.glyphs.len().max(1)) as u64,
@@ -288,6 +303,7 @@ impl GpuRenderer {
         LayerBuffers {
             shadow: shadow_buf,
             rect: rect_buf,
+            round_rect: round_rect_buf,
             glyph: glyph_buf,
         }
     }
@@ -312,6 +328,11 @@ impl GpuRenderer {
             pass.set_vertex_buffer(0, buffers.rect.slice(..));
             pass.draw(0..6, 0..layer.rects.len() as u32);
         }
+        if !layer.round_rects.is_empty() {
+            pass.set_pipeline(&self.roundrect_pipeline);
+            pass.set_vertex_buffer(0, buffers.round_rect.slice(..));
+            pass.draw(0..6, 0..layer.round_rects.len() as u32);
+        }
         if !layer.glyphs.is_empty() {
             pass.set_pipeline(&self.text_pipeline);
             pass.set_bind_group(1, &self.atlas_bind_group, &[]);
@@ -324,5 +345,6 @@ impl GpuRenderer {
 struct LayerBuffers {
     shadow: wgpu::Buffer,
     rect: wgpu::Buffer,
+    round_rect: wgpu::Buffer,
     glyph: wgpu::Buffer,
 }

@@ -88,6 +88,9 @@ impl super::GpuApp {
         // the bar text sits on top, and a popup sits on top of the bars.
         let mut overlay_shadows: Vec<term_gpu::ShadowInstance> = Vec::new();
         let mut overlay_rects: Vec<RectInstance> = Vec::new();
+        // Round-rect overlay decorations (filled in Phase 2 when term_ui emits
+        // them; empty for now, so the pass is a no-op).
+        let overlay_round_rects: Vec<term_gpu::RoundRectInstance> = Vec::new();
         let mut overlay_glyphs: Vec<GlyphInstance> = Vec::new();
 
         // The copied-flash is DERIVED from the deadline + frame clock (R12) —
@@ -257,6 +260,7 @@ impl super::GpuApp {
             Some(RenderLayer {
                 shadows: &overlay_shadows,
                 rects: &overlay_rects,
+                round_rects: &overlay_round_rects,
                 glyphs: &overlay_glyphs,
             }),
             0.0,
