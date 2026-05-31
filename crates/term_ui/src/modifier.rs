@@ -45,6 +45,10 @@ pub enum Mod {
     CornerRadius(f32),
     /// Drop shadow under the current bounds.
     Shadow(BlockShadow),
+    /// Opacity for this element AND its whole subtree (graphicsLayer-style):
+    /// multiplied into every emitted instance's alpha. Composed multiplicatively
+    /// down the tree.
+    Alpha(f32),
 }
 
 /// An ordered chain of [`Mod`]s. Cheap value type (the diff key for reconcile).
@@ -91,6 +95,10 @@ impl Modifier {
         self.push(Mod::Shadow(shadow))
     }
 
+    pub fn alpha(self, alpha: f32) -> Self {
+        self.push(Mod::Alpha(alpha))
+    }
+
     /// Total leading inset `(left, top)` and full inset `(horizontal, vertical)`
     /// reserved by the layout ops — used by measure/place. Order-independent
     /// because padding/margin/border are additive.
@@ -126,6 +134,18 @@ impl Modifier {
             }
         }
         o
+    }
+
+    /// Product of all `Alpha` ops — the subtree opacity this modifier applies
+    /// (1.0 = opaque). Composed with the inherited alpha during paint.
+    pub(crate) fn total_alpha(&self) -> f32 {
+        let mut a = 1.0;
+        for op in &self.ops {
+            if let Mod::Alpha(x) = op {
+                a *= x;
+            }
+        }
+        a
     }
 }
 
