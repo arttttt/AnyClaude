@@ -90,6 +90,7 @@ impl super::GpuApp {
                 Effect::Paste => self.paste_into_pty(),
                 Effect::RestartPty => self.restart_pty(),
                 Effect::DumpDiagnostic => self.dump_diagnostic(),
+                Effect::DebugTogglePanels => self.debug_toggle_panels(),
                 Effect::Quit => exit = true,
                 Effect::Drain => {
                     if self.drain_pty() {
@@ -99,6 +100,23 @@ impl super::GpuApp {
             }
         }
         exit
+    }
+
+    /// Debug-only (Ctrl+P): seed a few placeholder teammates the first time it's
+    /// hit, then toggle the right overlay's visibility. The Milestone-1 manual
+    /// experiment trigger — real teammates arrive with the control plane (no
+    /// child processes / emulators yet). Coordinator-side state mutation, like
+    /// `ClosePopups`; the proper Msg-driven panel controls come later.
+    fn debug_toggle_panels(&mut self) {
+        use crate::ui::panel_manager::PanelKind;
+        if self.state.right.is_empty() {
+            // Agent-ish accent colours echoing Claude Code's teammate palette.
+            self.state.right.create(PanelKind::Teammate, "module-mapper", [0.30, 0.55, 0.95, 1.0]);
+            self.state.right.create(PanelKind::Teammate, "flow-tracer", [0.35, 0.80, 0.45, 1.0]);
+            self.state.right.create(PanelKind::Teammate, "deps-mapper", [0.90, 0.75, 0.30, 1.0]);
+        }
+        self.state.right.toggle();
+        self.request_redraw();
     }
 
     /// Dump a diagnostic snapshot (grid + scroll + emulator) to stderr.

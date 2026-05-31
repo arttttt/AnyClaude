@@ -22,6 +22,10 @@ pub enum AppShortcut {
     ToggleSettingsPopup,
     RestartPty,
     DumpDiagnostic,
+    /// Debug-only (Ctrl+P): seed placeholder teammates + toggle the right
+    /// overlay — the Milestone-1 manual experiment trigger. Like
+    /// `DumpDiagnostic`, only its keybinding is `cfg(debug_assertions)`-gated.
+    DebugTogglePanels,
     Quit,
 }
 
@@ -50,6 +54,8 @@ pub fn app_shortcut(code: KeyCode, modifiers: ModifiersState) -> Option<AppShort
             KeyCode::KeyQ => AppShortcut::Quit,
             #[cfg(debug_assertions)]
             KeyCode::KeyG => AppShortcut::DumpDiagnostic,
+            #[cfg(debug_assertions)]
+            KeyCode::KeyP => AppShortcut::DebugTogglePanels,
             _ => return None,
         });
     }

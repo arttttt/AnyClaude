@@ -125,6 +125,9 @@ pub enum Effect {
     RestartPty,
     /// Dump a diagnostic snapshot to stderr (Cmd+Shift+D).
     DumpDiagnostic,
+    /// Debug-only: seed placeholder teammates + toggle the right overlay (the
+    /// Milestone-1 panels experiment trigger; coordinator-side, debug builds).
+    DebugTogglePanels,
     /// Exit the app (Cmd+Q / window close). Performed by the coordinator, which
     /// owns the `ActiveEventLoop` — surfaced as `perform_effects`' return.
     Quit,
@@ -369,6 +372,7 @@ impl AppState {
                     AppShortcut::ToggleSettingsPopup => Effect::ToggleSettingsPopup,
                     AppShortcut::RestartPty => Effect::RestartPty,
                     AppShortcut::DumpDiagnostic => Effect::DumpDiagnostic,
+                    AppShortcut::DebugTogglePanels => Effect::DebugTogglePanels,
                     AppShortcut::Quit => Effect::Quit,
                 }];
             }
