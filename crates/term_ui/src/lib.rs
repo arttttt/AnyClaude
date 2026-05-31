@@ -29,7 +29,9 @@ pub mod view;
 
 // ── public surface (kept reachable so new types don't trip dead_code) ──
 
-pub use anim::{apply_overlay_alpha, ease_in_out, ease_out, lerp, linear};
+pub use anim::{
+    apply_overlay_alpha, ease_in_out, ease_out, lerp, linear, Animatable, Animation, Interpolator,
+};
 pub use arena::{
     BlockShadow, BlockStyle, Node, NodeKind, RetainedTree, StackStyle, TextStyle,
 };
