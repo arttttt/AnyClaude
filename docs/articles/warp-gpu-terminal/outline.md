@@ -1,7 +1,14 @@
 # Outline — "How Warp scrolls: building a smooth GPU terminal in a weekend"
 
-> Working title. The article is not yet written — this is the structure
-> and key beats. See sibling files for substance, timeline, and quotes.
+> STATUS (2026-06-01): the article is now written, under a different title
+> and framing — "Why I Wrote My Own Terminal Emulator (and How)", focused on
+> why/how I built my own emulator rather than the scroll-first angle in this
+> outline. It lives in the personal blog vault (EN + RU) and is considered
+> finished; only minor fixes are expected. This file stays as the working
+> outline these materials were collected for.
+>
+> Original working note: the structure and key beats. See sibling files for
+> substance, timeline, and quotes.
 
 ## Hook
 
