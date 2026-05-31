@@ -19,6 +19,7 @@ use crate::ui::chrome_labels;
 use crate::ui::gpu::chrome::{
     CHROME_FONT_SIZE, CHROME_H_PAD, FOOTER_HEIGHT_LOGICAL, HEADER_HEIGHT_LOGICAL,
 };
+use crate::ui::panels_view;
 use crate::ui::popup_view;
 
 use super::{FONT_SIZE, POPUP_FADE_SECS};
@@ -151,6 +152,42 @@ impl super::GpuApp {
             &mut overlay_rects,
             &mut overlay_glyphs,
         );
+        // Right teammates overlay (M1: placeholder panels). Floats over the
+        // terminal content on the right, drawn AFTER the chrome and BEFORE the
+        // popup so a popup still sits on top. Empty + collapsed → `None`, which
+        // tears the tree down and leaves the default app byte-identical. Spans
+        // the content band (between header + footer), positioned at the right
+        // edge; collapsed renders just the edge strip width.
+        let right = &self.state.right;
+        let panels = if right.is_empty() && !right.is_visible() {
+            None
+        } else {
+            Some(panels_view::panel_manager_view(right, right.is_visible()))
+        };
+        let overlay_w = if right.is_visible() {
+            right.width()
+        } else {
+            panels_view::PANEL_EDGE_STRIP_W
+        };
+        let overlay_origin =
+            Vec2::new((window_logical.x - overlay_w).max(0.0), HEADER_HEIGHT_LOGICAL);
+        let overlay_size = Vec2::new(
+            overlay_w,
+            (window_logical.y - HEADER_HEIGHT_LOGICAL - FOOTER_HEIGHT_LOGICAL).max(0.0),
+        );
+        self.overlay.render_panels(
+            panels,
+            overlay_origin,
+            overlay_size,
+            &mut self.text.font_system,
+            &mut self.text.swash_cache,
+            renderer.atlas_mut(),
+            &mut self.text.ui_shape_cache,
+            sf,
+            &mut overlay_rects,
+            &mut overlay_glyphs,
+        );
+
         // Popup overlay — all three popups render via the term_ui SECOND TREE.
         // The backend switch needs runtime data AppState doesn't carry (the
         // backend list + active/override ids), so it is built here via

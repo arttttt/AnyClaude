@@ -33,6 +33,12 @@ pub(super) struct OverlayRenderer {
     /// Open/close fade epoch (bucket 3-S); `None` when no fade is in flight, the
     /// alpha derived from it + the frame clock (R12).
     popup_anim: Option<PopupAnim>,
+    /// The panels overlay (right teammates column) — a third retained tree,
+    /// positioned (not centred) at the overlay rect each frame.
+    panels_tree: RetainedTree,
+    panels_root: Option<NodeId>,
+    panels_prev: Option<Block>,
+    panels_scratch: PaintOutput,
 }
 
 impl OverlayRenderer {
@@ -47,7 +53,54 @@ impl OverlayRenderer {
             popup_prev: None,
             popup_scratch: PaintOutput::default(),
             popup_anim: None,
+            panels_tree: RetainedTree::new(),
+            panels_root: None,
+            panels_prev: None,
+            panels_scratch: PaintOutput::default(),
         }
+    }
+
+    /// Reconcile + lay out (tight to `size`, placed at `origin`) + paint the
+    /// panels overlay `view` into the caller's overlay buffers. `None` tears the
+    /// retained tree down (overlay hidden + empty). Unlike the popup this is
+    /// POSITIONED at the overlay rect, not centred, and carries no fade.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn render_panels(
+        &mut self,
+        view: Option<Block>,
+        origin: Vec2,
+        size: Vec2,
+        fonts: &mut FontSystem,
+        swash: &mut SwashCache,
+        atlas: &mut GlyphAtlas,
+        ui_shape: &mut TextShapeCache,
+        sf: f32,
+        out_rects: &mut Vec<RectInstance>,
+        out_glyphs: &mut Vec<GlyphInstance>,
+    ) {
+        let Some(view) = view else {
+            if let Some(root) = self.panels_root.take() {
+                free_subtree(&mut self.panels_tree, root);
+            }
+            self.panels_prev = None;
+            return;
+        };
+        let root = match self.panels_root {
+            Some(root) => {
+                let prev = self.panels_prev.take().expect("panels_prev present once built");
+                reconcile_root(&mut self.panels_tree, root, &prev, &view);
+                root
+            }
+            None => build_root(&mut self.panels_tree, &view),
+        };
+        self.panels_root = Some(root);
+        self.panels_prev = Some(view);
+        measure(&mut self.panels_tree, root, SizeConstraint::tight(size), fonts, ui_shape, sf);
+        place(&mut self.panels_tree, root, origin);
+        self.panels_scratch.clear();
+        paint(&self.panels_tree, root, &mut self.panels_scratch, atlas, fonts, swash, ui_shape, sf);
+        out_rects.extend_from_slice(&self.panels_scratch.rects);
+        out_glyphs.extend_from_slice(&self.panels_scratch.glyphs);
     }
 
     /// Reconcile + lay out (tight to `window`) + paint the chrome `view` into the
