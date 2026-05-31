@@ -21,7 +21,6 @@ use term_ui::{
 };
 
 use crate::ui::chrome_labels;
-use crate::ui::panels_view;
 
 pub(super) struct OverlayRenderer {
     chrome_tree: RetainedTree,
@@ -41,6 +40,12 @@ pub(super) struct OverlayRenderer {
     panels_root: Option<NodeId>,
     panels_prev: Option<Modified>,
     panels_scratch: PaintOutput,
+    /// The collapse/expand pill — a FOURTH retained tree, rendered OUTSIDE the
+    /// faded panels column so it stays opaque, centred on the divider.
+    pill_tree: RetainedTree,
+    pill_root: Option<NodeId>,
+    pill_prev: Option<Modified>,
+    pill_scratch: PaintOutput,
 }
 
 impl OverlayRenderer {
@@ -59,7 +64,65 @@ impl OverlayRenderer {
             panels_root: None,
             panels_prev: None,
             panels_scratch: PaintOutput::default(),
+            pill_tree: RetainedTree::new(),
+            pill_root: None,
+            pill_prev: None,
+            pill_scratch: PaintOutput::default(),
         }
+    }
+
+    /// Reconcile + measure (loose, intrinsic) + place the pill CENTRED on
+    /// `divider_x` and vertically centred in the band `[band_y, band_y + band_h]`
+    /// + paint it (opaque) into the caller's overlay buffers. `None` tears the
+    /// pill tree down. Returns the pill's laid-out bounds (its hit-zone).
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn render_panel_pill(
+        &mut self,
+        view: Option<Modified>,
+        divider_x: f32,
+        band_y: f32,
+        band_h: f32,
+        fonts: &mut FontSystem,
+        swash: &mut SwashCache,
+        atlas: &mut GlyphAtlas,
+        ui_shape: &mut TextShapeCache,
+        sf: f32,
+        out_round_rects: &mut Vec<RoundRectInstance>,
+        out_glyphs: &mut Vec<GlyphInstance>,
+    ) -> Option<Bounds> {
+        let Some(view) = view else {
+            if let Some(root) = self.pill_root.take() {
+                free_subtree(&mut self.pill_tree, root);
+            }
+            self.pill_prev = None;
+            return None;
+        };
+        let root = match self.pill_root {
+            Some(root) => {
+                let prev = self.pill_prev.take().expect("pill_prev present once built");
+                reconcile_root(&mut self.pill_tree, root, &prev, &view);
+                root
+            }
+            None => build_root(&mut self.pill_tree, &view),
+        };
+        self.pill_root = Some(root);
+        self.pill_prev = Some(view);
+        // Measure intrinsic, then centre on the divider + the band.
+        let size = measure(
+            &mut self.pill_tree,
+            root,
+            SizeConstraint::loose(Vec2::new(f32::INFINITY, band_h.max(0.0))),
+            fonts,
+            ui_shape,
+            sf,
+        );
+        let origin = Vec2::new(divider_x - size.x * 0.5, band_y + (band_h - size.y) * 0.5);
+        place(&mut self.pill_tree, root, origin);
+        self.pill_scratch.clear();
+        paint(&self.pill_tree, root, &mut self.pill_scratch, atlas, fonts, swash, ui_shape, sf);
+        out_round_rects.extend_from_slice(&self.pill_scratch.round_rects);
+        out_glyphs.extend_from_slice(&self.pill_scratch.glyphs);
+        Some(self.pill_tree.node(root).bounds)
     }
 
     /// Reconcile + lay out (tight to `size`, placed at `origin`) + paint the
@@ -83,13 +146,13 @@ impl OverlayRenderer {
         out_rects: &mut Vec<RectInstance>,
         out_round_rects: &mut Vec<RoundRectInstance>,
         out_glyphs: &mut Vec<GlyphInstance>,
-    ) -> Option<Bounds> {
+    ) {
         let Some(view) = view else {
             if let Some(root) = self.panels_root.take() {
                 free_subtree(&mut self.panels_tree, root);
             }
             self.panels_prev = None;
-            return None;
+            return;
         };
         let root = match self.panels_root {
             Some(root) => {
@@ -108,9 +171,6 @@ impl OverlayRenderer {
         out_rects.extend_from_slice(&self.panels_scratch.rects);
         out_round_rects.extend_from_slice(&self.panels_scratch.round_rects);
         out_glyphs.extend_from_slice(&self.panels_scratch.glyphs);
-        self.panels_tree
-            .resolve_widget(panels_view::panel_toggle_widget_id())
-            .map(|nid| self.panels_tree.node(nid).bounds)
     }
 
     /// Reconcile + lay out (tight to `window`) + paint the chrome `view` into the

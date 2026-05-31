@@ -182,19 +182,22 @@ impl super::GpuApp {
         let panel_animating = self.panel_width.animating(now);
         // Show the panel stack whenever the overlay is wider than the bare strip.
         let expanded = overlay_w > strip_w + 1.0;
-        let panels = if right_empty && !right_visible && !panel_animating && dragging.is_none() {
-            None
-        } else {
-            Some(panels_view::panel_manager_view(&self.state.right, expanded))
-        };
-        let has_panels = panels.is_some();
+        // Column-decoration fade, tied to the SAME width tween (so it animates
+        // over the same duration): transparent when collapsed (panel fully
+        // hidden, only the opaque pill remains near the edge), opaque when open.
+        let target_w = self.state.right.width();
+        let fade = ((overlay_w - strip_w) / (target_w - strip_w).max(1.0)).clamp(0.0, 1.0);
+        // The overlay is "on" unless it's the empty + collapsed + idle default.
+        let show = !(right_empty && !right_visible && !panel_animating && dragging.is_none());
+        let panels = show.then(|| panels_view::panel_manager_view(&self.state.right, expanded, fade));
+        let pill = show.then(|| panels_view::pill_view(expanded, self.state.right.any_active()));
         let overlay_origin =
             Vec2::new((window_logical.x - overlay_w).max(0.0), HEADER_HEIGHT_LOGICAL);
         let overlay_size = Vec2::new(
             overlay_w,
             (window_logical.y - HEADER_HEIGHT_LOGICAL - FOOTER_HEIGHT_LOGICAL).max(0.0),
         );
-        self.panel_toggle_zone = self.overlay.render_panels(
+        self.overlay.render_panels(
             panels,
             overlay_origin,
             overlay_size,
@@ -207,7 +210,23 @@ impl super::GpuApp {
             &mut overlay_round_rects,
             &mut overlay_glyphs,
         );
-        self.panel_overlay_rect = has_panels.then(|| Bounds::new(overlay_origin, overlay_size));
+        self.panel_overlay_rect = show.then(|| Bounds::new(overlay_origin, overlay_size));
+        // The pill is centred on the divider (the overlay's left edge) and
+        // vertically centred in the overlay band — rendered OUTSIDE the faded
+        // column so it stays opaque when the panel collapses.
+        self.panel_toggle_zone = self.overlay.render_panel_pill(
+            pill,
+            overlay_origin.x,
+            overlay_origin.y,
+            overlay_size.y,
+            &mut self.text.font_system,
+            &mut self.text.swash_cache,
+            renderer.atlas_mut(),
+            &mut self.text.ui_shape_cache,
+            sf,
+            &mut overlay_round_rects,
+            &mut overlay_glyphs,
+        );
 
         // Popup overlay — all three popups render via the term_ui SECOND TREE.
         // The backend switch needs runtime data AppState doesn't carry (the

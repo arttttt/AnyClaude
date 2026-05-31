@@ -65,19 +65,14 @@ pub fn panel_toggle_widget_id() -> WidgetId {
 /// `Modified` is the column: opaque bg + frame wrapping an hstack of [edge strip,
 /// padded panel stack]. The coordinator measures it tight to the overlay rect
 /// and places it at the overlay origin (positioned, not centred).
-pub fn panel_manager_view(mgr: &PanelManager, expanded: bool) -> Modified {
-    // Edge strip: the toggle/indicator pill centred both axes, then shifted left
-    // by half the strip + the column border so the divider line bisects it.
-    let pill_shift = -(mgr.policy().collapsed_width / 2.0 + 1.0);
-    let strip = Stack::vstack()
-        .cross(CrossAxis::Center)
-        .spacer(Sizing::Fill)
-        .child(toggle_pill(expanded, mgr.any_active()).modify(Modifier::new().offset(pill_shift, 0.0)))
-        .spacer(Sizing::Fill);
-
+pub fn panel_manager_view(mgr: &PanelManager, expanded: bool, fade: f32) -> Modified {
+    // The column = a left edge band (where the pill straddles + the drag zone
+    // lives) + the panel stack. The whole column fades by `fade` (so it fully
+    // disappears when collapsed) — the pill is rendered SEPARATELY (outside this
+    // faded subtree) so it stays opaque.
     let mut row = Stack::hstack()
         .cross(CrossAxis::Stretch)
-        .child_sized(strip, Sizing::Fixed(mgr.policy().collapsed_width));
+        .spacer(Sizing::Fixed(mgr.policy().collapsed_width));
 
     if expanded {
         let mut stack = Stack::vstack().cross(CrossAxis::Stretch);
@@ -96,15 +91,18 @@ pub fn panel_manager_view(mgr: &PanelManager, expanded: bool) -> Modified {
     row.modify(
         Modifier::new()
             .background(OVERLAY_BG)
-            .border(1.0, OVERLAY_BORDER),
+            .border(1.0, OVERLAY_BORDER)
+            .alpha(fade),
     )
 }
 
-/// The collapse/expand pill on the inner edge (the shared `uikit::edge_toggle`).
-/// The chevron points the way the click moves the overlay (`›` collapse-right
-/// when expanded, `‹` expand-left when collapsed); its colour is the activity
-/// indicator (green while a child runs, dim otherwise). Tagged for hit-testing.
-fn toggle_pill(expanded: bool, active: bool) -> Modified {
+/// The standalone collapse/expand pill (the shared `uikit::edge_toggle`),
+/// rendered OUTSIDE the faded column so it stays opaque when the panel collapses.
+/// The coordinator centres it on the divider line. The chevron points the way a
+/// click moves the overlay (`›` collapse when expanded, `‹` expand when
+/// collapsed); its colour is the activity indicator (green while a child runs).
+/// Tagged for hit-testing.
+pub fn pill_view(expanded: bool, active: bool) -> Modified {
     let facing = if expanded { Chevron::Right } else { Chevron::Left };
     let glyph = if active { INDICATOR_ACTIVE } else { INDICATOR_IDLE };
     edge_toggle(
