@@ -26,6 +26,7 @@ use winit::keyboard::{Key, KeyCode, ModifiersState, PhysicalKey};
 use crate::ui::backend_switch::{BackendSwitchIntent, BackendSwitchState};
 use crate::ui::history::{HistoryDialogState, HistoryIntent};
 use crate::ui::input::{self, AppShortcut};
+use crate::ui::panel_manager::{PanelManager, Policy};
 use crate::ui::settings::{SettingsDialogState, SettingsIntent};
 use crate::ui::term_geometry::LastClick;
 
@@ -66,6 +67,13 @@ pub struct AppState {
     pub backend_switch: BackendSwitchState,
     pub history: HistoryDialogState,
     pub settings: SettingsDialogState,
+
+    // Multi-instance panel managers — one reusable type, two instances (R10:
+    // nested UI-decision truth inside the one AppState). `left` is the sessions
+    // sidebar (lands in a later milestone), `right` is the teammates overlay.
+    // Both start empty + collapsed, so they're inert until populated/shown.
+    pub left: PanelManager,
+    pub right: PanelManager,
 }
 
 /// A side effect [`AppState::apply`] asks the coordinator to perform. `apply` is
@@ -434,6 +442,8 @@ impl AppState {
             backend_switch: BackendSwitchState::default(),
             history: HistoryDialogState::default(),
             settings: SettingsDialogState::default(),
+            left: PanelManager::new(Policy::sidebar()),
+            right: PanelManager::new(Policy::overlay()),
         }
     }
 
