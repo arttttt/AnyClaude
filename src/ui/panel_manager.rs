@@ -123,7 +123,9 @@ impl Policy {
             min_width: 220.0,
             max_width: 900.0,
             default_width: 420.0,
-            collapsed_width: 20.0,
+            // Small so the collapsed pill (centred on the divider = the overlay's
+            // left edge at `window.right - collapsed_width`) sits near the edge.
+            collapsed_width: 14.0,
         }
     }
 }
