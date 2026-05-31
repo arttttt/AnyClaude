@@ -6,7 +6,7 @@
 //! derive the frame's `0..=1` factor (collapsed → expanded). The factor itself
 //! is never stored; the rendered width is `lerp(strip_w, target_w, factor)`.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use term_ui::ease_in_out;
 
@@ -29,6 +29,18 @@ pub fn step_panel_anim(prev: Option<PanelAnim>, visible: bool, now: Instant) -> 
         Some(a) if a.expanding && !visible => Some(PanelAnim { started_at: now, expanding: false }),
         Some(a) if !a.expanding && visible => Some(PanelAnim { started_at: now, expanding: true }),
         other => other,
+    }
+}
+
+/// A SETTLED epoch (transition already complete) for `expanded` — `started_at`
+/// far enough in the past that `t >= 1`, so the factor is pinned at `1.0`
+/// (expanded) or `0.0` (collapsed) with `animating = false`. Used to hold the
+/// epoch in sync with a live hand-drag, so releasing the drag doesn't re-trigger
+/// a slide from the wrong end.
+pub fn settled(now: Instant, expanded: bool, anim_secs: f32) -> PanelAnim {
+    PanelAnim {
+        started_at: now - Duration::from_secs_f32(anim_secs * 2.0),
+        expanding: expanded,
     }
 }
 

@@ -331,9 +331,11 @@ impl AppState {
                 vec![Effect::Redraw]
             }
             Msg::MouseRelease { mouse_report } => {
-                // A panel-edge resize drag ends here (no selection involved).
-                if self.panel_edge_drag.take().is_some() {
-                    return Vec::new();
+                // A panel-edge resize drag ends here (no selection involved):
+                // commit the drag (expand to the new width or snap collapsed).
+                if let Some(mgr) = self.panel_edge_drag.take() {
+                    self.manager_mut(mgr).end_edge_drag();
+                    return vec![Effect::Redraw];
                 }
                 self.mouse_left_held = false;
                 if let Some(bytes) = mouse_report {
@@ -355,10 +357,11 @@ impl AppState {
             }
             Msg::PanelEdgeDragStart(mgr) => {
                 self.panel_edge_drag = Some(mgr);
+                self.manager_mut(mgr).begin_edge_drag();
                 Vec::new()
             }
             Msg::PanelResize { mgr, width } => {
-                self.manager_mut(mgr).set_width(width);
+                self.manager_mut(mgr).edge_drag_to(width);
                 vec![Effect::Redraw]
             }
         }

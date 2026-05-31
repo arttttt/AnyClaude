@@ -34,9 +34,9 @@ const INDICATOR_ACTIVE: [f32; 4] = [0.4, 0.85, 0.4, 1.0];
 const INDICATOR_IDLE: [f32; 4] = [0.5, 0.5, 0.55, 1.0];
 
 // ── dimensions (logical px) ──
-/// Width of the inner-edge strip — the overlay's collapsed width, and the
-/// horizontal band the toggle button + (later) the drag handle occupy.
-pub const PANEL_EDGE_STRIP_W: f32 = 20.0;
+// The inner-edge strip width (the overlay's collapsed width + the toggle/drag
+// band) is `Policy::collapsed_width`, so the model, hit-testing, and this view
+// share one source.
 /// Height of the vertically-centered toggle/indicator button.
 const TOGGLE_BTN_H: f32 = 52.0;
 const FONT_SIZE: f32 = 13.0;
@@ -73,7 +73,7 @@ pub fn panel_manager_view(mgr: &PanelManager, expanded: bool) -> Block {
 
     let mut row = Stack::hstack()
         .cross(CrossAxis::Stretch)
-        .child_sized(strip, Sizing::Fixed(PANEL_EDGE_STRIP_W));
+        .child_sized(strip, Sizing::Fixed(mgr.policy().collapsed_width));
 
     if expanded {
         let mut stack = Stack::vstack().cross(CrossAxis::Stretch);

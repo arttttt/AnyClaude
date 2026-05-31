@@ -13,7 +13,6 @@ use term_gpu::{
 use crate::ui::app_state::{ApplyCtx, Msg};
 use crate::ui::gpu::chrome::{CHROME_H_PAD, FOOTER_HEIGHT_LOGICAL, HEADER_HEIGHT_LOGICAL};
 use crate::ui::panel_manager::ManagerId;
-use crate::ui::panels_view;
 use crate::ui::term_geometry;
 
 use super::{FONT_SIZE, MULTI_CLICK_THRESHOLD_MS};
@@ -143,12 +142,11 @@ impl super::GpuApp {
                     self.dispatch(Msg::PanelToggle(ManagerId::Right));
                     return;
                 }
-                // The inner edge strip (when expanded + resizable) begins a
-                // width drag; cursor motion then resizes until release.
-                let on_edge = x <= rect.origin.x + panels_view::PANEL_EDGE_STRIP_W;
-                let resizable =
-                    self.state.right.is_visible() && self.state.right.policy().resizable;
-                if on_edge && resizable {
+                // The inner edge strip begins a width drag — available whether
+                // expanded OR collapsed, so the overlay can be dragged open from
+                // the bare strip and dragged shut from any width.
+                let on_edge = x <= rect.origin.x + self.state.right.policy().collapsed_width;
+                if self.state.right.policy().resizable && on_edge {
                     self.dispatch(Msg::PanelEdgeDragStart(ManagerId::Right));
                 }
                 return;

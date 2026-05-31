@@ -138,6 +138,47 @@ fn width_is_preserved_across_collapse() {
 }
 
 #[test]
+fn edge_drag_clamps_to_collapsed_and_max() {
+    let p = Policy::overlay();
+    let mut m = PanelManager::new(Policy::overlay());
+    m.begin_edge_drag();
+    m.edge_drag_to(-100.0);
+    assert_eq!(m.drag_width(), Some(p.collapsed_width), "floor is the bare strip, not min_width");
+    m.edge_drag_to(p.max_width + 1000.0);
+    assert_eq!(m.drag_width(), Some(p.max_width));
+}
+
+#[test]
+fn drag_can_fully_hide_and_reopen() {
+    let p = Policy::overlay();
+    let mut m = PanelManager::new(Policy::overlay());
+    m.create(PanelKind::Teammate, "a", BLUE);
+    m.set_width(500.0);
+    m.set_visible(true);
+
+    // Drag inward below min_width and release → collapses, width remembered.
+    m.begin_edge_drag();
+    assert_eq!(m.drag_width(), Some(500.0), "drag from expanded starts at the current width");
+    m.edge_drag_to(p.min_width - 50.0);
+    m.end_edge_drag();
+    assert!(!m.is_visible(), "releasing below min_width hides the overlay");
+    assert_eq!(m.drag_width(), None);
+    assert_eq!(m.width(), 500.0, "the remembered expand width survives a drag-collapse");
+
+    // From collapsed, drag outward past min_width and release → expands to it.
+    m.begin_edge_drag();
+    assert_eq!(
+        m.drag_width(),
+        Some(p.collapsed_width),
+        "drag from collapsed starts at the bare strip"
+    );
+    m.edge_drag_to(640.0);
+    m.end_edge_drag();
+    assert!(m.is_visible(), "releasing above min_width expands");
+    assert_eq!(m.width(), 640.0);
+}
+
+#[test]
 fn any_active_tracks_running_children() {
     let mut m = PanelManager::new(Policy::overlay());
     let a = m.create(PanelKind::Teammate, "a", BLUE);

@@ -86,6 +86,10 @@ pub struct Policy {
     pub max_width: f32,
     /// Initial width before the user resizes (logical px).
     pub default_width: f32,
+    /// Width the overlay shrinks to when collapsed — the bare edge strip (the
+    /// toggle button + drag handle). A hand-drag can shrink down to this, and
+    /// releasing below `min_width` snaps to collapsed.
+    pub collapsed_width: f32,
 }
 
 impl Policy {
@@ -102,6 +106,7 @@ impl Policy {
             min_width: 160.0,
             max_width: 480.0,
             default_width: 240.0,
+            collapsed_width: 20.0,
         }
     }
 
@@ -118,6 +123,7 @@ impl Policy {
             min_width: 220.0,
             max_width: 900.0,
             default_width: 420.0,
+            collapsed_width: 20.0,
         }
     }
 }
@@ -148,6 +154,10 @@ pub struct PanelManager {
     /// Current (resizable) width in logical px, remembered across collapse so a
     /// re-expand returns to it.
     width: f32,
+    /// While `Some`, a hand-drag is in flight and this is the live rendered
+    /// width (down to `collapsed_width`); the coordinator renders it directly,
+    /// bypassing the collapse/expand animation. `None` outside a drag.
+    drag_width: Option<f32>,
     /// Issues the next `PanelId`; monotonic.
     next_seq: u64,
 }
@@ -163,6 +173,7 @@ impl PanelManager {
             focus: None,
             visible: false,
             width,
+            drag_width: None,
             next_seq: 0,
         }
     }
@@ -273,10 +284,48 @@ impl PanelManager {
         self.visible = !self.visible;
     }
 
-    /// Set the width, clamped to the policy's `[min_width, max_width]` (the
-    /// drag-resize entry point). Returns the clamped value actually stored.
+    /// Set the remembered expanded width, clamped to `[min_width, max_width]`
+    /// (programmatic set; the hand-drag uses the `*_edge_drag` methods).
     pub fn set_width(&mut self, width: f32) -> f32 {
         self.width = width.clamp(self.policy.min_width, self.policy.max_width);
         self.width
+    }
+
+    // ── hand-drag resize ─────────────────────────────────────────────────
+    // A drag controls the live rendered width from `collapsed_width` (fully
+    // hidden) up to `max_width`, independent of `visible` so the overlay can be
+    // dragged open from collapsed and dragged shut from expanded. `visible` +
+    // the remembered `width` only change on release.
+
+    /// The live drag width this frame, or `None` when not dragging. The
+    /// coordinator renders the overlay at this width directly (no animation).
+    pub fn drag_width(&self) -> Option<f32> {
+        self.drag_width
+    }
+
+    /// Begin a hand-drag, seeded at the current rendered width (the expanded
+    /// `width` when open, the bare `collapsed_width` when collapsed).
+    pub fn begin_edge_drag(&mut self) {
+        let start = if self.visible { self.width } else { self.policy.collapsed_width };
+        self.drag_width = Some(start);
+    }
+
+    /// Update the live drag width, clamped to `[collapsed_width, max_width]`.
+    pub fn edge_drag_to(&mut self, width: f32) {
+        self.drag_width = Some(width.clamp(self.policy.collapsed_width, self.policy.max_width));
+    }
+
+    /// End a hand-drag: release at or above `min_width` expands (and remembers
+    /// the new `width`); below it snaps collapsed, keeping the prior `width` for
+    /// the next button-expand. No-op when no drag was in flight.
+    pub fn end_edge_drag(&mut self) {
+        if let Some(dw) = self.drag_width.take() {
+            if dw >= self.policy.min_width {
+                self.width = dw;
+                self.visible = true;
+            } else {
+                self.visible = false;
+            }
+        }
     }
 }
