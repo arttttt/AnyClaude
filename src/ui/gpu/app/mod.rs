@@ -126,6 +126,11 @@ pub(super) struct GpuApp {
     /// slide; `snap` tracks a hand-drag.
     panel_width: Animation<f32>,
 
+    /// The mouse cursor icon currently set on the window — cached so a hover move
+    /// only calls `set_cursor` on a CHANGE (a resize cursor over a panel edge, a
+    /// pointer over the toggle pill, else the default).
+    current_cursor: winit::window::CursorIcon,
+
     clipboard: Box<dyn Clipboard>,
 
     /// Proxy + config handles — backend state, subagent / teammate overrides,
@@ -172,6 +177,7 @@ impl GpuApp {
             panel_overlay_rect: None,
             panel_toggle_zone: None,
             panel_width,
+            current_cursor: winit::window::CursorIcon::Default,
             clipboard: make_clipboard(),
             backends: Backends {
                 backend_state,

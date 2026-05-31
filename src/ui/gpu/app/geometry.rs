@@ -10,6 +10,8 @@ use term_gpu::{
     MouseButton, MouseEventKind, PanelRect,
 };
 
+use winit::window::CursorIcon;
+
 use crate::ui::app_state::{ApplyCtx, Msg};
 use crate::ui::gpu::chrome::{CHROME_H_PAD, FOOTER_HEIGHT_LOGICAL, HEADER_HEIGHT_LOGICAL};
 use crate::ui::panel_manager::ManagerId;
@@ -129,6 +131,44 @@ impl super::GpuApp {
     /// mouse-reporting mode, and the cell under the cursor — and hands the
     /// emulator snapshot in the ctx so `apply` can word/line-expand a
     /// multi-click selection. The press decision itself lives in `apply`.
+    /// The cursor icon to show for the mouse at `(x, y)`: a horizontal-resize
+    /// cursor over a resizable panel's inner edge (or while dragging it), a
+    /// pointer over the toggle pill, else the default. Reuses the materialized
+    /// overlay hit-zones so it costs no extra layout.
+    pub(super) fn panel_hover_cursor(&self, x: f32, y: f32) -> CursorIcon {
+        if self.state.panel_edge_drag.is_some() {
+            return CursorIcon::EwResize;
+        }
+        let Some(rect) = self.panel_overlay_rect else {
+            return CursorIcon::Default;
+        };
+        let p = Vec2::new(x, y);
+        if !rect.contains(p) {
+            return CursorIcon::Default;
+        }
+        if self.panel_toggle_zone.is_some_and(|b| b.contains(p)) {
+            return CursorIcon::Pointer;
+        }
+        if self.state.right.policy().resizable
+            && x <= rect.origin.x + self.state.right.policy().collapsed_width
+        {
+            return CursorIcon::EwResize;
+        }
+        CursorIcon::Default
+    }
+
+    /// Set the window cursor for a hover at `(x, y)`, only calling `set_cursor`
+    /// when the icon actually changes (cached in `current_cursor`).
+    pub(super) fn update_hover_cursor(&mut self, x: f32, y: f32) {
+        let desired = self.panel_hover_cursor(x, y);
+        if desired != self.current_cursor {
+            if let Some(w) = self.window.as_ref() {
+                w.set_cursor(desired);
+            }
+            self.current_cursor = desired;
+        }
+    }
+
     pub(super) fn on_mouse_press(&mut self) {
         let Some((x, y)) = self.state.cursor_pos else { return };
         // The right overlay floats over the terminal, so it takes the press
