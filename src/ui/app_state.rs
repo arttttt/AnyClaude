@@ -74,6 +74,10 @@ pub struct AppState {
     // Both start empty + collapsed, so they're inert until populated/shown.
     pub left: PanelManager,
     pub right: PanelManager,
+    /// While `Some(mgr)`, the user is dragging that manager's inner edge to
+    /// resize it (analogous to `dragging_selection`). Cursor motion sets the
+    /// width; the next mouse-release clears it.
+    pub panel_edge_drag: Option<ManagerId>,
 }
 
 /// A side effect [`AppState::apply`] asks the coordinator to perform. `apply` is
@@ -206,6 +210,11 @@ pub enum Msg {
     /// Collapse/expand a panel manager's overlay (a click on its edge toggle
     /// button, coordinator-resolved to the manager).
     PanelToggle(ManagerId),
+    /// Begin dragging a manager's inner edge to resize it (press on the edge).
+    PanelEdgeDragStart(ManagerId),
+    /// Set a manager's width mid-drag (clamped to its policy bounds). `width` is
+    /// coordinator-computed from the cursor (the overlay hugs the window edge).
+    PanelResize { mgr: ManagerId, width: f32 },
 }
 
 /// Read-only context the coordinator supplies to [`AppState::apply`]: the frame
@@ -322,6 +331,10 @@ impl AppState {
                 vec![Effect::Redraw]
             }
             Msg::MouseRelease { mouse_report } => {
+                // A panel-edge resize drag ends here (no selection involved).
+                if self.panel_edge_drag.take().is_some() {
+                    return Vec::new();
+                }
                 self.mouse_left_held = false;
                 if let Some(bytes) = mouse_report {
                     return vec![Effect::WriteToPty(bytes)];
@@ -338,6 +351,14 @@ impl AppState {
             Msg::PtyBytes => vec![Effect::Drain],
             Msg::PanelToggle(mgr) => {
                 self.manager_mut(mgr).toggle();
+                vec![Effect::Redraw]
+            }
+            Msg::PanelEdgeDragStart(mgr) => {
+                self.panel_edge_drag = Some(mgr);
+                Vec::new()
+            }
+            Msg::PanelResize { mgr, width } => {
+                self.manager_mut(mgr).set_width(width);
                 vec![Effect::Redraw]
             }
         }
@@ -464,6 +485,7 @@ impl AppState {
             settings: SettingsDialogState::default(),
             left: PanelManager::new(Policy::sidebar()),
             right: PanelManager::new(Policy::overlay()),
+            panel_edge_drag: None,
         }
     }
 

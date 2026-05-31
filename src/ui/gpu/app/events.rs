@@ -243,6 +243,15 @@ impl ApplicationHandler<UserEvent> for super::GpuApp {
                 let PhysicalPosition { x, y } = position;
                 let sf = self.scale_factor.max(0.0001);
                 let (lx, ly) = (x as f32 / sf, y as f32 / sf);
+                // A panel-edge drag owns cursor motion: the overlay hugs the
+                // window's right edge, so the dragged width is `right - cursor_x`.
+                if let Some(mgr) = self.state.panel_edge_drag {
+                    let win_w = self.window.as_ref().map(|w| w.inner_size().width as f32 / sf);
+                    if let Some(win_w) = win_w {
+                        self.dispatch(Msg::PanelResize { mgr, width: win_w - lx });
+                    }
+                    return;
+                }
                 // Resolve the cell when a selection drag is in flight OR a
                 // mouse-reporting app wants motion (both read the emulator
                 // snapshot — skip the cost otherwise).
