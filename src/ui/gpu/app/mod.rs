@@ -164,7 +164,7 @@ impl GpuApp {
             renderer: None,
             scale_factor: 1.0,
             text: TextResources::new(),
-            overlay: OverlayRenderer::new(),
+            overlay: OverlayRenderer::new(Duration::from_secs_f32(POPUP_FADE_SECS)),
             session: Session::new(spawn_command, spawn_args, spawn_env),
             state,
             timers: Timers::new(),

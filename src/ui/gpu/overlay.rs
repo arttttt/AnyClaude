@@ -7,7 +7,7 @@
 //! overlay buffers. Keeping the trees + the pipeline here is what lifts ~150
 //! lines of `redraw` out of the coordinator.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use glam::Vec2;
 use term_gpu::{
@@ -15,12 +15,12 @@ use term_gpu::{
 };
 use term_ui::{
     apply_overlay_alpha, build_root, free_subtree, measure, paint, place, place_centered,
-    reconcile_root, Block, Bounds, NodeId, PaintOutput, RetainedTree, SizeConstraint, Stack,
+    reconcile_root, Animation, Block, Bounds, Interpolator, NodeId, PaintOutput, RetainedTree,
+    SizeConstraint, Stack,
 };
 
 use crate::ui::chrome_labels;
 use crate::ui::panels_view;
-use crate::ui::popup_anim::{popup_fade_alpha, step_popup_anim, PopupAnim};
 
 pub(super) struct OverlayRenderer {
     chrome_tree: RetainedTree,
@@ -31,9 +31,9 @@ pub(super) struct OverlayRenderer {
     popup_root: Option<NodeId>,
     popup_prev: Option<Block>,
     popup_scratch: PaintOutput,
-    /// Open/close fade epoch (bucket 3-S); `None` when no fade is in flight, the
-    /// alpha derived from it + the frame clock (R12).
-    popup_anim: Option<PopupAnim>,
+    /// Open/close fade alpha (bucket 3-S): `0 → 1` open, `1 → 0` close. The alpha
+    /// is `value(now)` each frame, never stored resolved (R12).
+    popup_alpha: Animation<f32>,
     /// The panels overlay (right teammates column) — a third retained tree,
     /// positioned (not centred) at the overlay rect each frame.
     panels_tree: RetainedTree,
@@ -43,7 +43,7 @@ pub(super) struct OverlayRenderer {
 }
 
 impl OverlayRenderer {
-    pub(super) fn new() -> Self {
+    pub(super) fn new(fade_dur: Duration) -> Self {
         Self {
             chrome_tree: RetainedTree::new(),
             chrome_root: None,
@@ -53,7 +53,7 @@ impl OverlayRenderer {
             popup_root: None,
             popup_prev: None,
             popup_scratch: PaintOutput::default(),
-            popup_anim: None,
+            popup_alpha: Animation::settled(0.0, Instant::now(), fade_dur, Interpolator::EaseOut),
             panels_tree: RetainedTree::new(),
             panels_root: None,
             panels_prev: None,
@@ -150,7 +150,7 @@ impl OverlayRenderer {
             })
     }
 
-    /// Advance the open/close fade epoch (R12), then reconcile / keep-alive + lay
+    /// Drive the open/close fade tween (R12), then reconcile / keep-alive + lay
     /// out (min-width floored, centred) + paint the popup `view` into the
     /// caller's overlay buffers at the eased alpha. `None` = no popup; during a
     /// fade-OUT the retained tree is kept alive (and re-painted at the decreasing
@@ -162,7 +162,6 @@ impl OverlayRenderer {
         view: Option<Block>,
         window: Vec2,
         now: Instant,
-        fade_secs: f32,
         min_width: f32,
         fonts: &mut FontSystem,
         swash: &mut SwashCache,
@@ -173,9 +172,11 @@ impl OverlayRenderer {
         out_rects: &mut Vec<RectInstance>,
         out_glyphs: &mut Vec<GlyphInstance>,
     ) -> bool {
-        let visible = view.is_some();
-        self.popup_anim = step_popup_anim(self.popup_anim, visible, now);
-        let (alpha, animating) = popup_fade_alpha(self.popup_anim, now, fade_secs);
+        // Drive the fade toward open (1.0) or closed (0.0); the alpha is the
+        // tween's derived value (R12). `retarget` is a no-op once it's there.
+        self.popup_alpha.retarget(if view.is_some() { 1.0 } else { 0.0 }, now);
+        let alpha = self.popup_alpha.value(now);
+        let animating = self.popup_alpha.animating(now);
 
         // The root to paint: the live popup (reconciled), or — during a fade-OUT,
         // when the store is already Hidden — the retained tree kept alive.
@@ -194,12 +195,12 @@ impl OverlayRenderer {
         } else if animating {
             self.popup_root
         } else {
-            // No popup + no fade — release the retained tree and reset the epoch.
+            // No popup + no fade — release the retained tree (the tween rests
+            // at 0, ready for the next open).
             if let Some(root) = self.popup_root.take() {
                 free_subtree(&mut self.popup_tree, root);
             }
             self.popup_prev = None;
-            self.popup_anim = None;
             None
         };
         if let Some(root) = root_to_paint {

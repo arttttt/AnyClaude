@@ -22,7 +22,7 @@ use crate::ui::gpu::chrome::{
 use crate::ui::panels_view;
 use crate::ui::popup_view;
 
-use super::{FONT_SIZE, POPUP_FADE_SECS};
+use super::FONT_SIZE;
 
 impl super::GpuApp {
     /// Render one frame: clear, populate cells, push cursor, draw
@@ -239,7 +239,6 @@ impl super::GpuApp {
             popup,
             window_logical,
             now,
-            POPUP_FADE_SECS,
             popup_view::POPUP_MIN_WIDTH,
             &mut self.text.font_system,
             &mut self.text.swash_cache,

@@ -6,7 +6,6 @@ pub mod history;
 pub mod input;
 pub mod panel_manager;
 pub mod panels_view;
-pub mod popup_anim;
 pub mod popup_view;
 pub mod settings;
 pub mod term_geometry;
