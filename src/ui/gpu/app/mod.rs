@@ -63,6 +63,9 @@ const MULTI_CLICK_THRESHOLD_MS: u128 = 400;
 /// Popup open/close fade duration (seconds).
 const POPUP_FADE_SECS: f32 = 0.12;
 
+/// Panel overlay collapse/expand width-slide duration (seconds).
+const PANEL_ANIM_SECS: f32 = 0.14;
+
 /// User event delivered to the winit loop. Drives redraws in response
 /// to PTY output and scroll momentum without polling.
 #[derive(Debug, Clone, Copy)]
@@ -117,6 +120,10 @@ pub(super) struct GpuApp {
     panel_overlay_rect: Option<Bounds>,
     panel_toggle_zone: Option<Bounds>,
 
+    /// Right overlay collapse/expand epoch (bucket 3-S); the rendered width is
+    /// derived from it + the frame clock each frame, never stored (R12).
+    panel_anim: Option<crate::ui::panel_anim::PanelAnim>,
+
     clipboard: Box<dyn Clipboard>,
 
     /// Proxy + config handles — backend state, subagent / teammate overrides,
@@ -153,6 +160,7 @@ impl GpuApp {
             session_click_zone: None,
             panel_overlay_rect: None,
             panel_toggle_zone: None,
+            panel_anim: None,
             clipboard: make_clipboard(),
             backends: Backends {
                 backend_state,

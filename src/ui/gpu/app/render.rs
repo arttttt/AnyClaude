@@ -13,16 +13,17 @@ use term_gpu::{
     build_cursor_rect, populate_panel, push_selection_rects, GlyphInstance, RectInstance,
     RenderLayer,
 };
-use term_ui::{Block, Bounds};
+use term_ui::{lerp, Block, Bounds};
 
 use crate::ui::chrome_labels;
 use crate::ui::gpu::chrome::{
     CHROME_FONT_SIZE, CHROME_H_PAD, FOOTER_HEIGHT_LOGICAL, HEADER_HEIGHT_LOGICAL,
 };
+use crate::ui::panel_anim::{panel_width_factor, step_panel_anim};
 use crate::ui::panels_view;
 use crate::ui::popup_view;
 
-use super::{FONT_SIZE, POPUP_FADE_SECS};
+use super::{FONT_SIZE, PANEL_ANIM_SECS, POPUP_FADE_SECS};
 
 impl super::GpuApp {
     /// Render one frame: clear, populate cells, push cursor, draw
@@ -158,18 +159,26 @@ impl super::GpuApp {
         // tears the tree down and leaves the default app byte-identical. Spans
         // the content band (between header + footer), positioned at the right
         // edge; collapsed renders just the edge strip width.
-        let right = &self.state.right;
-        let panels = if right.is_empty() && !right.is_visible() {
+        // Step the collapse/expand epoch and derive the animated width (R12):
+        // the overlay slides between the edge-strip width (collapsed) and its
+        // target width (expanded). `now` is the frame clock used above.
+        let right_visible = self.state.right.is_visible();
+        let right_empty = self.state.right.is_empty();
+        let target_w = self.state.right.width();
+        self.panel_anim = step_panel_anim(self.panel_anim, right_visible, now);
+        let (factor, panel_animating) =
+            panel_width_factor(self.panel_anim, right_visible, now, PANEL_ANIM_SECS);
+        let strip_w = panels_view::PANEL_EDGE_STRIP_W;
+        let overlay_w = lerp(strip_w, target_w, factor);
+        // Show the panel stack whenever the overlay is wider than the bare strip
+        // (kept alive through a collapse so it slides out, not pops).
+        let expanded = factor > 0.001;
+        let panels = if right_empty && !right_visible && !panel_animating {
             None
         } else {
-            Some(panels_view::panel_manager_view(right, right.is_visible()))
+            Some(panels_view::panel_manager_view(&self.state.right, expanded))
         };
         let has_panels = panels.is_some();
-        let overlay_w = if right.is_visible() {
-            right.width()
-        } else {
-            panels_view::PANEL_EDGE_STRIP_W
-        };
         let overlay_origin =
             Vec2::new((window_logical.x - overlay_w).max(0.0), HEADER_HEIGHT_LOGICAL);
         let overlay_size = Vec2::new(
@@ -251,9 +260,10 @@ impl super::GpuApp {
         );
         self.text.shape_cache.end_frame();
         self.text.ui_shape_cache.end_frame();
-        // Drive the popup fade to completion: while a transition is in flight,
-        // request the next frame (the event-driven redraws alone wouldn't tick).
-        if popup_animating {
+        // Drive the popup fade + panel slide to completion: while a transition
+        // is in flight, request the next frame (event-driven redraws alone
+        // wouldn't tick).
+        if popup_animating || panel_animating {
             window.request_redraw();
         }
     }
