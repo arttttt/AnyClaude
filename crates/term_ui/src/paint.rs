@@ -124,6 +124,9 @@ fn paint_modifier(out: &mut PaintOutput, node_bounds: Bounds, modifier: &Modifie
     for op in &modifier.ops {
         match *op {
             Mod::Margin(i) | Mod::Padding(i) => b = inset_bounds(b, i),
+            // Offset is applied in `place` (it shifts node bounds); here `b`
+            // already starts from the shifted bounds, so it's a no-op.
+            Mod::Offset(_) => {}
             Mod::CornerRadius(r) => corner = r,
             Mod::Background(color) => {
                 if color[3] > 0.0 {
@@ -221,7 +224,7 @@ pub fn paint_cpu(
             for op in &modifier.ops {
                 match *op {
                     Mod::Margin(i) | Mod::Padding(i) => b = inset_bounds(b, i),
-                    Mod::CornerRadius(_) | Mod::Shadow(_) => {}
+                    Mod::CornerRadius(_) | Mod::Shadow(_) | Mod::Offset(_) => {}
                     Mod::Background(color) => {
                         if color[3] > 0.0 {
                             out.rects.push(RectRecord {

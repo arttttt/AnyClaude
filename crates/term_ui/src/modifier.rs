@@ -17,6 +17,8 @@
 //! yet (the Stack sizing system covers child sizing); they slot in later as more
 //! `Mod` variants without changing the fold shape.
 
+use glam::Vec2;
+
 use crate::arena::BlockShadow;
 use crate::geometry::Insets;
 
@@ -30,6 +32,9 @@ pub enum Mod {
     /// Outer inset: transparent space around the box (background/border sit
     /// inside it).
     Margin(Insets),
+    /// Shift the element's PLACEMENT by `[dx, dy]` without affecting its size or
+    /// the layout of its siblings (so an element can straddle/overhang its slot).
+    Offset([f32; 2]),
 
     // ── draw (emit a decoration at the current box bounds) ──
     /// Rounded-rect fill at the current bounds with the current corner radius.
@@ -64,6 +69,10 @@ impl Modifier {
 
     pub fn margin(self, insets: Insets) -> Self {
         self.push(Mod::Margin(insets))
+    }
+
+    pub fn offset(self, dx: f32, dy: f32) -> Self {
+        self.push(Mod::Offset([dx, dy]))
     }
 
     pub fn background(self, color: [f32; 4]) -> Self {
@@ -105,6 +114,18 @@ impl Modifier {
             }
         }
         acc
+    }
+
+    /// Sum of all `Offset` ops — the placement shift applied to the element (does
+    /// not affect size or siblings).
+    pub(crate) fn total_offset(&self) -> Vec2 {
+        let mut o = Vec2::ZERO;
+        for op in &self.ops {
+            if let Mod::Offset([dx, dy]) = op {
+                o += Vec2::new(*dx, *dy);
+            }
+        }
+        o
     }
 }
 

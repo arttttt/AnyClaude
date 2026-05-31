@@ -66,11 +66,13 @@ pub fn panel_toggle_widget_id() -> WidgetId {
 /// padded panel stack]. The coordinator measures it tight to the overlay rect
 /// and places it at the overlay origin (positioned, not centred).
 pub fn panel_manager_view(mgr: &PanelManager, expanded: bool) -> Modified {
-    // Edge strip: the toggle/indicator pill centred both axes.
+    // Edge strip: the toggle/indicator pill centred both axes, then shifted left
+    // by half the strip + the column border so the divider line bisects it.
+    let pill_shift = -(mgr.policy().collapsed_width / 2.0 + 1.0);
     let strip = Stack::vstack()
         .cross(CrossAxis::Center)
         .spacer(Sizing::Fill)
-        .child(toggle_pill(expanded, mgr.any_active()))
+        .child(toggle_pill(expanded, mgr.any_active()).modify(Modifier::new().offset(pill_shift, 0.0)))
         .spacer(Sizing::Fill);
 
     let mut row = Stack::hstack()

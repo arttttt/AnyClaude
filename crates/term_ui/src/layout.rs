@@ -230,8 +230,12 @@ pub fn place(tree: &mut RetainedTree, id: NodeId, origin: Vec2) {
     match kind {
         NodeKind::Text(_) | NodeKind::Spacer(_) => {}
         NodeKind::Modified(modifier) => {
-            // Stretch the single child to the inner box (measured minus the
-            // box insets) and place it at the leading-inset offset.
+            // `Offset` shifts this node (and its subtree) without changing size,
+            // so a box can straddle/overhang its slot; re-stamp the bounds with
+            // the shifted origin. Then stretch the single child to the inner box
+            // (measured minus the box insets) at the leading-inset offset.
+            let origin = origin + modifier.total_offset();
+            tree.node_mut(id).bounds = Bounds::new(origin, measured);
             let insets = modifier.box_insets();
             let inner =
                 (measured - Vec2::new(insets.horizontal(), insets.vertical())).max(Vec2::ZERO);

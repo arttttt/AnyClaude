@@ -139,15 +139,17 @@ impl super::GpuApp {
         if self.state.panel_edge_drag.is_some() {
             return CursorIcon::EwResize;
         }
+        let p = Vec2::new(x, y);
+        // The pill straddles the divider (partly outside the overlay rect), so
+        // check it first.
+        if self.panel_toggle_zone.is_some_and(|b| b.contains(p)) {
+            return CursorIcon::Pointer;
+        }
         let Some(rect) = self.panel_overlay_rect else {
             return CursorIcon::Default;
         };
-        let p = Vec2::new(x, y);
         if !rect.contains(p) {
             return CursorIcon::Default;
-        }
-        if self.panel_toggle_zone.is_some_and(|b| b.contains(p)) {
-            return CursorIcon::Pointer;
         }
         if self.state.right.policy().resizable
             && x <= rect.origin.x + self.state.right.policy().collapsed_width
@@ -171,20 +173,20 @@ impl super::GpuApp {
 
     pub(super) fn on_mouse_press(&mut self) {
         let Some((x, y)) = self.state.cursor_pos else { return };
+        let p = Vec2::new(x, y);
+        // The toggle pill straddles the divider (partly outside the overlay
+        // rect), so a click on it collapses/expands FIRST, independent of the
+        // overlay rect.
+        if self.panel_toggle_zone.is_some_and(|b| b.contains(p)) {
+            self.dispatch(Msg::PanelToggle(ManagerId::Right));
+            return;
+        }
         // The right overlay floats over the terminal, so it takes the press
-        // first: a click on its toggle button collapses/expands it, and every
-        // other in-overlay click is swallowed so it doesn't start a terminal
-        // selection underneath.
+        // next: an inner-edge click begins a width drag (available collapsed OR
+        // expanded), and every other in-overlay click is swallowed so it doesn't
+        // start a terminal selection underneath.
         if let Some(rect) = self.panel_overlay_rect {
-            let p = Vec2::new(x, y);
             if rect.contains(p) {
-                if self.panel_toggle_zone.is_some_and(|b| b.contains(p)) {
-                    self.dispatch(Msg::PanelToggle(ManagerId::Right));
-                    return;
-                }
-                // The inner edge strip begins a width drag — available whether
-                // expanded OR collapsed, so the overlay can be dragged open from
-                // the bare strip and dragged shut from any width.
                 let on_edge = x <= rect.origin.x + self.state.right.policy().collapsed_width;
                 if self.state.right.policy().resizable && on_edge {
                     self.dispatch(Msg::PanelEdgeDragStart(ManagerId::Right));

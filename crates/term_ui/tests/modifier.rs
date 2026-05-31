@@ -54,6 +54,16 @@ fn margin_and_border_also_inset_the_size() {
 }
 
 #[test]
+fn offset_shifts_placement_not_size() {
+    let (_, plain_size) = render_cpu(text().modify(Modifier::new().background(RED)));
+    let (shifted, shifted_size) =
+        render_cpu(text().modify(Modifier::new().background(RED).offset(-10.0, 5.0)));
+    let bg = shifted.rects.iter().find(|r| r.color == RED).expect("bg present");
+    assert_eq!(bg.origin, [-10.0, 5.0], "offset shifts the painted bounds (can overhang)");
+    assert_eq!(shifted_size, plain_size, "offset does not change the measured size");
+}
+
+#[test]
 fn paint_honours_chain_order_for_the_background() {
     // background BEFORE padding → bg covers the OUTER (full) bounds at (0,0).
     let (a, a_size) = render_cpu(text().modify(Modifier::new().background(RED).padding(Insets::all(10.0))));
