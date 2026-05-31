@@ -88,9 +88,10 @@ impl super::GpuApp {
         // the bar text sits on top, and a popup sits on top of the bars.
         let mut overlay_shadows: Vec<term_gpu::ShadowInstance> = Vec::new();
         let mut overlay_rects: Vec<RectInstance> = Vec::new();
-        // Round-rect overlay decorations (filled in Phase 2 when term_ui emits
-        // them; empty for now, so the pass is a no-op).
-        let overlay_round_rects: Vec<term_gpu::RoundRectInstance> = Vec::new();
+        // Round-rect overlay decorations (modifier backgrounds / borders) — the
+        // chrome / popup / panels views emit them; drawn over the sharp rects and
+        // under the glyphs.
+        let mut overlay_round_rects: Vec<term_gpu::RoundRectInstance> = Vec::new();
         let mut overlay_glyphs: Vec<GlyphInstance> = Vec::new();
 
         // The copied-flash is DERIVED from the deadline + frame clock (R12) —
@@ -153,6 +154,7 @@ impl super::GpuApp {
             &mut self.text.ui_shape_cache,
             sf,
             &mut overlay_rects,
+            &mut overlay_round_rects,
             &mut overlay_glyphs,
         );
         // Right teammates overlay (M1: placeholder panels). Floats over the
@@ -202,6 +204,7 @@ impl super::GpuApp {
             &mut self.text.ui_shape_cache,
             sf,
             &mut overlay_rects,
+            &mut overlay_round_rects,
             &mut overlay_glyphs,
         );
         self.panel_overlay_rect = has_panels.then(|| Bounds::new(overlay_origin, overlay_size));
@@ -250,6 +253,7 @@ impl super::GpuApp {
             sf,
             &mut overlay_shadows,
             &mut overlay_rects,
+            &mut overlay_round_rects,
             &mut overlay_glyphs,
         );
         // The overlay always carries the chrome bars (and a popup when one is

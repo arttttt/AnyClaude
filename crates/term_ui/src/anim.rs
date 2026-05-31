@@ -216,6 +216,10 @@ pub fn apply_overlay_alpha(out: &mut PaintOutput, alpha: f32) {
     for r in &mut out.rects {
         r.color[3] *= a;
     }
+    for rr in &mut out.round_rects {
+        rr.fill_color[3] *= a;
+        rr.border_color[3] *= a;
+    }
     for g in &mut out.glyphs {
         g.color[3] *= a;
     }

@@ -11,7 +11,8 @@ use std::time::{Duration, Instant};
 
 use glam::Vec2;
 use term_gpu::{
-    FontSystem, GlyphAtlas, GlyphInstance, RectInstance, ShadowInstance, SwashCache, TextShapeCache,
+    FontSystem, GlyphAtlas, GlyphInstance, RectInstance, RoundRectInstance, ShadowInstance,
+    SwashCache, TextShapeCache,
 };
 use term_ui::{
     apply_overlay_alpha, build_root, free_subtree, measure, paint, place, place_centered,
@@ -80,6 +81,7 @@ impl OverlayRenderer {
         ui_shape: &mut TextShapeCache,
         sf: f32,
         out_rects: &mut Vec<RectInstance>,
+        out_round_rects: &mut Vec<RoundRectInstance>,
         out_glyphs: &mut Vec<GlyphInstance>,
     ) -> Option<Bounds> {
         let Some(view) = view else {
@@ -104,6 +106,7 @@ impl OverlayRenderer {
         self.panels_scratch.clear();
         paint(&self.panels_tree, root, &mut self.panels_scratch, atlas, fonts, swash, ui_shape, sf);
         out_rects.extend_from_slice(&self.panels_scratch.rects);
+        out_round_rects.extend_from_slice(&self.panels_scratch.round_rects);
         out_glyphs.extend_from_slice(&self.panels_scratch.glyphs);
         self.panels_tree
             .resolve_widget(panels_view::panel_toggle_widget_id())
@@ -124,6 +127,7 @@ impl OverlayRenderer {
         ui_shape: &mut TextShapeCache,
         sf: f32,
         out_rects: &mut Vec<RectInstance>,
+        out_round_rects: &mut Vec<RoundRectInstance>,
         out_glyphs: &mut Vec<GlyphInstance>,
     ) -> Option<(f32, f32)> {
         let root = match self.chrome_root {
@@ -141,6 +145,7 @@ impl OverlayRenderer {
         self.chrome_scratch.clear();
         paint(&self.chrome_tree, root, &mut self.chrome_scratch, atlas, fonts, swash, ui_shape, sf);
         out_rects.extend_from_slice(&self.chrome_scratch.rects);
+        out_round_rects.extend_from_slice(&self.chrome_scratch.round_rects);
         out_glyphs.extend_from_slice(&self.chrome_scratch.glyphs);
         self.chrome_tree
             .resolve_widget(chrome_labels::session_widget_id())
@@ -170,6 +175,7 @@ impl OverlayRenderer {
         sf: f32,
         out_shadows: &mut Vec<ShadowInstance>,
         out_rects: &mut Vec<RectInstance>,
+        out_round_rects: &mut Vec<RoundRectInstance>,
         out_glyphs: &mut Vec<GlyphInstance>,
     ) -> bool {
         // Drive the fade toward open (1.0) or closed (0.0); the alpha is the
@@ -222,6 +228,7 @@ impl OverlayRenderer {
             }
             out_shadows.extend_from_slice(&self.popup_scratch.shadows);
             out_rects.extend_from_slice(&self.popup_scratch.rects);
+            out_round_rects.extend_from_slice(&self.popup_scratch.round_rects);
             out_glyphs.extend_from_slice(&self.popup_scratch.glyphs);
         }
         animating
