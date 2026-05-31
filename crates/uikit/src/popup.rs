@@ -6,7 +6,7 @@
 
 use std::ops::Range;
 
-use term_ui::{Block, BlockStyle, CrossAxis, Insets, Sizing, Stack, Text};
+use term_ui::{CrossAxis, Modifier, Modify, Sizing, Stack, Text};
 
 use crate::Segment;
 
@@ -30,24 +30,15 @@ pub fn popup_list(
     for (i, row) in rows.iter().enumerate() {
         let text = Text::new(row.text.clone(), font_size, row.color);
         if i == selected {
-            list = list.child_sized(Block::new(highlight_style(hl_bg), text), Sizing::Fixed(row_h));
+            list = list.child_sized(
+                text.modify(Modifier::new().background(hl_bg)),
+                Sizing::Fixed(row_h),
+            );
         } else {
             list = list.child_sized(text, Sizing::Fixed(row_h));
         }
     }
     list
-}
-
-/// A borderless, shadowless `Block` filled with `hl_bg` — the selection bar
-/// painted behind a highlighted row.
-fn highlight_style(hl_bg: [f32; 4]) -> BlockStyle {
-    BlockStyle {
-        background: hl_bg,
-        border_color: [0.0; 4],
-        border_width: 0.0,
-        padding: Insets::default(),
-        shadow: None,
-    }
 }
 
 /// The visible row range for a fixed-row scroll window (R11 virtualization):

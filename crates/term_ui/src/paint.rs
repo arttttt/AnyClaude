@@ -19,7 +19,7 @@ use term_gpu::{
     ShadowInstance, Style, SwashCache, TextShapeCache, Weight,
 };
 
-use crate::arena::{BlockStyle, NodeKind, RetainedTree, TextStyle};
+use crate::arena::{NodeKind, RetainedTree, TextStyle};
 use crate::geometry::{Bounds, Insets};
 use crate::id::{NodeId, WidgetId};
 use crate::modifier::{Mod, Modifier};
@@ -78,21 +78,6 @@ pub fn paint(
 
     match kind {
         NodeKind::Spacer(_) => {}
-        NodeKind::Block(style) => {
-            // §11: a drop shadow is emitted UNDER the bg rect (pushed first so
-            // the opaque bg covers the saturated SDF centre, leaving the halo).
-            // `None` / fully-transparent shadow emits nothing — the case for
-            // every plain chrome Block. paint_cpu (R4 gate) stays shadow-free.
-            if let Some(shadow) = block_shadow(bounds, &style) {
-                out.shadows.push(shadow);
-            }
-            if style.background[3] > 0.0 {
-                out.rects.push(rect(bounds, style.background));
-            }
-            if style.border_width > 0.0 && style.border_color[3] > 0.0 {
-                push_border(out, bounds, style.border_width, style.border_color);
-            }
-        }
         NodeKind::Modified(modifier) => paint_modifier(out, bounds, &modifier),
         NodeKind::Text(style) => {
             let baseline_y = bounds.origin.y + bounds.size.y * BASELINE_RATIO;
@@ -229,24 +214,6 @@ pub fn paint_cpu(
 
     match kind {
         NodeKind::Spacer(_) | NodeKind::Stack(_) => {}
-        NodeKind::Block(style) => {
-            if style.background[3] > 0.0 {
-                out.rects.push(RectRecord {
-                    origin: bounds.origin.into(),
-                    size: bounds.size.into(),
-                    color: style.background,
-                });
-            }
-            if style.border_width > 0.0 && style.border_color[3] > 0.0 {
-                for b in border_rects(bounds, style.border_width) {
-                    out.rects.push(RectRecord {
-                        origin: b.origin.into(),
-                        size: b.size.into(),
-                        color: style.border_color,
-                    });
-                }
-            }
-        }
         NodeKind::Modified(modifier) => {
             // CPU geometry only (R4 gate): a RectRecord per background/border at
             // the folded bounds; rounding + shadows are bucket-3-S, excluded.
@@ -316,55 +283,4 @@ fn text_attrs(style: &TextStyle) -> (Weight, Style) {
     let weight = Weight(style.weight);
     let css_style = if style.italic { Style::Italic } else { Style::Normal };
     (weight, css_style)
-}
-
-/// The drop-shadow instance a [`crate::view::Block`] emits beneath its
-/// background, or `None` when the style carries no visible shadow (`shadow:
-/// None`, or a fully transparent colour). Split out of [`paint`] so the
-/// shadow-emit mapping is headlessly testable — the live `paint` path needs a
-/// GPU `GlyphAtlas`, but this pure geometry does not.
-pub fn block_shadow(bounds: Bounds, style: &BlockStyle) -> Option<ShadowInstance> {
-    let sh = style.shadow?;
-    if sh.color[3] <= 0.0 {
-        return None;
-    }
-    Some(ShadowInstance {
-        pos: bounds.origin.into(),
-        size: bounds.size.into(),
-        blur_radius: sh.blur_radius,
-        corner_radius: sh.corner_radius,
-        offset: sh.offset,
-        color: sh.color,
-    })
-}
-
-fn rect(bounds: Bounds, color: [f32; 4]) -> RectInstance {
-    RectInstance {
-        pos: bounds.origin.into(),
-        size: bounds.size.into(),
-        color,
-    }
-}
-
-/// Four thin rects forming a border inside `bounds` (1px-thick edges scaled by
-/// `width`). Drawn over the background.
-fn border_rects(bounds: Bounds, width: f32) -> [Bounds; 4] {
-    let o = bounds.origin;
-    let s = bounds.size;
-    [
-        // top
-        Bounds::new(o, Vec2::new(s.x, width)),
-        // bottom
-        Bounds::new(Vec2::new(o.x, o.y + s.y - width), Vec2::new(s.x, width)),
-        // left
-        Bounds::new(o, Vec2::new(width, s.y)),
-        // right
-        Bounds::new(Vec2::new(o.x + s.x - width, o.y), Vec2::new(width, s.y)),
-    ]
-}
-
-fn push_border(out: &mut PaintOutput, bounds: Bounds, width: f32, color: [f32; 4]) {
-    for b in border_rects(bounds, width) {
-        out.rects.push(rect(b, color));
-    }
 }

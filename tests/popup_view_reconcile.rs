@@ -90,7 +90,7 @@ fn assert_well_formed(
         1.0,
     );
     place_centered(tree, root, VIEWPORT);
-    assert!(matches!(tree.node(root).kind, NodeKind::Block(_)), "{label}: root is a Block");
+    assert!(matches!(tree.node(root).kind, NodeKind::Modified(_)), "{label}: root is a Block");
     assert!(tree.node(root).measured.x >= POPUP_MIN_WIDTH - 0.5, "{label}: min-width floored");
 }
 

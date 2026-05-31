@@ -29,9 +29,6 @@ use crate::modifier::Modifier;
 pub enum NodeKind {
     /// A horizontal or vertical stack with Flex-lite layout config.
     Stack(StackStyle),
-    /// A styled container (background + optional border) that wraps a single
-    /// child with padding.
-    Block(BlockStyle),
     /// A modifier-decorated single-child wrapper (background / border / corner /
     /// shadow / padding / margin), the Compose-style styling node. Folds its
     /// `Modifier` chain in measure/place/paint.
@@ -64,17 +61,6 @@ pub struct BlockShadow {
     pub corner_radius: f32,
     pub offset: [f32; 2],
     pub color: [f32; 4],
-}
-
-/// Block (container) style: background fill + optional border + padding, plus an
-/// optional drop `shadow` (popups; `None` for plain containers).
-#[derive(Clone, PartialEq, Debug)]
-pub struct BlockStyle {
-    pub background: [f32; 4],
-    pub border_color: [f32; 4],
-    pub border_width: f32,
-    pub padding: Insets,
-    pub shadow: Option<BlockShadow>,
 }
 
 /// Text content + shaping style.

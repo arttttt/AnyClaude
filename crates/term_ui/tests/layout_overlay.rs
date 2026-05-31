@@ -8,20 +8,16 @@
 use glam::Vec2;
 use term_gpu::{FontFamily, FontSystem, TextShapeCache};
 use term_ui::{
-    build_root, measure, place_centered, Block, BlockStyle, Insets, NodeId, RetainedTree,
+    build_root, measure, place_centered, Insets, Modified, Modifier, Modify, NodeId, RetainedTree,
     SizeConstraint, Text,
 };
 
-fn box_view() -> Block {
-    Block::new(
-        BlockStyle {
-            background: [0.1, 0.1, 0.12, 1.0],
-            border_color: [0.3, 0.3, 0.35, 1.0],
-            border_width: 1.0,
-            padding: Insets::all(12.0),
-            shadow: None,
-        },
-        Text::new("a popup box", 13.0, [0.9, 0.9, 0.9, 1.0]),
+fn box_view() -> Modified {
+    Text::new("a popup box", 13.0, [0.9, 0.9, 0.9, 1.0]).modify(
+        Modifier::new()
+            .background([0.1, 0.1, 0.12, 1.0])
+            .border(1.0, [0.3, 0.3, 0.35, 1.0])
+            .padding(Insets::all(12.0)),
     )
 }
 

@@ -25,8 +25,8 @@ use anyclaude::ui::chrome_labels::{
 use glam::Vec2;
 use term_gpu::{FontFamily, FontSystem, GpuRenderer, RenderLayer, SwashCache, TextShapeCache};
 use term_ui::{
-    build_root, measure, paint, place, reconcile_root, Block, BlockStyle, CrossAxis, Insets,
-    NodeId, PaintOutput, RetainedTree, SizeConstraint, Sizing, Stack, Text,
+    build_root, measure, paint, place, reconcile_root, CrossAxis, Insets, Modified, Modifier,
+    Modify, NodeId, PaintOutput, RetainedTree, SizeConstraint, Sizing, Stack, Text,
 };
 use uikit::{footer_bar, header_bar};
 use winit::application::ApplicationHandler;
@@ -154,21 +154,13 @@ fn view(state: &AppState, frame_now: Instant) -> Stack {
 }
 
 /// Cosmetic content region between the chrome strips.
-fn panel() -> Block {
-    Block::new(
-        BlockStyle {
-            background: PANEL_BG,
-            border_color: [0.0; 4],
-            border_width: 0.0,
-            padding: Insets::all(12.0),
-            shadow: None,
-        },
-        Text::new(
-            "terminal panel — chrome preview · 'r' Reqs+1 · 'c' Session-copied flash",
-            CHROME_FONT,
-            PANEL_TEXT,
-        ),
+fn panel() -> Modified {
+    Text::new(
+        "terminal panel — chrome preview · 'r' Reqs+1 · 'c' Session-copied flash",
+        CHROME_FONT,
+        PANEL_TEXT,
     )
+    .modify(Modifier::new().background(PANEL_BG).padding(Insets::all(12.0)))
 }
 
 /// The coordinator: resources + the one `AppState` + the persistent retained

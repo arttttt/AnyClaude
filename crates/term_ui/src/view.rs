@@ -19,7 +19,7 @@
 
 use std::any::{Any, TypeId};
 
-use crate::arena::{BlockStyle, Node, NodeKind, RetainedTree, StackStyle, TextStyle};
+use crate::arena::{Node, NodeKind, RetainedTree, StackStyle, TextStyle};
 use crate::geometry::{Axis, CrossAxis, Insets, MainAxis, Sizing};
 use crate::id::{NodeId, WidgetId};
 use crate::modifier::Modifier;
@@ -369,73 +369,6 @@ impl Element for Stack {
         // children are already freed, so this is a no-op for them.
         for &cid in children.iter().skip(self.children.len()) {
             free_subtree(tree, cid);
-        }
-        tree.free(id);
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
-// ───────────────────────────── Block composite ─────────────────────────
-
-/// A styled container (background + border + padding) wrapping one child (§11).
-pub struct Block {
-    pub widget_id: Option<WidgetId>,
-    pub style: BlockStyle,
-    pub child: BoxView,
-}
-
-impl Block {
-    pub fn new<E: Element>(style: BlockStyle, child: E) -> Self {
-        Self { widget_id: None, style, child: Box::new(child) }
-    }
-
-    pub fn id(mut self, wid: WidgetId) -> Self {
-        self.widget_id = Some(wid);
-        self
-    }
-}
-
-impl Element for Block {
-    fn build(&self, tree: &mut RetainedTree) -> NodeId {
-        let id = tree.alloc(NodeKind::Block(self.style.clone()));
-        if let Some(wid) = self.widget_id {
-            tree.map_widget(wid, id);
-        }
-        let child_id = self.child.build(tree);
-        tree.node_mut(id).children = vec![child_id];
-        id
-    }
-
-    fn reconcile(&self, prev: &dyn Element, tree: &mut RetainedTree, id: NodeId) {
-        let prev = prev.as_any().downcast_ref::<Block>().expect("same type");
-        if self.style != prev.style {
-            tree.node_mut(id).kind = NodeKind::Block(self.style.clone());
-        }
-        if let Some(wid) = self.widget_id {
-            tree.map_widget(wid, id);
-        }
-        // Single-child diff through the splice (handles type-change by
-        // rebuild). Re-borrows the arena per child internally.
-        let prev_ids = tree.take_children(id);
-        let new_ids = reconcile_children(
-            tree,
-            std::slice::from_ref(&prev.child),
-            std::slice::from_ref(&self.child),
-            prev_ids,
-        );
-        tree.node_mut(id).children = new_ids;
-    }
-
-    fn teardown(&self, tree: &mut RetainedTree, id: NodeId) {
-        // Free the single child's subtree, then free this node directly. The
-        // child id is left out of the slot (see Stack::teardown) so freeing the
-        // parent cannot double-free the already-freed child.
-        let children = tree.take_children(id);
-        if let Some(&cid) = children.first() {
-            self.child.teardown(tree, cid);
         }
         tree.free(id);
     }

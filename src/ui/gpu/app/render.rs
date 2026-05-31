@@ -13,7 +13,7 @@ use term_gpu::{
     build_cursor_rect, populate_panel, push_selection_rects, GlyphInstance, RectInstance,
     RenderLayer,
 };
-use term_ui::{Block, Bounds};
+use term_ui::{Bounds, Modified};
 
 use crate::ui::chrome_labels;
 use crate::ui::gpu::chrome::{
@@ -218,7 +218,7 @@ impl super::GpuApp {
         // place_centered, and painted into the overlay on top of the chrome (its
         // term_ui Block drop shadow flows through too). Popups are mutually
         // exclusive, so at most one is ever built.
-        let popup: Option<Block> = if self.state.backend_switch.is_visible() {
+        let popup: Option<Modified> = if self.state.backend_switch.is_visible() {
             let items_and_ids: Vec<(String, String)> = self
                 .backends.backend_state
                 .get_config()

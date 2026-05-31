@@ -16,8 +16,8 @@ use term_gpu::{
 };
 use term_ui::{
     apply_overlay_alpha, build_root, free_subtree, measure, paint, place, place_centered,
-    reconcile_root, Animation, Block, Bounds, Interpolator, Modified, NodeId, PaintOutput,
-    RetainedTree, SizeConstraint, Stack,
+    reconcile_root, Animation, Bounds, Interpolator, Modified, NodeId, PaintOutput, RetainedTree,
+    SizeConstraint, Stack,
 };
 
 use crate::ui::chrome_labels;
@@ -30,7 +30,7 @@ pub(super) struct OverlayRenderer {
     chrome_scratch: PaintOutput,
     popup_tree: RetainedTree,
     popup_root: Option<NodeId>,
-    popup_prev: Option<Block>,
+    popup_prev: Option<Modified>,
     popup_scratch: PaintOutput,
     /// Open/close fade alpha (bucket 3-S): `0 → 1` open, `1 → 0` close. The alpha
     /// is `value(now)` each frame, never stored resolved (R12).
@@ -164,7 +164,7 @@ impl OverlayRenderer {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn render_popup(
         &mut self,
-        view: Option<Block>,
+        view: Option<Modified>,
         window: Vec2,
         now: Instant,
         min_width: f32,
