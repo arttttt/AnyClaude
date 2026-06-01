@@ -70,20 +70,22 @@ const PANEL_ANIM_SECS: f32 = 0.14;
 /// critical — snappy, no overshoot.
 const PAGE_SPRING_STIFFNESS: f32 = 700.0;
 const PAGE_SPRING_DAMPING: f32 = 53.0;
-/// How far a drag-release flick velocity projects the scroll forward before
-/// snapping to the nearest page (seconds).
-const PAGE_FLICK_PROJECT_SECS: f32 = 0.12;
+/// Horizontal two-finger travel (logical px) that pages the overlay once.
+const PAGE_SWIPE_COMMIT_PX: f32 = 50.0;
+/// Silence (ms) that ends a swipe gesture: a longer gap since the last
+/// horizontal event starts a fresh gesture, so one flick (+ its trackpad
+/// momentum) pages at most once.
+const PAGE_SWIPE_GESTURE_GAP_MS: u64 = 120;
 
-/// An in-flight pager swipe: the press anchor (`start_x` / `start_scroll`), the
-/// last cursor sample (`last_x` / `last_t`), and the latest swipe `velocity`
-/// (page units/sec) thrown into the spring on release.
+/// Accumulator for the pager's horizontal two-finger swipe (a trackpad gesture,
+/// NOT a mouse-button drag — that would fight text selection inside a page). One
+/// page commits per [`PAGE_SWIPE_COMMIT_PX`] of travel, then `committed` locks
+/// further commits until a [`PAGE_SWIPE_GESTURE_GAP_MS`] gap ends the gesture.
 #[derive(Debug, Clone, Copy)]
-struct PageDrag {
-    start_x: f32,
-    start_scroll: f32,
-    last_x: f32,
+struct PageSwipe {
+    accum: f32,
     last_t: Instant,
-    velocity: f32,
+    committed: bool,
 }
 
 /// User event delivered to the winit loop. Drives redraws in response
@@ -147,14 +149,11 @@ pub(super) struct GpuApp {
     panel_width: Animation<f32>,
 
     /// Right overlay pager position (bucket 3-S): the continuous page index, in
-    /// page units, as a velocity-carrying [`Spring`]. Its target chases the
-    /// focused panel's index each frame (hotkey / click paging) OR is driven
-    /// directly by a mouse swipe (`page_drag`); a drag-release flick kicks it.
+    /// page units, as a [`Spring`]. Its target chases the focused panel's index
+    /// each frame, so paging (hotkey / click / two-finger swipe) slides.
     page_scroll: Spring,
-    /// In-flight pager swipe (bucket 2): the press anchor + the latest sample, so
-    /// `value(now)` tracks the cursor and the release can throw with velocity.
-    /// `None` outside a swipe.
-    page_drag: Option<PageDrag>,
+    /// Horizontal two-finger swipe accumulator (bucket 2) that pages the overlay.
+    page_swipe: PageSwipe,
 
     /// The mouse cursor icon currently set on the window — cached so a hover move
     /// only calls `set_cursor` on a CHANGE (a resize cursor over a panel edge, a
@@ -216,7 +215,7 @@ impl GpuApp {
             panel_toggle_zone: None,
             panel_width,
             page_scroll,
-            page_drag: None,
+            page_swipe: PageSwipe { accum: 0.0, last_t: Instant::now(), committed: false },
             current_cursor: winit::window::CursorIcon::Default,
             clipboard: make_clipboard(),
             backends: Backends {

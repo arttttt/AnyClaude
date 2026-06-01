@@ -244,10 +244,18 @@ impl ApplicationHandler<UserEvent> for super::GpuApp {
                 self.dispatch(Msg::ModifiersChanged(mods.state()));
             }
             WindowEvent::MouseWheel { delta, phase, .. } => {
-                let (precise, dy) = match delta {
-                    MouseScrollDelta::PixelDelta(p) => (true, p.y as f32),
-                    MouseScrollDelta::LineDelta(_, v) => (false, v * NUM_PIXELS_PER_LINE),
+                let (precise, dx, dy) = match delta {
+                    MouseScrollDelta::PixelDelta(p) => (true, p.x as f32, p.y as f32),
+                    MouseScrollDelta::LineDelta(h, v) => {
+                        (false, h * NUM_PIXELS_PER_LINE, v * NUM_PIXELS_PER_LINE)
+                    }
                 };
+                // Over the teammates overlay a horizontal two-finger swipe pages
+                // it; the wheel doesn't reach the terminal scrollback underneath.
+                if self.cursor_over_overlay() {
+                    self.page_swipe(dx);
+                    return;
+                }
                 // A mouse-reporting app gets the wheel as button 64 / 65 instead
                 // of scrolling our scrollback (§6).
                 let wheel = if dy > 0.0 { MouseButton::WheelUp } else { MouseButton::WheelDown };
@@ -270,11 +278,6 @@ impl ApplicationHandler<UserEvent> for super::GpuApp {
                     if let Some(win_w) = win_w {
                         self.dispatch(Msg::PanelResize { mgr, width: win_w - lx });
                     }
-                    return;
-                }
-                // A pager swipe owns cursor motion the same way (track the finger).
-                if self.page_drag.is_some() {
-                    self.page_drag_to(lx);
                     return;
                 }
                 // Resolve the cell when a selection drag is in flight OR a
@@ -300,9 +303,6 @@ impl ApplicationHandler<UserEvent> for super::GpuApp {
                 ..
             } => match state {
                 ElementState::Pressed => self.on_mouse_press(),
-                // A pager swipe ends here (throw to the nearest page); the press
-                // was swallowed, so there's no selection release to dispatch.
-                ElementState::Released if self.page_drag.is_some() => self.page_drag_end(),
                 ElementState::Released => {
                     let mouse_report =
                         self.mouse_report_at_cursor(MouseButton::Left, MouseEventKind::Release);
