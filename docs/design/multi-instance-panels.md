@@ -1,6 +1,10 @@
 # Multi-Instance Panels (`PanelManager`) — Design Doc (DRAFT 2026-05-31)
 
-> Status: **DRAFT (2026-05-31).** Architecture agreed in conversation; not yet implemented.
+> Status: **M1 + M1.5 IMPLEMENTED (2026-06-01)** on `feat/multi-instance-panels`
+> (placeholders, user-verified): the right overlay UI, the resizable/collapsible
+> pill, and the internal layout as a **horizontal pager** (§11.1 resolved — see
+> `uikit::pager`). M2+ (per-panel emulator/PTY, `/api/tmux/*`, left sidebar) not
+> started. Architecture below was agreed in conversation 2026-05-31.
 > This doc works out the *architecture* of showing multiple Claude instances inside
 > anyclaude's GPU terminal — the long-term home for both the "teammates on the right"
 > view and the "CLAUDES sidebar on the left" view from the product mockup.
@@ -437,10 +441,16 @@ Nothing in M1 is rebuilt later — only extended (add `surface`, child, API).
 
 ## 11. Open questions (TBD)
 
-1. **Internal layout of the right overlay** — a simple sortable **vertical stack** of
-   teammates, or **nested tiling** inside the overlay? *Parked by the user; decide
-   before M2.* If a stack, no BSP is needed anywhere; if nested tiling, `term_layout`
-   may be repurposed inside the right manager only.
+1. **Internal layout of the right overlay** — ~~stack vs nested tiling?~~ **RESOLVED
+   (2026-06-01): a horizontal PAGER**, implemented in M1.5 (`uikit::pager`). The
+   overlay is a narrow vertical strip and each page is a full child terminal that
+   scrolls itself, so a co-scrolling stack gives ambiguous nested scroll and doesn't
+   fit; tiling makes panes uselessly thin. A pager shows one page at a time and pages
+   horizontally, keeping the gesture axes orthogonal (vertical wheel scrolls the
+   teammate, horizontal switches). Built as the web-carousel "translate the track"
+   model (continuous `scroll` float = truth, index derived, `current±1` window,
+   neighbours clipped to the viewport via the new `Mod::Clip`). No BSP / `term_layout`
+   anywhere. Nav is ⌥←/⌥→ (clicks on the dot/arrow strip + drag-swipe land later).
 2. **`$TMUX` / `$TMUX_PANE` seeding** for the main CC (see §8) — resolve by experiment
    at M3.
 3. **Scroll/selection targeting** — cursor-under (default, §6) vs follow-focus. Default
