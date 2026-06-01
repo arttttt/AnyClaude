@@ -29,6 +29,7 @@ use crate::backend::{AgentBackendState, BackendState};
 use crate::config::ClaudeSettingsManager;
 use crate::metrics::ObservabilityHub;
 use crate::ui::app_state::AppState;
+use crate::ui::child_session::ChildSessionManager;
 
 use super::backends::Backends;
 use super::overlay::OverlayRenderer;
@@ -126,6 +127,11 @@ pub(super) struct GpuApp {
     /// Lazily populated in `resumed`. See [`Session`].
     session: Session,
 
+    /// Registry + lifecycle for teammate child sessions (bucket 3 — identity,
+    /// later the per-pane surfaces). Reacts to `ChildSessionEvent`s by
+    /// orchestrating `state.right`. See [`ChildSessionManager`].
+    child_sessions: ChildSessionManager,
+
     /// The single bucket-1 source of UI-decision truth — grid size, scroll +
     /// momentum, selection / input, session header, and the popup overlays.
     /// See [`AppState`]. (Resources, the emulator, and timer handles stay out
@@ -215,6 +221,7 @@ impl GpuApp {
             text: TextResources::new(),
             overlay: OverlayRenderer::new(Duration::from_secs_f32(POPUP_FADE_SECS)),
             session: Session::new(spawn_command, spawn_args, spawn_env),
+            child_sessions: ChildSessionManager::new(),
             state,
             timers: Timers::new(),
             session_click_zone: None,

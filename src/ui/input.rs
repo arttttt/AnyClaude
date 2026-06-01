@@ -26,6 +26,9 @@ pub enum AppShortcut {
     /// overlay — the Milestone-1 manual experiment trigger. Like
     /// `DumpDiagnostic`, only its keybinding is `cfg(debug_assertions)`-gated.
     DebugTogglePanels,
+    /// Debug-only (Ctrl+K): unregister the focused teammate session (exercise the
+    /// `Unregister` lifecycle live). `cfg(debug_assertions)`-gated.
+    DebugUnregisterPane,
     /// Page the teammates overlay back / forward (⌥← / ⌥→). Debug-gated for now
     /// (the panels are debug-seeded); release builds leave ⌥+arrows to the
     /// terminal's word-motion.
@@ -76,6 +79,8 @@ pub fn app_shortcut(code: KeyCode, modifiers: ModifiersState) -> Option<AppShort
             KeyCode::KeyG => AppShortcut::DumpDiagnostic,
             #[cfg(debug_assertions)]
             KeyCode::KeyP => AppShortcut::DebugTogglePanels,
+            #[cfg(debug_assertions)]
+            KeyCode::KeyK => AppShortcut::DebugUnregisterPane,
             _ => return None,
         });
     }

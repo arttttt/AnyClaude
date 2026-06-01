@@ -66,6 +66,12 @@ fn diagnostic_on_ctrl_g_debug_only() {
 
 #[cfg(debug_assertions)]
 #[test]
+fn ctrl_k_unregisters_the_focused_pane_debug_only() {
+    assert_eq!(app_shortcut(KeyCode::KeyK, CTRL), Some(AppShortcut::DebugUnregisterPane));
+}
+
+#[cfg(debug_assertions)]
+#[test]
 fn alt_arrows_page_the_overlay_debug_only() {
     assert_eq!(app_shortcut(KeyCode::ArrowLeft, ALT), Some(AppShortcut::PagePrev));
     assert_eq!(app_shortcut(KeyCode::ArrowRight, ALT), Some(AppShortcut::PageNext));

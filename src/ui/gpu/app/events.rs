@@ -91,6 +91,7 @@ impl super::GpuApp {
                 Effect::RestartPty => self.restart_pty(),
                 Effect::DumpDiagnostic => self.dump_diagnostic(),
                 Effect::DebugTogglePanels => self.debug_toggle_panels(),
+                Effect::DebugUnregisterPane => self.debug_unregister_focused_pane(),
                 Effect::PagePrev => self.page_panel(false),
                 Effect::PageNext => self.page_panel(true),
                 Effect::Quit => exit = true,
@@ -104,25 +105,48 @@ impl super::GpuApp {
         exit
     }
 
-    /// Debug-only (Ctrl+P): seed a few placeholder teammates the first time it's
-    /// hit, then toggle the right overlay's visibility. The Milestone-1 manual
-    /// experiment trigger — real teammates arrive with the control plane (no
-    /// child processes / emulators yet). Coordinator-side state mutation, like
-    /// `ClosePopups`; the proper Msg-driven panel controls come later.
+    /// React to one teammate-session lifecycle event by handing it to the
+    /// [`ChildSessionManager`], which orchestrates `state.right`. The single
+    /// coordinator entry point for `ChildSessionEvent`s — the debug emitter below
+    /// drives it today; the `TmuxAdapter` control plane drives it later.
+    fn apply_child_session_event(&mut self, event: crate::ui::child_session::ChildSessionEvent) {
+        self.child_sessions.apply(event, &mut self.state.right);
+        self.request_redraw();
+    }
+
+    /// Debug-only (Ctrl+P): the first hit REGISTERS a few mock teammate sessions
+    /// (through `ChildSessionEvent`s — exercising the real registry → panel flow,
+    /// just with no process behind them yet), then toggle the overlay. Real
+    /// teammates arrive when the `TmuxAdapter` produces the same events.
     fn debug_toggle_panels(&mut self) {
-        use crate::ui::panel_manager::PanelKind;
-        if self.state.right.is_empty() {
-            // Six mock teammates to exercise the pager (agent-ish accent colours
-            // echoing Claude Code's teammate palette).
-            self.state.right.create(PanelKind::Teammate, "module-mapper", [0.30, 0.55, 0.95, 1.0]);
-            self.state.right.create(PanelKind::Teammate, "flow-tracer", [0.35, 0.80, 0.45, 1.0]);
-            self.state.right.create(PanelKind::Teammate, "deps-mapper", [0.90, 0.75, 0.30, 1.0]);
-            self.state.right.create(PanelKind::Teammate, "type-checker", [0.80, 0.45, 0.85, 1.0]);
-            self.state.right.create(PanelKind::Teammate, "test-runner", [0.95, 0.50, 0.40, 1.0]);
-            self.state.right.create(PanelKind::Teammate, "doc-writer", [0.45, 0.75, 0.85, 1.0]);
+        use crate::ui::child_session::{ChildSessionEvent, ChildSpec};
+        if self.child_sessions.is_empty() {
+            // Agent-ish accent colours echoing Claude Code's teammate palette.
+            let mocks = [
+                ("module-mapper", [0.30, 0.55, 0.95, 1.0]),
+                ("flow-tracer", [0.35, 0.80, 0.45, 1.0]),
+                ("deps-mapper", [0.90, 0.75, 0.30, 1.0]),
+                ("type-checker", [0.80, 0.45, 0.85, 1.0]),
+                ("test-runner", [0.95, 0.50, 0.40, 1.0]),
+                ("doc-writer", [0.45, 0.75, 0.85, 1.0]),
+            ];
+            for (name, accent) in mocks {
+                let spec = ChildSpec { name: name.to_string(), accent };
+                self.apply_child_session_event(ChildSessionEvent::Register(spec));
+            }
         }
         self.state.right.toggle();
         self.request_redraw();
+    }
+
+    /// Debug-only (Ctrl+K): UNREGISTER the focused teammate's session — proves the
+    /// `Unregister` lifecycle live (panel removed, focus falls back). A no-op when
+    /// the focused panel isn't a registered child.
+    fn debug_unregister_focused_pane(&mut self) {
+        use crate::ui::child_session::ChildSessionEvent;
+        let Some(panel) = self.state.right.focus() else { return };
+        let Some(pane) = self.child_sessions.pane_for(panel) else { return };
+        self.apply_child_session_event(ChildSessionEvent::Unregister(pane));
     }
 
     /// Page the right teammates overlay forward / back (⌥→ / ⌥←): move its focus

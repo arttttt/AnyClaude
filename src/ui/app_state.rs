@@ -132,6 +132,8 @@ pub enum Effect {
     /// Debug-only: seed placeholder teammates + toggle the right overlay (the
     /// Milestone-1 panels experiment trigger; coordinator-side, debug builds).
     DebugTogglePanels,
+    /// Debug-only: unregister the focused teammate session (Unregister lifecycle).
+    DebugUnregisterPane,
     /// Page the teammates overlay back / forward (move the right manager's focus
     /// one panel; the pager slides to it).
     PagePrev,
@@ -421,6 +423,7 @@ impl AppState {
                         AppShortcut::RestartPty => Effect::RestartPty,
                         AppShortcut::DumpDiagnostic => Effect::DumpDiagnostic,
                         AppShortcut::DebugTogglePanels => Effect::DebugTogglePanels,
+                        AppShortcut::DebugUnregisterPane => Effect::DebugUnregisterPane,
                         AppShortcut::PagePrev => Effect::PagePrev,
                         AppShortcut::PageNext => Effect::PageNext,
                         AppShortcut::Quit => Effect::Quit,
