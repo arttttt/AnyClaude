@@ -176,9 +176,14 @@ impl<T: Animatable> Animation<T> {
     }
 }
 
-/// Timestep clamp for [`Spring::value`] — a long gap between frames (e.g. the
-/// window was occluded) must not let the integrator explode.
-const MAX_SPRING_DT: f32 = 1.0 / 30.0;
+/// Timestep clamp for [`Spring::value`], one 60 Hz frame. A spring is only
+/// stepped on a redraw, so after an idle gap (no redraws) `last` is stale and
+/// `now - last` is huge; without this the first step would fast-forward the
+/// spring through the whole idle gap and complete almost instantly. Clamping to
+/// one frame makes that first step a normal frame's worth — the animation looks
+/// the same whether it starts from idle or mid-flight. (At 60 Hz the real frame
+/// dt equals this, so steady-state playback is unaffected.)
+const MAX_SPRING_DT: f32 = 1.0 / 60.0;
 /// Below this distance + speed the spring is treated as at rest.
 const SPRING_EPS: f32 = 1e-3;
 
