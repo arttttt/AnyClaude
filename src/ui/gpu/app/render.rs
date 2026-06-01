@@ -191,9 +191,13 @@ impl super::GpuApp {
         // slide). Same pattern as the width tween — the model holds the discrete
         // focus, this chases it; `value(now)` is the continuous page position.
         let current_page = self.state.right.focus_index().unwrap_or(0);
-        self.page_scroll.retarget(current_page as f32, now);
+        // While a swipe owns the pager, the drag drives `page_scroll` directly
+        // (snap per move); otherwise the spring target chases the focused page.
+        if self.page_drag.is_none() {
+            self.page_scroll.set_target(current_page as f32);
+        }
         let page_scroll = self.page_scroll.value(now);
-        let page_animating = self.page_scroll.animating(now);
+        let page_animating = self.page_scroll.animating();
         // Page viewport width = the overlay minus the 1px column border each side.
         let page_w = (overlay_w - 2.0).max(0.0);
         // The overlay is "on" unless it's the empty + collapsed + idle default.

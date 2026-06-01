@@ -272,6 +272,11 @@ impl ApplicationHandler<UserEvent> for super::GpuApp {
                     }
                     return;
                 }
+                // A pager swipe owns cursor motion the same way (track the finger).
+                if self.page_drag.is_some() {
+                    self.page_drag_to(lx);
+                    return;
+                }
                 // Resolve the cell when a selection drag is in flight OR a
                 // mouse-reporting app wants motion (both read the emulator
                 // snapshot — skip the cost otherwise).
@@ -295,6 +300,9 @@ impl ApplicationHandler<UserEvent> for super::GpuApp {
                 ..
             } => match state {
                 ElementState::Pressed => self.on_mouse_press(),
+                // A pager swipe ends here (throw to the nearest page); the press
+                // was swallowed, so there's no selection release to dispatch.
+                ElementState::Released if self.page_drag.is_some() => self.page_drag_end(),
                 ElementState::Released => {
                     let mouse_report =
                         self.mouse_report_at_cursor(MouseButton::Left, MouseEventKind::Release);

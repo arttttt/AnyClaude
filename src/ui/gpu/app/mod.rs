@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use term_clipboard::Clipboard;
 use term_gpu::GpuRenderer;
-use term_ui::{Animation, Bounds, Interpolator};
+use term_ui::{Animation, Bounds, Interpolator, Spring};
 use uuid::Uuid;
 use winit::event_loop::EventLoopProxy;
 use winit::window::Window;
@@ -65,6 +65,26 @@ const POPUP_FADE_SECS: f32 = 0.12;
 
 /// Panel overlay collapse/expand width-slide duration (seconds).
 const PANEL_ANIM_SECS: f32 = 0.14;
+
+/// Pager page-settle spring constants (page units). `DAMPING ≈ 2·√STIFFNESS` is
+/// critical — snappy, no overshoot.
+const PAGE_SPRING_STIFFNESS: f32 = 700.0;
+const PAGE_SPRING_DAMPING: f32 = 53.0;
+/// How far a drag-release flick velocity projects the scroll forward before
+/// snapping to the nearest page (seconds).
+const PAGE_FLICK_PROJECT_SECS: f32 = 0.12;
+
+/// An in-flight pager swipe: the press anchor (`start_x` / `start_scroll`), the
+/// last cursor sample (`last_x` / `last_t`), and the latest swipe `velocity`
+/// (page units/sec) thrown into the spring on release.
+#[derive(Debug, Clone, Copy)]
+struct PageDrag {
+    start_x: f32,
+    start_scroll: f32,
+    last_x: f32,
+    last_t: Instant,
+    velocity: f32,
+}
 
 /// User event delivered to the winit loop. Drives redraws in response
 /// to PTY output and scroll momentum without polling.
@@ -127,9 +147,14 @@ pub(super) struct GpuApp {
     panel_width: Animation<f32>,
 
     /// Right overlay pager position (bucket 3-S): the continuous page index, in
-    /// page units. `retarget`ed each frame toward the focused panel's index, so
-    /// paging slides; `value(now)` is the rendered scroll position (R12).
-    page_scroll: Animation<f32>,
+    /// page units, as a velocity-carrying [`Spring`]. Its target chases the
+    /// focused panel's index each frame (hotkey / click paging) OR is driven
+    /// directly by a mouse swipe (`page_drag`); a drag-release flick kicks it.
+    page_scroll: Spring,
+    /// In-flight pager swipe (bucket 2): the press anchor + the latest sample, so
+    /// `value(now)` tracks the cursor and the release can throw with velocity.
+    /// `None` outside a swipe.
+    page_drag: Option<PageDrag>,
 
     /// The mouse cursor icon currently set on the window — cached so a hover move
     /// only calls `set_cursor` on a CHANGE (a resize cursor over a panel edge, a
@@ -168,13 +193,13 @@ impl GpuApp {
             Duration::from_secs_f32(PANEL_ANIM_SECS),
             Interpolator::EaseInOut,
         );
-        // The pager starts settled on the first page; it retargets toward the
-        // focused index each frame, so paging eases over `PANEL_ANIM_SECS`.
-        let page_scroll = Animation::settled(
+        // The pager starts on the first page; its spring target chases the
+        // focused index (paging) or is driven by a swipe.
+        let page_scroll = Spring::new(
             0.0,
+            PAGE_SPRING_STIFFNESS,
+            PAGE_SPRING_DAMPING,
             Instant::now(),
-            Duration::from_secs_f32(PANEL_ANIM_SECS),
-            Interpolator::EaseInOut,
         );
         Self {
             proxy,
@@ -191,6 +216,7 @@ impl GpuApp {
             panel_toggle_zone: None,
             panel_width,
             page_scroll,
+            page_drag: None,
             current_cursor: winit::window::CursorIcon::Default,
             clipboard: make_clipboard(),
             backends: Backends {

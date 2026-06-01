@@ -230,6 +230,9 @@ impl super::GpuApp {
                 let on_edge = x <= rect.origin.x + self.state.right.policy().collapsed_width;
                 if self.state.right.policy().resizable && on_edge {
                     self.dispatch(Msg::PanelEdgeDragStart(ManagerId::Right));
+                } else if self.state.right.len() >= 2 {
+                    // A press on the page area (not the edge) begins a swipe.
+                    self.page_drag_start(x);
                 }
                 return;
             }
@@ -261,6 +264,66 @@ impl super::GpuApp {
             &ctx,
         );
         let _ = self.perform_effects(fx);
+    }
+
+    /// The pager's page viewport width (overlay minus the 1px column border each
+    /// side); clamped ≥ 1 so it never divides by zero. Matches `redraw`'s `page_w`.
+    fn page_viewport_width(&self) -> f32 {
+        self.panel_overlay_rect.map(|r| (r.size.x - 2.0).max(1.0)).unwrap_or(1.0)
+    }
+
+    /// Begin a pager swipe at cursor x `start_x`, anchored to the current
+    /// rendered scroll so the track tracks the finger from here.
+    fn page_drag_start(&mut self, start_x: f32) {
+        let now = Instant::now();
+        let start_scroll = self.page_scroll.value(now);
+        self.page_drag = Some(super::PageDrag {
+            start_x,
+            start_scroll,
+            last_x: start_x,
+            last_t: now,
+            velocity: 0.0,
+        });
+    }
+
+    /// Track a pager swipe: `scroll = anchor − Δx/page_w` (clamped), snapped onto
+    /// the spring; sample the instantaneous velocity for the release throw.
+    pub(super) fn page_drag_to(&mut self, x: f32) {
+        let Some(drag) = self.page_drag else { return };
+        let now = Instant::now();
+        let page_w = self.page_viewport_width();
+        let max = self.state.right.len().saturating_sub(1) as f32;
+        let scroll = (drag.start_scroll - (x - drag.start_x) / page_w).clamp(0.0, max);
+        let dt = now.saturating_duration_since(drag.last_t).as_secs_f32().max(1e-3);
+        let velocity = -((x - drag.last_x) / dt) / page_w;
+        self.page_scroll.snap(scroll);
+        if let Some(d) = self.page_drag.as_mut() {
+            d.last_x = x;
+            d.last_t = now;
+            d.velocity = velocity;
+        }
+        self.request_redraw();
+    }
+
+    /// End a pager swipe: project the release velocity, snap to the nearest page,
+    /// focus it, and kick the spring so the settle carries the throw's momentum.
+    pub(super) fn page_drag_end(&mut self) {
+        let Some(drag) = self.page_drag.take() else { return };
+        let now = Instant::now();
+        let n = self.state.right.len();
+        if n == 0 {
+            return;
+        }
+        let max = (n - 1) as f32;
+        let scroll = self.page_scroll.value(now).clamp(0.0, max);
+        let projected = scroll + drag.velocity * super::PAGE_FLICK_PROJECT_SECS;
+        let target = projected.round().clamp(0.0, max) as usize;
+        if let Some(id) = self.state.right.panels().get(target).map(|panel| panel.id) {
+            self.state.right.set_focus(id);
+        }
+        self.page_scroll.set_target(target as f32);
+        self.page_scroll.kick(drag.velocity);
+        self.request_redraw();
     }
 
     /// Encode a mouse event for the PTY when an app has reporting on (§6), or
