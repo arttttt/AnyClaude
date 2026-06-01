@@ -267,14 +267,6 @@ impl super::GpuApp {
         let _ = self.perform_effects(fx);
     }
 
-    /// Whether the mouse is currently over the teammates overlay rect.
-    pub(super) fn cursor_over_overlay(&self) -> bool {
-        matches!(
-            (self.panel_overlay_rect, self.state.cursor_pos),
-            (Some(rect), Some((x, y))) if rect.contains(Vec2::new(x, y))
-        )
-    }
-
     /// Route a horizontal two-finger swipe (`dx` logical px) to the pager: every
     /// `PAGE_SWIPE_COMMIT_PX` of travel pages once, and a `committed` lock holds
     /// until a gesture gap so one flick (plus its trackpad momentum) pages at most
