@@ -26,6 +26,11 @@ pub enum AppShortcut {
     /// overlay — the Milestone-1 manual experiment trigger. Like
     /// `DumpDiagnostic`, only its keybinding is `cfg(debug_assertions)`-gated.
     DebugTogglePanels,
+    /// Page the teammates overlay back / forward (⌥← / ⌥→). Debug-gated for now
+    /// (the panels are debug-seeded); release builds leave ⌥+arrows to the
+    /// terminal's word-motion.
+    PagePrev,
+    PageNext,
     Quit,
 }
 
@@ -73,6 +78,16 @@ pub fn app_shortcut(code: KeyCode, modifiers: ModifiersState) -> Option<AppShort
             KeyCode::KeyP => AppShortcut::DebugTogglePanels,
             _ => return None,
         });
+    }
+    // ⌥ + arrows page the teammates overlay (debug-only; release leaves them to
+    // the terminal). Checked after Ctrl/Cmd so a combined chord prefers those.
+    #[cfg(debug_assertions)]
+    if modifiers.alt_key() {
+        return match code {
+            KeyCode::ArrowLeft => Some(AppShortcut::PagePrev),
+            KeyCode::ArrowRight => Some(AppShortcut::PageNext),
+            _ => None,
+        };
     }
     None
 }

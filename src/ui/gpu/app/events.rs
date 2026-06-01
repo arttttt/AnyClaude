@@ -91,6 +91,8 @@ impl super::GpuApp {
                 Effect::RestartPty => self.restart_pty(),
                 Effect::DumpDiagnostic => self.dump_diagnostic(),
                 Effect::DebugTogglePanels => self.debug_toggle_panels(),
+                Effect::PagePrev => self.page_panel(false),
+                Effect::PageNext => self.page_panel(true),
                 Effect::Quit => exit = true,
                 Effect::Drain => {
                     if self.drain_pty() {
@@ -120,6 +122,18 @@ impl super::GpuApp {
             self.state.right.create(PanelKind::Teammate, "doc-writer", [0.45, 0.75, 0.85, 1.0]);
         }
         self.state.right.toggle();
+        self.request_redraw();
+    }
+
+    /// Page the right teammates overlay forward / back (⌥→ / ⌥←): move its focus
+    /// one panel; the pager's `page_scroll` tween then slides to it. Coordinator-
+    /// side state mutation like `debug_toggle_panels`; a no-op when empty.
+    fn page_panel(&mut self, forward: bool) {
+        if forward {
+            self.state.right.focus_next();
+        } else {
+            self.state.right.focus_prev();
+        }
         self.request_redraw();
     }
 
