@@ -43,13 +43,15 @@ pub enum Placement {
     Overlay,
 }
 
-/// How many panels a manager renders at once.
+/// How a manager presents its panels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RenderMode {
-    /// One active panel rendered at a time (a session switcher).
+    /// One active panel rendered at a time, switched discretely (the left
+    /// sessions sidebar).
     Switcher,
-    /// All panels rendered, stacked (the teammates overlay).
-    Stack,
+    /// One page at a time with an animated horizontal slide between them — the
+    /// teammates overlay. The focused panel is the current page.
+    Pager,
 }
 
 /// What a panel wraps. This is DATA, not a type — a `Panel` is a `Panel` whether
@@ -116,7 +118,7 @@ impl Policy {
         Self {
             side: Side::Right,
             placement: Placement::Overlay,
-            render: RenderMode::Stack,
+            render: RenderMode::Pager,
             resizable: true,
             edge_toggle: true,
             has_indicator: true,
@@ -202,6 +204,13 @@ impl PanelManager {
         self.focus
     }
 
+    /// Index of the focused panel within `panels` — the current page for a
+    /// [`RenderMode::Pager`]. `None` when there is no focus / no panels.
+    pub fn focus_index(&self) -> Option<usize> {
+        let f = self.focus?;
+        self.panels.iter().position(|p| p.id == f)
+    }
+
     pub fn is_visible(&self) -> bool {
         self.visible
     }
@@ -255,6 +264,27 @@ impl PanelManager {
         }
         let panel = self.panels.remove(from);
         self.panels.insert(to, panel);
+    }
+
+    /// Move focus to the next panel, wrapping around. No-op when empty. Drives
+    /// pager "page forward".
+    pub fn focus_next(&mut self) {
+        self.cycle_focus(1);
+    }
+
+    /// Move focus to the previous panel, wrapping around. No-op when empty.
+    pub fn focus_prev(&mut self) {
+        self.cycle_focus(-1);
+    }
+
+    fn cycle_focus(&mut self, delta: isize) {
+        let n = self.panels.len();
+        if n == 0 {
+            return;
+        }
+        let cur = self.focus_index().unwrap_or(0) as isize;
+        let next = (cur + delta).rem_euclid(n as isize) as usize;
+        self.focus = Some(self.panels[next].id);
     }
 
     /// Focus `id` if it exists. Returns whether it was found.

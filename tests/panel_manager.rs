@@ -19,7 +19,7 @@ fn policies_differ_only_in_data() {
 
     assert_eq!(right.side, Side::Right);
     assert_eq!(right.placement, Placement::Overlay);
-    assert_eq!(right.render, RenderMode::Stack);
+    assert_eq!(right.render, RenderMode::Pager);
     assert!(right.resizable);
     assert!(right.has_indicator);
 }
@@ -176,6 +176,39 @@ fn drag_can_fully_hide_and_reopen() {
     m.end_edge_drag();
     assert!(m.is_visible(), "releasing above min_width expands");
     assert_eq!(m.width(), 640.0);
+}
+
+#[test]
+fn focus_index_tracks_the_focused_panel() {
+    let mut m = PanelManager::new(Policy::overlay());
+    assert_eq!(m.focus_index(), None, "no panels, no index");
+    m.create(PanelKind::Teammate, "a", BLUE);
+    let b = m.create(PanelKind::Teammate, "b", BLUE);
+    m.create(PanelKind::Teammate, "c", BLUE);
+    assert_eq!(m.focus_index(), Some(0), "first panel is focused");
+    m.set_focus(b);
+    assert_eq!(m.focus_index(), Some(1));
+}
+
+#[test]
+fn focus_next_prev_cycle_and_wrap() {
+    let mut m = PanelManager::new(Policy::overlay());
+    // No panels: cycling is a no-op (no panic, focus stays None).
+    m.focus_next();
+    assert_eq!(m.focus(), None);
+
+    let a = m.create(PanelKind::Teammate, "a", BLUE);
+    let b = m.create(PanelKind::Teammate, "b", BLUE);
+    let c = m.create(PanelKind::Teammate, "c", BLUE);
+    assert_eq!(m.focus(), Some(a));
+    m.focus_next();
+    assert_eq!(m.focus(), Some(b));
+    m.focus_next();
+    assert_eq!(m.focus(), Some(c));
+    m.focus_next();
+    assert_eq!(m.focus(), Some(a), "next wraps from the last to the first");
+    m.focus_prev();
+    assert_eq!(m.focus(), Some(c), "prev wraps from the first to the last");
 }
 
 #[test]
