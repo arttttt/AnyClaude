@@ -14,6 +14,7 @@ use crate::proxy::router::{build_router, RouterEngine};
 use crate::proxy::shutdown::ShutdownManager;
 use crate::proxy::thinking::TransformerRegistry;
 use crate::proxy::timeout::TimeoutConfig;
+use crate::ui::control_plane::ControlPlaneHandle;
 
 pub struct ProxyServer {
     pub addr: SocketAddr,
@@ -126,6 +127,14 @@ impl ProxyServer {
         }
 
         Err(format!("Could not find available port in range {}-{}", start_port, start_port + 100).into())
+    }
+
+    /// Attach the control-plane bridge to the winit coordinator so the
+    /// `/api/tmux/*` routes can drive teammate panels. Called once at startup
+    /// (before `run`); headless test servers leave it unset. Optional capability
+    /// — keeps `new`'s signature unchanged for the 20+ headless callers (KISS).
+    pub fn set_control_plane(&mut self, handle: ControlPlaneHandle) {
+        self.router.set_control_plane(handle);
     }
 
     pub fn backend_state(&self) -> BackendState {

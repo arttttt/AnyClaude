@@ -109,7 +109,10 @@ impl super::GpuApp {
     /// matching resources — spawn a [`TerminalSurface`] into `panes` on `Register`,
     /// drop it on `Unregister`. The single coordinator entry point for
     /// `ChildSessionEvent`s (debug emitter today, `TmuxAdapter` later).
-    fn apply_child_session_event(&mut self, event: crate::ui::child_session::ChildSessionEvent) {
+    fn apply_child_session_event(
+        &mut self,
+        event: crate::ui::child_session::ChildSessionEvent,
+    ) -> Option<crate::ui::child_session::PaneId> {
         use crate::ui::child_session::ChildSessionEvent;
         // Pull out what the resource side needs before the event is consumed.
         let spec = match &event {
@@ -140,6 +143,7 @@ impl super::GpuApp {
         // back to the main session.
         self.state.normalize_input_focus();
         self.request_redraw();
+        new_pane
     }
 
     /// Debug-only (Ctrl+P): the first hit REGISTERS a few mock teammate sessions
@@ -172,8 +176,11 @@ impl super::GpuApp {
                 };
                 self.apply_child_session_event(ChildSessionEvent::Register(spec));
             }
+        } else {
+            // The seeding press shows the overlay (register does); subsequent
+            // presses just collapse / expand it.
+            self.state.right.toggle();
         }
-        self.state.right.toggle();
         // Collapsing the overlay drops keyboard focus back to the main session.
         self.state.normalize_input_focus();
         self.request_redraw();
@@ -306,6 +313,13 @@ impl ApplicationHandler<UserEvent> for super::GpuApp {
                 if self.panes.drain(pane) {
                     self.request_redraw();
                 }
+            }
+            UserEvent::ControlPlane(req) => {
+                // The tmux adapter (tokio) asked the coordinator to apply a
+                // teammate lifecycle event; answer its reply channel with the
+                // minted PaneId (the `%N` the shim expects back).
+                let pane = self.apply_child_session_event(req.event);
+                let _ = req.reply.send(pane);
             }
             UserEvent::GestureEnded => {
                 self.dispatch(Msg::GestureEnd);

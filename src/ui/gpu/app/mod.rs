@@ -102,8 +102,9 @@ struct PageSwipe {
 }
 
 /// User event delivered to the winit loop. Drives redraws in response
-/// to PTY output and scroll momentum without polling.
-#[derive(Debug, Clone, Copy)]
+/// to PTY output and scroll momentum without polling. NOT `Copy`/`Clone` — the
+/// `ControlPlane` variant carries a one-shot reply channel that must move.
+#[derive(Debug)]
 pub(super) enum UserEvent {
     PtyBytesArrived,
     /// A teammate pane's PTY reader queued new bytes (the per-pane analogue of
@@ -114,6 +115,10 @@ pub(super) enum UserEvent {
     /// 1Hz heartbeat that keeps Uptime / Reqs / sub / team chrome
     /// fresh even when the PTY is silent.
     TickRedraw,
+    /// A teammate lifecycle request from the proxy's tmux control plane
+    /// (tokio side). The coordinator applies it and answers its reply channel
+    /// with the resulting `PaneId` (the tmux `%N`).
+    ControlPlane(crate::ui::control_plane::ControlRequest),
 }
 
 pub(super) struct GpuApp {

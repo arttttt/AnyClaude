@@ -97,11 +97,14 @@ impl ChildSessionManager {
         }
     }
 
-    /// Register a child: mint a `PaneId`, create its panel, record the mapping.
+    /// Register a child: mint a `PaneId`, create its panel, record the mapping,
+    /// and show the overlay — a registered child means there's something to see
+    /// (symmetric with `unregister` hiding it when the last child leaves).
     fn register(&mut self, spec: ChildSpec, panels: &mut PanelManager) -> PaneId {
         let pane_id = PaneId(self.next_pane);
         self.next_pane += 1;
         let panel_id = panels.create(PanelKind::Teammate, spec.name.clone(), spec.accent);
+        panels.set_visible(true);
         self.registry
             .insert(pane_id, ChildSession { pane_id, panel_id, name: spec.name, accent: spec.accent });
         pane_id

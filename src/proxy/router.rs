@@ -13,6 +13,8 @@ use crate::backend::{BackendState, AgentBackendState, AgentRegistry};
 use crate::config::DebugLogLevel;
 use crate::proxy::error::ErrorResponse;
 use crate::proxy::hooks::HookState;
+use crate::proxy::tmux_api::TmuxState;
+use crate::ui::control_plane::ControlPlaneHandle;
 use crate::metrics::{DebugLogger, ObservabilityHub, RequestMeta};
 use crate::proxy::health::HealthHandler;
 use crate::proxy::pipeline::{PipelineConfig, PipelineContext};
@@ -46,6 +48,11 @@ pub struct RouterEngine {
     pub(crate) debug_logger: Arc<DebugLogger>,
     pipeline_config: PipelineConfig,
     pub(crate) session_token: Option<String>,
+    /// Bridge to the winit coordinator for the tmux control plane. `None` when
+    /// the proxy runs headless (tests) — the `/api/tmux/*` routes then 503.
+    /// Set after construction via [`set_control_plane`](Self::set_control_plane)
+    /// so the headless `new` signature (used by 20+ tests) stays unchanged.
+    control_plane: Option<ControlPlaneHandle>,
 }
 
 impl RouterEngine {
@@ -79,7 +86,15 @@ impl RouterEngine {
             debug_logger,
             pipeline_config,
             session_token,
+            control_plane: None,
         }
+    }
+
+    /// Attach the control-plane bridge to the winit coordinator (the GPU UI).
+    /// Called once at startup, before the server is served, so the `/api/tmux/*`
+    /// routes can drive teammate panels. Headless runs leave it `None`.
+    pub fn set_control_plane(&mut self, handle: ControlPlaneHandle) {
+        self.control_plane = Some(handle);
     }
 }
 
@@ -133,10 +148,18 @@ pub fn build_router(
         .route("/api/teammate-start", post(crate::proxy::hooks::handle_teammate_start))
         .with_state(hook_state);
 
+    // tmux control plane — the shim POSTs tmux verbs here; each maps to a
+    // teammate lifecycle event driven through the winit coordinator. No auth
+    // (localhost curl from the shim), separate state (only the UI bridge).
+    let tmux_routes = Router::new()
+        .route("/api/tmux/split-window", post(crate::proxy::tmux_api::handle_split_window))
+        .with_state(TmuxState { control_plane: engine.control_plane.clone() });
+
     let mut router = Router::new()
         .route("/health", get(health_handler))
         .with_state(engine.clone())
-        .merge(hook_routes);
+        .merge(hook_routes)
+        .merge(tmux_routes);
 
     // Teammate pipeline: dynamic per-teammate backend via agent_id in URL path.
     // URL: /teammate/{agent_id}/v1/messages → agent_id extracted, path stripped.

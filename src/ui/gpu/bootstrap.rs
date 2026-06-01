@@ -77,6 +77,20 @@ pub fn run(
     let debug_logger = Arc::new(DebugLogger::new(debug_config));
     init_global_logger(debug_logger.clone());
 
+    // --- Winit event loop + control-plane bridge --------------------
+    // Built BEFORE the proxy so the proxy can hold a handle that wakes the
+    // coordinator: the tmux control plane crosses tokio→winit through it.
+    let event_loop = EventLoop::<UserEvent>::with_user_event()
+        .build()
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
+    let proxy = event_loop.create_proxy();
+    let control_plane = crate::ui::control_plane::ControlPlaneHandle::new({
+        let proxy = proxy.clone();
+        move |req| {
+            let _ = proxy.send_event(UserEvent::ControlPlane(req));
+        }
+    });
+
     // --- Proxy server + bind ----------------------------------------
     let mut proxy_server = ProxyServer::new(
         config_store.clone(),
@@ -84,6 +98,7 @@ pub fn run(
         Some(session_token.clone()),
     )
     .map_err(|e| std::io::Error::other(e.to_string()))?;
+    proxy_server.set_control_plane(control_plane);
     let (actual_addr, actual_base_url) = async_runtime
         .block_on(async { proxy_server.try_bind(&config_store).await })
         .map_err(|e| std::io::Error::other(e.to_string()))?;
@@ -145,10 +160,6 @@ pub fn run(
 
     // --- Hand off to the winit event loop ---------------------------
     let _ = scrollback_lines; // Reserved for future grid configuration.
-    let event_loop = EventLoop::<UserEvent>::with_user_event()
-        .build()
-        .map_err(|e| std::io::Error::other(e.to_string()))?;
-    let proxy = event_loop.create_proxy();
     let mut app = GpuApp::new(
         proxy,
         spawn.command,

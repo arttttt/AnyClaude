@@ -2,6 +2,7 @@ pub mod app_state;
 pub mod backend_switch;
 pub mod child_session;
 pub mod chrome_labels;
+pub mod control_plane;
 pub mod gpu;
 pub mod history;
 pub mod input;

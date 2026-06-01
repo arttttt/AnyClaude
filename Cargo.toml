@@ -37,7 +37,7 @@ futures = "0.3"
 futures-timer = "3"
 
 # Async runtime
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-util", "signal", "time"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-util", "signal", "time", "sync"] }
 uuid = { version = "1.23", features = ["v4"] }
 
 # HTTP Proxy
