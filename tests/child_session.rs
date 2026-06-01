@@ -48,6 +48,22 @@ fn unregister_removes_the_panel_and_entry_and_reassigns_focus() {
 }
 
 #[test]
+fn unregistering_the_last_child_closes_the_overlay() {
+    let mut panels = PanelManager::new(Policy::overlay());
+    let mut mgr = ChildSessionManager::new();
+    let a = register(&mut mgr, &mut panels, "a", BLUE);
+    let b = register(&mut mgr, &mut panels, "b", BLUE);
+    panels.set_visible(true); // overlay opened
+
+    mgr.apply(ChildSessionEvent::Unregister(a), &mut panels);
+    assert!(panels.is_visible(), "still teammates left → overlay stays open");
+
+    mgr.apply(ChildSessionEvent::Unregister(b), &mut panels);
+    assert!(mgr.is_empty());
+    assert!(!panels.is_visible(), "the last child leaving closes the overlay");
+}
+
+#[test]
 fn pane_ids_are_monotonic_and_not_reused() {
     let mut panels = PanelManager::new(Policy::overlay());
     let mut mgr = ChildSessionManager::new();

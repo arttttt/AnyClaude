@@ -101,11 +101,15 @@ impl ChildSessionManager {
         pane_id
     }
 
-    /// Unregister a child: drop the registry entry and remove its panel. No-op if
-    /// the pane is unknown.
+    /// Unregister a child: drop the registry entry and remove its panel. When the
+    /// last child leaves, close the overlay (nothing to show). No-op if the pane
+    /// is unknown.
     fn unregister(&mut self, pane: PaneId, panels: &mut PanelManager) {
         if let Some(session) = self.registry.remove(&pane) {
             panels.remove(session.panel_id);
+            if self.registry.is_empty() {
+                panels.set_visible(false);
+            }
         }
     }
 
