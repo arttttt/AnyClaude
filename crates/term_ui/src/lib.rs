@@ -32,6 +32,7 @@ pub mod view;
 
 pub use anim::{
     apply_overlay_alpha, ease_in_out, ease_out, lerp, linear, Animatable, Animation, Interpolator,
+    Spring,
 };
 pub use arena::{BlockShadow, Node, NodeKind, RetainedTree, StackStyle, TextStyle};
 pub use geometry::{

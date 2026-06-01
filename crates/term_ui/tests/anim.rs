@@ -3,10 +3,44 @@
 
 use std::time::{Duration, Instant};
 
-use term_ui::{Animatable, Animation, Interpolator};
+use term_ui::{Animatable, Animation, Interpolator, Spring};
 
 fn approx(a: f32, b: f32) -> bool {
     (a - b).abs() < 1e-3
+}
+
+/// Step a spring forward by `frames` of 16 ms and return the final value.
+fn step_spring(s: &mut Spring, t0: Instant, frames: u32) -> (f32, Instant) {
+    let mut t = t0;
+    for _ in 0..frames {
+        t += Duration::from_millis(16);
+        s.value(t);
+    }
+    (s.value(t), t)
+}
+
+#[test]
+fn spring_settles_on_its_target() {
+    let t0 = Instant::now();
+    let mut s = Spring::new(0.0, 700.0, 53.0, t0);
+    s.set_target(3.0);
+    let (v, _) = step_spring(&mut s, t0, 120); // ~2s, ample to settle
+    assert!(!s.animating(), "a critically-damped spring comes to rest");
+    assert!(approx(v, 3.0), "rests on the target, got {v}");
+}
+
+#[test]
+fn spring_snap_holds_and_kick_throws() {
+    let t0 = Instant::now();
+    let mut s = Spring::new(0.0, 700.0, 53.0, t0);
+    // snap pins value == target with no velocity → no motion.
+    s.snap(2.0);
+    let t1 = t0 + Duration::from_millis(16);
+    assert!(approx(s.value(t1), 2.0), "snap holds with no target pull");
+    // A kick injects momentum, so the next step moves off the pinned value.
+    s.kick(5.0);
+    let t2 = t1 + Duration::from_millis(16);
+    assert!(s.value(t2) > 2.0, "kick throws the value forward");
 }
 
 #[test]

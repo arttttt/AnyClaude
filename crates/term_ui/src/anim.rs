@@ -176,6 +176,81 @@ impl<T: Animatable> Animation<T> {
     }
 }
 
+/// Timestep clamp for [`Spring::value`] — a long gap between frames (e.g. the
+/// window was occluded) must not let the integrator explode.
+const MAX_SPRING_DT: f32 = 1.0 / 30.0;
+/// Below this distance + speed the spring is treated as at rest.
+const SPRING_EPS: f32 = 1e-3;
+
+/// A 1-D spring for snap animations (the pager page settle). Unlike
+/// [`Animation`] — a fixed-duration tween — a spring is **velocity-based**: it
+/// carries momentum, so a drag-release flick continues past the lift point and
+/// eases to rest, and a reversal stays smooth with no bookkeeping. Held in
+/// bucket 3-S like an `Animation`; the coordinator steps it from the frame clock
+/// via [`value`](Spring::value). Default constants should be ~critically damped
+/// (a pager that bounces past its page reads as broken).
+#[derive(Debug, Clone, Copy)]
+pub struct Spring {
+    value: f32,
+    velocity: f32,
+    target: f32,
+    stiffness: f32,
+    damping: f32,
+    last: Instant,
+}
+
+impl Spring {
+    /// A spring at rest on `value`. Higher `stiffness` = snappier; `damping` near
+    /// `2·√stiffness` is critical (no overshoot).
+    pub fn new(value: f32, stiffness: f32, damping: f32, now: Instant) -> Self {
+        Self { value, velocity: 0.0, target: value, stiffness, damping, last: now }
+    }
+
+    /// Re-aim at `target`, keeping the current value + velocity so an in-flight
+    /// settle re-routes smoothly. Safe to call every frame with the same value.
+    pub fn set_target(&mut self, target: f32) {
+        self.target = target;
+    }
+
+    /// Pin the value instantly (value == target, zero velocity) — a hand-drag
+    /// driving the position directly.
+    pub fn snap(&mut self, value: f32) {
+        self.value = value;
+        self.target = value;
+        self.velocity = 0.0;
+    }
+
+    /// Inject a velocity (units / second) — a drag-release flick, so the settle
+    /// carries the throw's momentum past the lift point.
+    pub fn kick(&mut self, velocity: f32) {
+        self.velocity = velocity;
+    }
+
+    /// Step the spring to `now` and return the current value. Integrates a damped
+    /// spring (semi-implicit Euler) over the clamped frame `dt`, snapping to rest
+    /// once both distance and speed fall under [`SPRING_EPS`].
+    pub fn value(&mut self, now: Instant) -> f32 {
+        let dt = now.saturating_duration_since(self.last).as_secs_f32().min(MAX_SPRING_DT);
+        self.last = now;
+        if dt > 0.0 {
+            let accel = -self.stiffness * (self.value - self.target) - self.damping * self.velocity;
+            self.velocity += accel * dt;
+            self.value += self.velocity * dt;
+            if (self.value - self.target).abs() < SPRING_EPS && self.velocity.abs() < SPRING_EPS {
+                self.value = self.target;
+                self.velocity = 0.0;
+            }
+        }
+        self.value
+    }
+
+    /// Whether the spring is still moving (off target or carrying velocity) —
+    /// drives the caller's "request another frame" decision.
+    pub fn animating(&self) -> bool {
+        self.value != self.target || self.velocity != 0.0
+    }
+}
+
 /// Linear ramp; `t` clamped to `[0, 1]`.
 pub fn linear(t: f32) -> f32 {
     t.clamp(0.0, 1.0)
