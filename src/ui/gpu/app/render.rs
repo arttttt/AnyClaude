@@ -244,6 +244,12 @@ impl super::GpuApp {
         // both are clipped to the single-page viewport (off-edge neighbours
         // trimmed) and faded with the collapse animation.
         if show && expanded && page_w > 1.0 {
+            // Only re-fit a pane's grid when the overlay width has SETTLED — not
+            // mid collapse/expand slide or hand-drag, where `page_w` sweeps and a
+            // per-frame resize would destructively reflow the teammate's shell
+            // (the term_grid shrink lesson). While unsettled the grid paints at
+            // its last size, clipped to the page; the settle frame resizes once.
+            let settled = !panel_animating && dragging.is_none();
             let border = 1.0_f32;
             let content_origin = overlay_origin + Vec2::new(border, border);
             let page_h = (overlay_size.y - 2.0 * border - panels_view::STRIP_H).max(0.0);
@@ -271,7 +277,9 @@ impl super::GpuApp {
                 .collect();
             for (i, pane) in window {
                 let Some(surface) = self.panes.get_mut(pane) else { continue };
-                surface.resize(cols, rows);
+                if settled {
+                    surface.resize(cols, rows);
+                }
                 let page_x = content_origin.x + (i as f32 - page_scroll) * page_w;
                 // Opaque backdrop (the overlay floats over the terminal).
                 overlay_rects.push(RectInstance {
