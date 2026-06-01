@@ -188,6 +188,7 @@ pub fn populate_panel(
                     pos: [pos_x_logical, pos_y_logical],
                     size: [cell_w_logical, cell_h_logical],
                     color: bg,
+                    clip: crate::NO_CLIP,
                 });
             }
 
@@ -236,6 +237,7 @@ pub fn populate_panel(
                             pos: [pos_x_logical, pos_y_logical + cell_h_logical * 0.78],
                             size: [cell_w_logical, 1.0],
                             color,
+                            clip: crate::NO_CLIP,
                         });
                     }
                     if cell.flags.strike() {
@@ -243,6 +245,7 @@ pub fn populate_panel(
                             pos: [pos_x_logical, pos_y_logical + cell_h_logical * 0.42],
                             size: [cell_w_logical, 1.0],
                             color,
+                            clip: crate::NO_CLIP,
                         });
                     }
                     continue;
@@ -360,6 +363,7 @@ pub fn populate_panel(
                     pos: [pos_x_logical, pos_y_logical + cell_h_logical * 0.78],
                     size: [cell_w_logical, 1.0],
                     color,
+                    clip: crate::NO_CLIP,
                 });
             }
             if cell.flags.double_underline() {
@@ -367,11 +371,13 @@ pub fn populate_panel(
                     pos: [pos_x_logical, pos_y_logical + cell_h_logical * 0.72],
                     size: [cell_w_logical, 0.8],
                     color,
+                    clip: crate::NO_CLIP,
                 });
                 rects.push(RectInstance {
                     pos: [pos_x_logical, pos_y_logical + cell_h_logical * 0.84],
                     size: [cell_w_logical, 0.8],
                     color,
+                    clip: crate::NO_CLIP,
                 });
             }
             if cell.flags.strike() {
@@ -379,6 +385,7 @@ pub fn populate_panel(
                     pos: [pos_x_logical, pos_y_logical + cell_h_logical * 0.42],
                     size: [cell_w_logical, 1.0],
                     color,
+                    clip: crate::NO_CLIP,
                 });
             }
         }
@@ -443,6 +450,7 @@ pub fn build_cursor_rect(
         pos: [pos_phys[0] / sf, pos_phys[1] / sf],
         size: [size_phys[0] / sf, size_phys[1] / sf],
         color: CURSOR_COLOR,
+        clip: crate::NO_CLIP,
     })
 }
 
@@ -514,72 +522,73 @@ pub fn paint_block_char(
             pos: [x, y],
             size: [w, h],
             color: [color[0], color[1], color[2], color[3] * alpha],
+            clip: crate::NO_CLIP,
         });
         return true;
     }
 
     match ch {
         // ▀ Upper half (U+2580)
-        '\u{2580}' => rects.push(RectInstance { pos: [x, y], size: [w, h4], color }),
+        '\u{2580}' => rects.push(RectInstance { pos: [x, y], size: [w, h4], color, clip: crate::NO_CLIP }),
         // ▁ Lower 1/8 (U+2581)
-        '\u{2581}' => rects.push(RectInstance { pos: [x, y + h7], size: [w, h1], color }),
-        '\u{2582}' => rects.push(RectInstance { pos: [x, y + h6], size: [w, h2], color }),
-        '\u{2583}' => rects.push(RectInstance { pos: [x, y + h5], size: [w, h3], color }),
+        '\u{2581}' => rects.push(RectInstance { pos: [x, y + h7], size: [w, h1], color, clip: crate::NO_CLIP }),
+        '\u{2582}' => rects.push(RectInstance { pos: [x, y + h6], size: [w, h2], color, clip: crate::NO_CLIP }),
+        '\u{2583}' => rects.push(RectInstance { pos: [x, y + h5], size: [w, h3], color, clip: crate::NO_CLIP }),
         // ▄ Lower half (U+2584)
-        '\u{2584}' => rects.push(RectInstance { pos: [x, y + h4], size: [w, h4], color }),
-        '\u{2585}' => rects.push(RectInstance { pos: [x, y + h3], size: [w, h5], color }),
-        '\u{2586}' => rects.push(RectInstance { pos: [x, y + h2], size: [w, h6], color }),
-        '\u{2587}' => rects.push(RectInstance { pos: [x, y + h1], size: [w, h7], color }),
+        '\u{2584}' => rects.push(RectInstance { pos: [x, y + h4], size: [w, h4], color, clip: crate::NO_CLIP }),
+        '\u{2585}' => rects.push(RectInstance { pos: [x, y + h3], size: [w, h5], color, clip: crate::NO_CLIP }),
+        '\u{2586}' => rects.push(RectInstance { pos: [x, y + h2], size: [w, h6], color, clip: crate::NO_CLIP }),
+        '\u{2587}' => rects.push(RectInstance { pos: [x, y + h1], size: [w, h7], color, clip: crate::NO_CLIP }),
         // █ Full block (U+2588)
-        '\u{2588}' => rects.push(RectInstance { pos: [x, y], size: [w, h], color }),
-        '\u{2589}' => rects.push(RectInstance { pos: [x, y], size: [w7, h], color }),
-        '\u{258A}' => rects.push(RectInstance { pos: [x, y], size: [w6, h], color }),
-        '\u{258B}' => rects.push(RectInstance { pos: [x, y], size: [w5, h], color }),
+        '\u{2588}' => rects.push(RectInstance { pos: [x, y], size: [w, h], color, clip: crate::NO_CLIP }),
+        '\u{2589}' => rects.push(RectInstance { pos: [x, y], size: [w7, h], color, clip: crate::NO_CLIP }),
+        '\u{258A}' => rects.push(RectInstance { pos: [x, y], size: [w6, h], color, clip: crate::NO_CLIP }),
+        '\u{258B}' => rects.push(RectInstance { pos: [x, y], size: [w5, h], color, clip: crate::NO_CLIP }),
         // ▌ Left half (U+258C)
-        '\u{258C}' => rects.push(RectInstance { pos: [x, y], size: [w4, h], color }),
-        '\u{258D}' => rects.push(RectInstance { pos: [x, y], size: [w3, h], color }),
-        '\u{258E}' => rects.push(RectInstance { pos: [x, y], size: [w2, h], color }),
-        '\u{258F}' => rects.push(RectInstance { pos: [x, y], size: [w1, h], color }),
+        '\u{258C}' => rects.push(RectInstance { pos: [x, y], size: [w4, h], color, clip: crate::NO_CLIP }),
+        '\u{258D}' => rects.push(RectInstance { pos: [x, y], size: [w3, h], color, clip: crate::NO_CLIP }),
+        '\u{258E}' => rects.push(RectInstance { pos: [x, y], size: [w2, h], color, clip: crate::NO_CLIP }),
+        '\u{258F}' => rects.push(RectInstance { pos: [x, y], size: [w1, h], color, clip: crate::NO_CLIP }),
         // ▐ Right half (U+2590)
-        '\u{2590}' => rects.push(RectInstance { pos: [x + w4, y], size: [w4, h], color }),
+        '\u{2590}' => rects.push(RectInstance { pos: [x + w4, y], size: [w4, h], color, clip: crate::NO_CLIP }),
         // ▔ Upper 1/8 (U+2594)
-        '\u{2594}' => rects.push(RectInstance { pos: [x, y], size: [w, h1], color }),
+        '\u{2594}' => rects.push(RectInstance { pos: [x, y], size: [w, h1], color, clip: crate::NO_CLIP }),
         // ▕ Right 1/8 (U+2595)
-        '\u{2595}' => rects.push(RectInstance { pos: [x + w7, y], size: [w1, h], color }),
+        '\u{2595}' => rects.push(RectInstance { pos: [x + w7, y], size: [w1, h], color, clip: crate::NO_CLIP }),
         // Quadrant blocks (U+2596–U+259F)
-        '\u{2596}' => rects.push(RectInstance { pos: [x, y + h4], size: [w4, h4], color }), // ▖
-        '\u{2597}' => rects.push(RectInstance { pos: [x + w4, y + h4], size: [w4, h4], color }), // ▗
-        '\u{2598}' => rects.push(RectInstance { pos: [x, y], size: [w4, h4], color }), // ▘
+        '\u{2596}' => rects.push(RectInstance { pos: [x, y + h4], size: [w4, h4], color, clip: crate::NO_CLIP }), // ▖
+        '\u{2597}' => rects.push(RectInstance { pos: [x + w4, y + h4], size: [w4, h4], color, clip: crate::NO_CLIP }), // ▗
+        '\u{2598}' => rects.push(RectInstance { pos: [x, y], size: [w4, h4], color, clip: crate::NO_CLIP }), // ▘
         '\u{2599}' => {
             // ▙ Left half + lower-right quadrant
-            rects.push(RectInstance { pos: [x, y], size: [w4, h], color });
-            rects.push(RectInstance { pos: [x + w4, y + h4], size: [w4, h4], color });
+            rects.push(RectInstance { pos: [x, y], size: [w4, h], color, clip: crate::NO_CLIP });
+            rects.push(RectInstance { pos: [x + w4, y + h4], size: [w4, h4], color, clip: crate::NO_CLIP });
         }
         '\u{259A}' => {
             // ▚ Upper-left + lower-right (anti-diagonal pair)
-            rects.push(RectInstance { pos: [x, y], size: [w4, h4], color });
-            rects.push(RectInstance { pos: [x + w4, y + h4], size: [w4, h4], color });
+            rects.push(RectInstance { pos: [x, y], size: [w4, h4], color, clip: crate::NO_CLIP });
+            rects.push(RectInstance { pos: [x + w4, y + h4], size: [w4, h4], color, clip: crate::NO_CLIP });
         }
         '\u{259B}' => {
             // ▛ Upper half + lower-left quadrant
-            rects.push(RectInstance { pos: [x, y], size: [w, h4], color });
-            rects.push(RectInstance { pos: [x, y + h4], size: [w4, h4], color });
+            rects.push(RectInstance { pos: [x, y], size: [w, h4], color, clip: crate::NO_CLIP });
+            rects.push(RectInstance { pos: [x, y + h4], size: [w4, h4], color, clip: crate::NO_CLIP });
         }
         '\u{259C}' => {
             // ▜ Upper half + lower-right quadrant
-            rects.push(RectInstance { pos: [x, y], size: [w, h4], color });
-            rects.push(RectInstance { pos: [x + w4, y + h4], size: [w4, h4], color });
+            rects.push(RectInstance { pos: [x, y], size: [w, h4], color, clip: crate::NO_CLIP });
+            rects.push(RectInstance { pos: [x + w4, y + h4], size: [w4, h4], color, clip: crate::NO_CLIP });
         }
-        '\u{259D}' => rects.push(RectInstance { pos: [x + w4, y], size: [w4, h4], color }), // ▝
+        '\u{259D}' => rects.push(RectInstance { pos: [x + w4, y], size: [w4, h4], color, clip: crate::NO_CLIP }), // ▝
         '\u{259E}' => {
             // ▞ Upper-right + lower-left
-            rects.push(RectInstance { pos: [x + w4, y], size: [w4, h4], color });
-            rects.push(RectInstance { pos: [x, y + h4], size: [w4, h4], color });
+            rects.push(RectInstance { pos: [x + w4, y], size: [w4, h4], color, clip: crate::NO_CLIP });
+            rects.push(RectInstance { pos: [x, y + h4], size: [w4, h4], color, clip: crate::NO_CLIP });
         }
         '\u{259F}' => {
             // ▟ Right half + lower-left quadrant
-            rects.push(RectInstance { pos: [x + w4, y], size: [w4, h], color });
-            rects.push(RectInstance { pos: [x, y + h4], size: [w4, h4], color });
+            rects.push(RectInstance { pos: [x + w4, y], size: [w4, h], color, clip: crate::NO_CLIP });
+            rects.push(RectInstance { pos: [x, y + h4], size: [w4, h4], color, clip: crate::NO_CLIP });
         }
         _ => return false,
     }

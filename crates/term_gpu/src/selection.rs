@@ -249,6 +249,7 @@ pub fn push_selection_rects(
             pos: [pos_x_logical, pos_y_logical],
             size: [span_w_phys / sf, cell_h_logical],
             color: SELECTION_COLOR,
+            clip: crate::NO_CLIP,
         });
     }
 }

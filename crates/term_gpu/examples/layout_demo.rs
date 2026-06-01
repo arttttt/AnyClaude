@@ -185,6 +185,7 @@ impl App {
                 pos: [rect.x, rect.y],
                 size: [rect.w, rect.h],
                 color: panel_color(id),
+                clip: term_gpu::NO_CLIP,
             });
             if id == focused {
                 rects.extend(focus_border(rect));
@@ -290,21 +291,25 @@ fn focus_border(rect: Rect) -> [RectInstance; 4] {
             pos: [rect.x, rect.y],
             size: [rect.w, b],
             color: FOCUS_COLOR,
+            clip: term_gpu::NO_CLIP,
         },
         RectInstance {
             pos: [rect.x, rect.y + rect.h - b],
             size: [rect.w, b],
             color: FOCUS_COLOR,
+            clip: term_gpu::NO_CLIP,
         },
         RectInstance {
             pos: [rect.x, rect.y],
             size: [b, rect.h],
             color: FOCUS_COLOR,
+            clip: term_gpu::NO_CLIP,
         },
         RectInstance {
             pos: [rect.x + rect.w - b, rect.y],
             size: [b, rect.h],
             color: FOCUS_COLOR,
+            clip: term_gpu::NO_CLIP,
         },
     ]
 }
@@ -316,11 +321,13 @@ fn divider_strip(d: Divider) -> RectInstance {
             pos: [d.rect.x, d.rect.y - t * 0.5],
             size: [d.rect.w, t],
             color: DIVIDER_COLOR,
+            clip: term_gpu::NO_CLIP,
         },
         Split::Vertical => RectInstance {
             pos: [d.rect.x - t * 0.5, d.rect.y],
             size: [t, d.rect.h],
             color: DIVIDER_COLOR,
+            clip: term_gpu::NO_CLIP,
         },
     }
 }

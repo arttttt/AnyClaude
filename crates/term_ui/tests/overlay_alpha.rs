@@ -17,6 +17,7 @@ fn sample() -> PaintOutput {
         pos: [0.0, 0.0],
         size: [10.0, 10.0],
         color: [0.2, 0.4, 0.6, 0.8],
+        clip: term_gpu::NO_CLIP,
     });
     out.glyphs.push(GlyphInstance {
         pos: [1.0, 2.0],

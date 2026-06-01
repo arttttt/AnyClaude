@@ -1229,21 +1229,25 @@ fn focus_border(rect: Rect) -> [RectInstance; 4] {
             pos: [rect.x, rect.y],
             size: [rect.w, b],
             color: FOCUS_COLOR,
+            clip: term_gpu::NO_CLIP,
         },
         RectInstance {
             pos: [rect.x, rect.y + rect.h - b],
             size: [rect.w, b],
             color: FOCUS_COLOR,
+            clip: term_gpu::NO_CLIP,
         },
         RectInstance {
             pos: [rect.x, rect.y],
             size: [b, rect.h],
             color: FOCUS_COLOR,
+            clip: term_gpu::NO_CLIP,
         },
         RectInstance {
             pos: [rect.x + rect.w - b, rect.y],
             size: [b, rect.h],
             color: FOCUS_COLOR,
+            clip: term_gpu::NO_CLIP,
         },
     ]
 }

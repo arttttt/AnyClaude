@@ -16,11 +16,14 @@ struct RectInput {
     @location(0) pos: vec2<f32>,   // logical
     @location(1) size: vec2<f32>,  // logical
     @location(2) color: vec4<f32>,
+    @location(3) clip: vec4<f32>,  // logical clip rect [min.xy, max.xy]
 };
 
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
     @location(0) color: vec4<f32>,
+    // Signed distances to the four clip edges; any negative = outside.
+    @location(1) clip_dist: vec4<f32>,
 };
 
 const QUAD: array<vec2<f32>, 6> = array(
@@ -31,16 +34,28 @@ const QUAD: array<vec2<f32>, 6> = array(
 @vertex
 fn vs_main(@builtin(vertex_index) vi: u32, r: RectInput) -> VsOut {
     let q = QUAD[vi];
-    let px_logical = r.pos + q * r.size - uniforms.scroll_offset;
+    let frag_logical = r.pos + q * r.size;
+    let px_logical = frag_logical - uniforms.scroll_offset;
     let px_physical = px_logical * uniforms.scale_factor;
     let ndc = (px_physical / uniforms.screen_size) * 2.0 - 1.0;
     var out: VsOut;
     out.pos = vec4(ndc.x, -ndc.y, 0.0, 1.0);
     out.color = r.color;
+    out.clip_dist = vec4<f32>(
+        frag_logical.x - r.clip.x,
+        r.clip.z - frag_logical.x,
+        frag_logical.y - r.clip.y,
+        r.clip.w - frag_logical.y
+    );
     return out;
 }
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+    // Clip: discard fragments outside the clip rect (transparent = no-op under
+    // ALPHA_BLENDING). NO_CLIP makes every distance huge-positive.
+    if (any(in.clip_dist < vec4<f32>(0.0))) {
+        return vec4<f32>(0.0);
+    }
     return in.color;
 }

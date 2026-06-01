@@ -71,6 +71,7 @@ fn build_stripes(window_width: f32) -> Vec<RectInstance> {
             pos: [STRIPE_X_MARGIN, i as f32 * (STRIPE_HEIGHT + STRIPE_GAP)],
             size: [width, STRIPE_HEIGHT],
             color: hsv_to_rgb((i as f32 * 1.7) % 360.0, 0.55, 0.92),
+            clip: term_gpu::NO_CLIP,
         })
         .collect()
 }
@@ -276,6 +277,7 @@ fn build_ruler(total_height: f32) -> Vec<RectInstance> {
                 } else {
                     [1.0, 0.95, 0.45, 0.6]
                 },
+                clip: term_gpu::NO_CLIP,
             }
         })
         .collect()

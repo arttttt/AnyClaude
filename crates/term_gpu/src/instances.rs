@@ -17,6 +17,10 @@ pub struct RectInstance {
     pub pos: [f32; 2],
     pub size: [f32; 2],
     pub color: [f32; 4],
+    /// Logical-pixel clip rect `[min_x, min_y, max_x, max_y]`: fragments outside
+    /// it are discarded. [`NO_CLIP`] (the default) clips nothing; the pager sets
+    /// a page's viewport here so a sliding grid page is trimmed to its rect.
+    pub clip: [f32; 4],
 }
 
 impl RectInstance {
@@ -26,7 +30,7 @@ impl RectInstance {
         unsafe { std::slice::from_raw_parts(slice.as_ptr() as *const u8, size_of_val(slice)) }
     }
 
-    pub const ATTRIBS: [wgpu::VertexAttribute; 3] = [
+    pub const ATTRIBS: [wgpu::VertexAttribute; 4] = [
         wgpu::VertexAttribute {
             offset: 0,
             shader_location: 0,
@@ -40,6 +44,11 @@ impl RectInstance {
         wgpu::VertexAttribute {
             offset: 16,
             shader_location: 2,
+            format: wgpu::VertexFormat::Float32x4,
+        },
+        wgpu::VertexAttribute {
+            offset: 32,
+            shader_location: 3,
             format: wgpu::VertexFormat::Float32x4,
         },
     ];

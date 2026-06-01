@@ -318,6 +318,7 @@ fn populate_frame(
                     pos: [pos_x_logical, pos_y_logical],
                     size: [cell_w_logical, cell_h_logical],
                     color: bg_eff.to_rgba(palette),
+                    clip: term_gpu::NO_CLIP,
                 });
             }
 
@@ -405,6 +406,7 @@ fn populate_frame(
                     pos: [pos_x_logical, pos_y_logical + cell_h_logical * 0.78],
                     size: [cell_w_logical, 1.0],
                     color,
+                    clip: term_gpu::NO_CLIP,
                 });
             }
             if cell.flags.double_underline() {
@@ -412,11 +414,13 @@ fn populate_frame(
                     pos: [pos_x_logical, pos_y_logical + cell_h_logical * 0.72],
                     size: [cell_w_logical, 0.8],
                     color,
+                    clip: term_gpu::NO_CLIP,
                 });
                 rects.push(RectInstance {
                     pos: [pos_x_logical, pos_y_logical + cell_h_logical * 0.84],
                     size: [cell_w_logical, 0.8],
                     color,
+                    clip: term_gpu::NO_CLIP,
                 });
             }
             if cell.flags.strike() {
@@ -424,6 +428,7 @@ fn populate_frame(
                     pos: [pos_x_logical, pos_y_logical + cell_h_logical * 0.42],
                     size: [cell_w_logical, 1.0],
                     color,
+                    clip: term_gpu::NO_CLIP,
                 });
             }
         }
@@ -465,6 +470,7 @@ fn build_cursor_rect(
         pos: [pos_phys[0] / sf, pos_phys[1] / sf],
         size: [size_phys[0] / sf, size_phys[1] / sf],
         color: CURSOR_COLOR,
+        clip: term_gpu::NO_CLIP,
     })
 }
 
