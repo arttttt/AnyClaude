@@ -254,7 +254,7 @@ impl ApplicationHandler<UserEvent> for super::GpuApp {
                 // it (page_swipe sorts horizontal from vertical and the gesture
                 // boundary); the wheel doesn't reach the terminal underneath.
                 if self.cursor_over_overlay() {
-                    self.page_swipe(dx, dy);
+                    self.page_swipe(dx, dy, phase);
                     return;
                 }
                 // A mouse-reporting app gets the wheel as button 64 / 65 instead

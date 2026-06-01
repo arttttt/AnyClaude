@@ -10,6 +10,7 @@ use term_gpu::{
     MouseButton, MouseEventKind, PanelRect,
 };
 
+use winit::event::TouchPhase;
 use winit::window::CursorIcon;
 
 use crate::ui::app_state::{ApplyCtx, Msg};
@@ -277,21 +278,25 @@ impl super::GpuApp {
 
     /// Route a two-finger scroll over the overlay to the pager. A horizontal
     /// swipe pages once per `PAGE_SWIPE_COMMIT_PX` of travel, then a `committed`
-    /// lock absorbs the rest — crucially the trackpad MOMENTUM, a continuous tail
-    /// of events after the flick. The gesture boundary is a TIME gap
-    /// (`PAGE_SWIPE_GESTURE_GAP_MS`), NOT the scroll `phase`: macOS re-segments
-    /// one flick's momentum into several Started..Ended cycles, so resetting on
-    /// `Started` re-armed the lock mid-momentum and paged 2-3 times per flick.
-    /// The momentum never gaps past the threshold; a real re-swipe always does.
-    /// (Fingers right → previous page, matching content-follows-fingers scroll.)
-    pub(super) fn page_swipe(&mut self, dx: f32, dy: f32) {
+    /// lock absorbs the rest — crucially the trackpad MOMENTUM, a long tail of
+    /// events after the flick (which macOS even re-segments into its own
+    /// `Started..Ended` cycles). The gesture boundary is a `Started` whose
+    /// velocity is small: a finger-down begins from REST (tiny first `dx`),
+    /// momentum BEGINS at the release velocity (large `dx`), so a small-velocity
+    /// `Started` is a genuine new swipe — even one interrupting the prior
+    /// momentum — and a large one is just momentum that keeps the lock. (A rest
+    /// gap is only a fallback for non-precise wheels with no phase.) Fingers
+    /// right → previous page, matching content-follows-fingers scroll.
+    pub(super) fn page_swipe(&mut self, dx: f32, dy: f32, phase: TouchPhase) {
         if self.state.right.len() < 2 {
             return;
         }
         let now = Instant::now();
         let gap = now.saturating_duration_since(self.page_swipe.last_t).as_millis() as u64;
         self.page_swipe.last_t = now;
-        if gap > super::PAGE_SWIPE_GESTURE_GAP_MS {
+        let fresh_touch =
+            phase == TouchPhase::Started && dx.abs() < super::PAGE_SWIPE_START_VELOCITY;
+        if fresh_touch || gap > super::PAGE_SWIPE_GESTURE_GAP_MS {
             self.page_swipe.accum = 0.0;
             self.page_swipe.committed = false;
         }

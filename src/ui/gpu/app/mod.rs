@@ -72,12 +72,16 @@ const PAGE_SPRING_STIFFNESS: f32 = 700.0;
 const PAGE_SPRING_DAMPING: f32 = 53.0;
 /// Horizontal two-finger travel (logical px) that pages the overlay once.
 const PAGE_SWIPE_COMMIT_PX: f32 = 50.0;
-/// Gap (ms) since the last scroll event that ends a swipe gesture. macOS streams
-/// a flick's momentum as a continuous tail (~8-16 ms apart, even across its own
-/// Started..Ended re-segments), so anything under this stays one gesture (one
-/// page); a real re-swipe — human reaction time — always gaps past it. Sits
-/// between the two: well above the momentum cadence, well below a re-swipe.
-const PAGE_SWIPE_GESTURE_GAP_MS: u64 = 50;
+/// Max `|dx|` of a `Started` event that counts as a fresh finger-down. A real
+/// touch begins from REST (its first event is tiny — a few px); macOS momentum
+/// BEGINS at the release velocity (its re-segment `Started` is large). So a
+/// small-velocity `Started` is a new swipe — even one interrupting the previous
+/// flick's momentum — and resets the gesture; a large one is just momentum and
+/// keeps the one-page lock. (Logged touches start ~2-8 px, momentum ~54-94 px.)
+const PAGE_SWIPE_START_VELOCITY: f32 = 30.0;
+/// Fallback rest gap (ms) for non-precise wheels with no `Started` phase; far
+/// above any trackpad momentum cadence so it never fires mid-flick.
+const PAGE_SWIPE_GESTURE_GAP_MS: u64 = 150;
 
 /// Accumulator for the pager's horizontal two-finger swipe (a trackpad gesture,
 /// NOT a mouse-button drag — that would fight text selection inside a page). One
