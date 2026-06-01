@@ -250,15 +250,11 @@ impl ApplicationHandler<UserEvent> for super::GpuApp {
                         (false, h * NUM_PIXELS_PER_LINE, v * NUM_PIXELS_PER_LINE)
                     }
                 };
-                // A horizontal-dominant two-finger swipe pages the open overlay.
-                // The gesture doesn't move the cursor, so it's gated on the
-                // overlay being open (not on hover); vertical falls through to the
-                // terminal scrollback.
-                if self.state.right.is_visible()
-                    && self.state.right.len() >= 2
-                    && dx.abs() > dy.abs()
-                {
-                    self.page_swipe(dx);
+                // Over the teammates overlay, a horizontal two-finger swipe pages
+                // it (page_swipe sorts horizontal from vertical and the gesture
+                // boundary); the wheel doesn't reach the terminal underneath.
+                if self.cursor_over_overlay() {
+                    self.page_swipe(dx, dy, phase);
                     return;
                 }
                 // A mouse-reporting app gets the wheel as button 64 / 65 instead
