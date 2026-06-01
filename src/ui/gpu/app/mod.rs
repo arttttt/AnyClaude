@@ -72,10 +72,12 @@ const PAGE_SPRING_STIFFNESS: f32 = 700.0;
 const PAGE_SPRING_DAMPING: f32 = 53.0;
 /// Horizontal two-finger travel (logical px) that pages the overlay once.
 const PAGE_SWIPE_COMMIT_PX: f32 = 50.0;
-/// Silence (ms) that ends a swipe gesture: a longer gap since the last
-/// horizontal event starts a fresh gesture, so one flick (+ its trackpad
-/// momentum) pages at most once.
-const PAGE_SWIPE_GESTURE_GAP_MS: u64 = 120;
+/// Gap (ms) since the last scroll event that ends a swipe gesture. macOS streams
+/// a flick's momentum as a continuous tail (~8-16 ms apart, even across its own
+/// Started..Ended re-segments), so anything under this stays one gesture (one
+/// page); a real re-swipe — human reaction time — always gaps past it. Sits
+/// between the two: well above the momentum cadence, well below a re-swipe.
+const PAGE_SWIPE_GESTURE_GAP_MS: u64 = 50;
 
 /// Accumulator for the pager's horizontal two-finger swipe (a trackpad gesture,
 /// NOT a mouse-button drag — that would fight text selection inside a page). One

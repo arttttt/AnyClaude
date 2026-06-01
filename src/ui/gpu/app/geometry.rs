@@ -10,7 +10,6 @@ use term_gpu::{
     MouseButton, MouseEventKind, PanelRect,
 };
 
-use winit::event::TouchPhase;
 use winit::window::CursorIcon;
 
 use crate::ui::app_state::{ApplyCtx, Msg};
@@ -277,26 +276,25 @@ impl super::GpuApp {
     }
 
     /// Route a two-finger scroll over the overlay to the pager. A horizontal
-    /// swipe pages once per `PAGE_SWIPE_COMMIT_PX` of travel; a `committed` lock
-    /// then absorbs the rest of the gesture — crucially the trackpad MOMENTUM,
-    /// which streams as a long tail of `Moved` events ~8 ms apart inside the same
-    /// `Started..Ended` window. The gesture boundary is `phase == Started` (a
-    /// trackpad emits it per finger-down; a time gap is only a fallback for
-    /// non-precise wheels with no phase) — NOT a pure time gap, because a swipe
-    /// right after the previous momentum lands well under any gap and would
-    /// otherwise stay locked, eating every other swipe. (Fingers right → previous
-    /// page, matching content-follows-fingers scrolling.)
-    pub(super) fn page_swipe(&mut self, dx: f32, dy: f32, phase: TouchPhase) {
+    /// swipe pages once per `PAGE_SWIPE_COMMIT_PX` of travel, then a `committed`
+    /// lock absorbs the rest — crucially the trackpad MOMENTUM, a continuous tail
+    /// of events after the flick. The gesture boundary is a TIME gap
+    /// (`PAGE_SWIPE_GESTURE_GAP_MS`), NOT the scroll `phase`: macOS re-segments
+    /// one flick's momentum into several Started..Ended cycles, so resetting on
+    /// `Started` re-armed the lock mid-momentum and paged 2-3 times per flick.
+    /// The momentum never gaps past the threshold; a real re-swipe always does.
+    /// (Fingers right → previous page, matching content-follows-fingers scroll.)
+    pub(super) fn page_swipe(&mut self, dx: f32, dy: f32) {
         if self.state.right.len() < 2 {
             return;
         }
         let now = Instant::now();
         let gap = now.saturating_duration_since(self.page_swipe.last_t).as_millis() as u64;
-        if phase == TouchPhase::Started || gap > super::PAGE_SWIPE_GESTURE_GAP_MS {
+        self.page_swipe.last_t = now;
+        if gap > super::PAGE_SWIPE_GESTURE_GAP_MS {
             self.page_swipe.accum = 0.0;
             self.page_swipe.committed = false;
         }
-        self.page_swipe.last_t = now;
         // Only a horizontal-dominant event accumulates (a vertical scroll over the
         // overlay isn't a page gesture); the reset above still ran for it.
         if dx.abs() < dy.abs() {
