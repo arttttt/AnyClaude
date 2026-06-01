@@ -75,7 +75,7 @@ fn tmux_shim_contains_log_and_shim_dir() {
 
     assert!(script.contains("tmux_shim.log"), "should log to tmux_shim.log");
     assert!(script.contains("SHIM_DIR"), "should reference SHIM_DIR");
-    assert!(script.contains("find_real_tmux"), "should have real tmux lookup");
+    assert!(script.contains("/api/tmux"), "should forward verbs to the /api/tmux control plane");
 }
 
 #[test]
@@ -195,73 +195,25 @@ fn tmux_shim_injects_both_url_and_headers() {
     assert!(script.contains("extract_agent_id"));
 }
 
-// ── tmux.conf (mouse / scroll) ───────────────────────────────────────
+// ── control-plane forwarding ─────────────────────────────────────────
 
 #[test]
-fn tmux_conf_is_created_with_mouse_and_history() {
-    let shim = match TeammateShim::create(12345, "test-token", "test-session", true) {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-    let dir = shim_dir(&shim);
-    let conf_path = Path::new(&dir).join("tmux.conf");
-    assert!(conf_path.exists(), "tmux.conf should be created alongside shim");
-
-    let conf = std::fs::read_to_string(&conf_path).unwrap();
-    assert!(
-        conf.contains("set -g mouse on"),
-        "tmux.conf should enable mouse for scroll"
-    );
-    assert!(
-        conf.contains("set -g history-limit"),
-        "tmux.conf should set history-limit for larger scroll buffer"
-    );
-}
-
-#[test]
-fn tmux_shim_loads_conf_via_f_flag_on_isolated_socket() {
-    let shim = match TeammateShim::create(12345, "test-token", "test-session", true) {
+fn tmux_shim_posts_verbs_to_the_control_plane() {
+    let shim = match TeammateShim::create(7777, "test-token", "test-session", true) {
         Ok(s) => s,
         Err(_) => return,
     };
     let dir = shim_dir(&shim);
     let script = std::fs::read_to_string(Path::new(&dir).join("tmux")).unwrap();
 
-    // CONF_FLAGS must carry both -L (isolated socket per session) and -f
-    // (our tmux.conf). -L is required because -f is a start-only flag —
-    // attaching to the user's pre-existing tmux server would silently drop it.
+    // Every verb is POSTed as JSON argv to /api/tmux (no real tmux fallback).
     assert!(
-        script.contains(
-            "CONF_FLAGS=(-L \"anyclaude-test-session\" -f \"$SHIM_DIR/tmux.conf\")"
-        ),
-        "shim should define CONF_FLAGS with -L (per-session socket) and -f (tmux.conf)"
+        script.contains("127.0.0.1:7777/api/tmux"),
+        "shim should POST verbs to the /api/tmux control plane on the proxy port"
     );
+    assert!(script.contains("json_escape"), "shim should JSON-escape the argv");
     assert!(
-        script.contains("exec \"$REAL_TMUX\" \"${CONF_FLAGS[@]}\" \"${args[@]}\""),
-        "injected branch should exec real tmux with CONF_FLAGS"
+        !script.contains("REAL_TMUX") && !script.contains("find_real_tmux"),
+        "clean cutover: no real-tmux lookup or fallback"
     );
-    assert!(
-        script.contains("exec \"$REAL_TMUX\" \"${CONF_FLAGS[@]}\" \"$@\""),
-        "forward branch should exec real tmux with CONF_FLAGS"
-    );
-}
-
-#[test]
-fn tmux_shim_uses_distinct_socket_per_session() {
-    let shim_a = match TeammateShim::create(12345, "test-token", "session-aaa", true) {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-    let shim_b = match TeammateShim::create(12345, "test-token", "session-bbb", true) {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-
-    let script_a = std::fs::read_to_string(Path::new(&shim_dir(&shim_a)).join("tmux")).unwrap();
-    let script_b = std::fs::read_to_string(Path::new(&shim_dir(&shim_b)).join("tmux")).unwrap();
-
-    assert!(script_a.contains("-L \"anyclaude-session-aaa\""));
-    assert!(script_b.contains("-L \"anyclaude-session-bbb\""));
-    assert!(!script_a.contains("anyclaude-session-bbb"));
-    assert!(!script_b.contains("anyclaude-session-aaa"));
 }
