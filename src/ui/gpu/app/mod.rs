@@ -126,6 +126,11 @@ pub(super) struct GpuApp {
     /// slide; `snap` tracks a hand-drag.
     panel_width: Animation<f32>,
 
+    /// Right overlay pager position (bucket 3-S): the continuous page index, in
+    /// page units. `retarget`ed each frame toward the focused panel's index, so
+    /// paging slides; `value(now)` is the rendered scroll position (R12).
+    page_scroll: Animation<f32>,
+
     /// The mouse cursor icon currently set on the window — cached so a hover move
     /// only calls `set_cursor` on a CHANGE (a resize cursor over a panel edge, a
     /// pointer over the toggle pill, else the default).
@@ -163,6 +168,14 @@ impl GpuApp {
             Duration::from_secs_f32(PANEL_ANIM_SECS),
             Interpolator::EaseInOut,
         );
+        // The pager starts settled on the first page; it retargets toward the
+        // focused index each frame, so paging eases over `PANEL_ANIM_SECS`.
+        let page_scroll = Animation::settled(
+            0.0,
+            Instant::now(),
+            Duration::from_secs_f32(PANEL_ANIM_SECS),
+            Interpolator::EaseInOut,
+        );
         Self {
             proxy,
             window: None,
@@ -177,6 +190,7 @@ impl GpuApp {
             panel_overlay_rect: None,
             panel_toggle_zone: None,
             panel_width,
+            page_scroll,
             current_cursor: winit::window::CursorIcon::Default,
             clipboard: make_clipboard(),
             backends: Backends {

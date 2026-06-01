@@ -187,9 +187,19 @@ impl super::GpuApp {
         // hidden, only the opaque pill remains near the edge), opaque when open.
         let target_w = self.state.right.width();
         let fade = ((overlay_w - strip_w) / (target_w - strip_w).max(1.0)).clamp(0.0, 1.0);
+        // Pager position: ease toward the focused page index (the horizontal
+        // slide). Same pattern as the width tween — the model holds the discrete
+        // focus, this chases it; `value(now)` is the continuous page position.
+        let current_page = self.state.right.focus_index().unwrap_or(0);
+        self.page_scroll.retarget(current_page as f32, now);
+        let page_scroll = self.page_scroll.value(now);
+        let page_animating = self.page_scroll.animating(now);
+        // Page viewport width = the overlay minus the 1px column border each side.
+        let page_w = (overlay_w - 2.0).max(0.0);
         // The overlay is "on" unless it's the empty + collapsed + idle default.
         let show = !(right_empty && !right_visible && !panel_animating && dragging.is_none());
-        let panels = show.then(|| panels_view::panel_manager_view(&self.state.right, expanded, fade));
+        let panels = show
+            .then(|| panels_view::panel_manager_view(&self.state.right, expanded, page_scroll, page_w, fade));
         let pill = show.then(|| panels_view::pill_view(expanded, self.state.right.any_active()));
         let overlay_origin =
             Vec2::new((window_logical.x - overlay_w).max(0.0), HEADER_HEIGHT_LOGICAL);
@@ -290,10 +300,10 @@ impl super::GpuApp {
         );
         self.text.shape_cache.end_frame();
         self.text.ui_shape_cache.end_frame();
-        // Drive the popup fade + panel slide to completion: while a transition
-        // is in flight, request the next frame (event-driven redraws alone
-        // wouldn't tick).
-        if popup_animating || panel_animating {
+        // Drive the popup fade + panel slide + pager slide to completion: while a
+        // transition is in flight, request the next frame (event-driven redraws
+        // alone wouldn't tick).
+        if popup_animating || panel_animating || page_animating {
             window.request_redraw();
         }
     }

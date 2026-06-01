@@ -110,10 +110,14 @@ impl super::GpuApp {
     fn debug_toggle_panels(&mut self) {
         use crate::ui::panel_manager::PanelKind;
         if self.state.right.is_empty() {
-            // Agent-ish accent colours echoing Claude Code's teammate palette.
+            // Six mock teammates to exercise the pager (agent-ish accent colours
+            // echoing Claude Code's teammate palette).
             self.state.right.create(PanelKind::Teammate, "module-mapper", [0.30, 0.55, 0.95, 1.0]);
             self.state.right.create(PanelKind::Teammate, "flow-tracer", [0.35, 0.80, 0.45, 1.0]);
             self.state.right.create(PanelKind::Teammate, "deps-mapper", [0.90, 0.75, 0.30, 1.0]);
+            self.state.right.create(PanelKind::Teammate, "type-checker", [0.80, 0.45, 0.85, 1.0]);
+            self.state.right.create(PanelKind::Teammate, "test-runner", [0.95, 0.50, 0.40, 1.0]);
+            self.state.right.create(PanelKind::Teammate, "doc-writer", [0.45, 0.75, 0.85, 1.0]);
         }
         self.state.right.toggle();
         self.request_redraw();

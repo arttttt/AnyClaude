@@ -11,10 +11,12 @@
 //! primitive). The pill is the shared `uikit::edge_toggle` widget, reused by both
 //! panel managers. Milestone 1 renders placeholder panels (no live terminal).
 
-use term_ui::{CrossAxis, Insets, Modified, Modifier, Modify, Sizing, Stack, Text, WidgetId};
-use uikit::{edge_toggle, Chevron, EdgeTogglePalette};
+use term_ui::{
+    BoxView, CrossAxis, Insets, Modified, Modifier, Modify, Sizing, Stack, Text, WidgetId,
+};
+use uikit::{edge_toggle, pager, Chevron, EdgeTogglePalette, PagerPalette};
 
-use crate::ui::panel_manager::{Panel, PanelManager};
+use crate::ui::panel_manager::{Panel, PanelManager, RenderMode};
 
 // ── panels palette (logical px / linear RGBA) ──
 /// Opaque column background — slightly darker than the popup bg so the overlay
@@ -51,6 +53,20 @@ const CONTENT_PAD: f32 = 10.0;
 const PANEL_CORNER: f32 = 6.0;
 /// `cosmic_text::Weight::BOLD.0` — panel titles.
 const WEIGHT_BOLD: u16 = 700;
+/// Height of the pager's bottom indicator strip (‹ dots ›).
+const STRIP_H: f32 = 28.0;
+
+/// Stable base id for the pager's hit-test ids (arrows + dots); distinct from
+/// the toggle pill's id.
+fn pager_base_id() -> WidgetId {
+    WidgetId::from_path(&[0x9A6E2])
+}
+
+/// The pager indicator palette: the current page dot bright, the others dim, the
+/// arrows bright.
+fn pager_palette() -> PagerPalette {
+    PagerPalette { dot_current: TITLE_COLOR, dot_idle: SUBTITLE_COLOR, arrow: TITLE_COLOR }
+}
 
 /// Stable widget id for the toggle/indicator pill, resolved against the laid-out
 /// tree so the coordinator can hit-test clicks on it (collapse/expand). The
@@ -60,40 +76,59 @@ pub fn panel_toggle_widget_id() -> WidgetId {
     WidgetId::from_path(&[0x9A9E1])
 }
 
-/// Build the overlay view for `mgr`. `expanded` controls whether the panel stack
-/// is shown (collapsed renders just the edge strip + pill). The returned
-/// `Modified` is the column: opaque bg + frame wrapping an hstack of [edge strip,
-/// padded panel stack]. The coordinator measures it tight to the overlay rect
-/// and places it at the overlay origin (positioned, not centred).
-pub fn panel_manager_view(mgr: &PanelManager, expanded: bool, fade: f32) -> Modified {
-    // The column = a left edge band (where the pill straddles + the drag zone
-    // lives) + the panel stack. The whole column fades by `fade` (so it fully
-    // disappears when collapsed) — the pill is rendered SEPARATELY (outside this
-    // faded subtree) so it stays opaque.
-    let mut row = Stack::hstack()
-        .cross(CrossAxis::Stretch)
-        .spacer(Sizing::Fixed(mgr.policy().collapsed_width));
+/// Build the overlay view for `mgr`. `expanded` controls whether the content is
+/// shown (collapsed renders just the faded edge band; the pill is a SEPARATE
+/// tree so it stays opaque). `scroll` is the animated pager position (page
+/// units) and `page_w` the viewport width the host allots. The returned
+/// `Modified` is the column (opaque bg + frame + collapse `fade`); the host
+/// measures it tight to the overlay rect and places it at the overlay origin.
+pub fn panel_manager_view(
+    mgr: &PanelManager,
+    expanded: bool,
+    scroll: f32,
+    page_w: f32,
+    fade: f32,
+) -> Modified {
+    let column = Modifier::new().background(OVERLAY_BG).border(1.0, OVERLAY_BORDER).alpha(fade);
 
-    if expanded {
-        let mut stack = Stack::vstack().cross(CrossAxis::Stretch);
-        for panel in mgr.panels() {
-            let focused = mgr.focus() == Some(panel.id);
-            stack = stack
-                .child_sized(panel_box(panel, focused), Sizing::Fixed(BOX_H))
-                .spacer(Sizing::Fixed(GAP));
-        }
-        stack = stack.spacer(Sizing::Fill);
-        // Inset the panel stack from the column edges.
-        let padded = stack.modify(Modifier::new().padding(Insets::all(CONTENT_PAD)));
-        row = row.child_sized(padded, Sizing::Fill);
+    // Collapsed / mid-collapse: just the faded edge band, no content.
+    if !expanded {
+        return Stack::hstack()
+            .cross(CrossAxis::Stretch)
+            .spacer(Sizing::Fixed(mgr.policy().collapsed_width))
+            .modify(column);
     }
 
-    row.modify(
-        Modifier::new()
-            .background(OVERLAY_BG)
-            .border(1.0, OVERLAY_BORDER)
-            .alpha(fade),
-    )
+    match mgr.policy().render {
+        RenderMode::Pager => {
+            // One page (teammate card) at a time, sliding horizontally on
+            // `scroll`. The card fills the page; the pager clips the off-edge
+            // neighbours to the viewport.
+            let current = mgr.focus_index().unwrap_or(0);
+            let pages: Vec<BoxView> = mgr
+                .panels()
+                .iter()
+                .map(|p| Box::new(panel_box(p, mgr.focus() == Some(p.id))) as BoxView)
+                .collect();
+            pager(pages, current, scroll, page_w, STRIP_H, FONT_SIZE, pager_palette(), pager_base_id())
+                .modify(column)
+        }
+        RenderMode::Switcher => {
+            // Left sessions sidebar (later): a stack of session cards. Scaffold —
+            // not yet driven at runtime (only the right overlay is live).
+            let mut stack = Stack::vstack().cross(CrossAxis::Stretch);
+            for panel in mgr.panels() {
+                let focused = mgr.focus() == Some(panel.id);
+                stack = stack
+                    .child_sized(panel_box(panel, focused), Sizing::Fixed(BOX_H))
+                    .spacer(Sizing::Fixed(GAP));
+            }
+            stack
+                .spacer(Sizing::Fill)
+                .modify(Modifier::new().padding(Insets::all(CONTENT_PAD)))
+                .modify(column)
+        }
+    }
 }
 
 /// The standalone collapse/expand pill (the shared `uikit::edge_toggle`),
