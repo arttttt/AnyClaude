@@ -346,50 +346,75 @@ This collapses a whole class of state: no `active_session`, no `keyboard_focus` 
 
 ---
 
-## 8. Control plane — `tmux shim → /api/tmux/* → winit` (LATER)
+## 8. Lifecycle & control plane — events-first, registry at the centre
 
-How teammate spawns reach anyclaude. **Deferred past Milestone 1**, recorded here so M1
-does not box it out.
+How a teammate child session becomes a panel. The organising principle (agreed in
+conversation): anyclaude is a **passive host that reflects REGISTERED child sessions as
+panels** — it doesn't spawn them imperatively. A registry-owning lifecycle authority
+reacts to typed events; the tmux shim is just one *producer* of those events.
 
-The shim is a short-lived bash process per tmux invocation; it `curl`s anyclaude and
-**blocks** on the response — because `split-window -P` must **synchronously return** the
-new pane id, which Claude Code reads from stdout and uses in the next `send-keys -t %N`.
-
-Decisions already taken (in conversation):
-
-- **Transport: a new `/api/tmux/*` surface on the existing proxy.** The existing
-  `teammate-start` endpoint is later moved/updated under this surface. (API work itself
-  is a later milestone.)
-- **Full emulation; remove the real-tmux fallback.** The shim emulates the ~12 verbs
-  Claude Code actually issues (captured in a tmux-shim log): `display-message` → `@0`;
-  `list-panes` → current `%N` from anyclaude's registry; `split-window -P` → create a
-  panel, **return its `%N`**; `send-keys … claude …` → spawn that command into the
-  panel's PTY (the shim already parses/rewrites the line — URL/headers/agent-id);
-  `kill-pane` → close; `select-pane -T/-P` → title/accent; `resize-pane`/`select-layout`
-  → geometry hints (interpreted by anyclaude as the layout authority, not followed
-  verbatim); `show -gv …` → success. An **unknown verb is an explicit error + log**, so
-  protocol drift in Claude Code is noticed (no silent forwarding).
-
-Threading shape (the synchronous request/response across the tokio↔winit boundary):
+**Four layers, one responsibility each** (SRP — no god object):
 
 ```
-shim (bash, curl, blocking)
-  → POST /api/tmux/split-window {…}         (axum handler, tokio runtime)
-       handler: push TmuxRequest{ op, reply: oneshot } onto a queue
-                proxy.send_event(UserEvent::TmuxControl)   // wake winit
-                reply_rx.await   →   HTTP body "%N"
-  → winit user_event(TmuxControl):
-       drain queue → Msg::Tmux(op) → apply → Effect(CreatePanel / SpawnChild / …)
-       → perform_effects mutates the registry, formats "%N", sends it into the oneshot
+tmux-shim (bash/curl, blocking)
+  │  POST /api/tmux/{split-window,send-keys,kill-pane,…}
+  ▼
+TmuxAdapter            (transport/protocol, tokio side)
+  • parses a tmux verb → a typed, tmux-AGNOSTIC ChildSessionEvent
+  • carries a oneshot reply for sync verbs (split-window must return %N)
+  │  ChildSessionEvent  (+ EventLoopProxy wake across tokio↔winit)
+  ▼
+ChildSessionManager    (identity/lifecycle, winit coordinator)   ← Step A, DONE
+  • owns the registry: PaneId(%N) ↔ PanelId bimap + ChildSession{ meta, surface }
+  • apply(event, &mut PanelManager): Register → panels.create (+ spawn); Unregister →
+    panels.remove (+ close overlay when empty); Input/Resize/SetTitle → route by pane
+  │  on Register delegates the process to
+  ▼
+ChildPtySpawner        (process, separate object)               ← Step B (= M2)
+  • ChildSpec → TerminalSurface (VT emulator + ChildPty)
 ```
 
-This is the existing `BytesArrived`-wake pattern plus a `oneshot` for the reply. Note:
-`UserEvent` becomes non-`Copy` (it carries the reply channel). The `%N ↔ PanelId` bimap
-is anyclaude's pane registry (UI identity), stored as `Panel.tmux_id`.
+- **`ChildSessionManager` is tmux-agnostic** — it reacts to domain `ChildSessionEvent`s
+  (`Register`/`Unregister`, later `Input`/`Resize`/`SetTitle`), never raw verbs. Swap or
+  add a registration channel and the manager is unchanged. It is a thin orchestrator
+  (delegates UI to `PanelManager`, the process to `ChildPtySpawner`); it is NOT the panel
+  manager and NOT the spawner. **MODEL≠VIEW**: the registry/identity lives here (a
+  coordinator collaborator); the `PanelManager` it drives stays UI truth in `AppState`.
+- **`TmuxAdapter` is the anti-corruption layer** — it knows tmux, the manager doesn't. It
+  emulates the ~12 verbs Claude Code issues (captured in a tmux-shim log): `split-window
+  -P` → `Register`, **reply its `%N`**; `kill-pane` → `Unregister`; `send-keys … claude …`
+  → spawn that command into the pane's PTY (`Register` with the cmd; the shim already
+  parses/rewrites URL/headers/agent-id); `select-pane -T/-P` → `SetTitle`/accent;
+  `list-panes`/`display-message` → query the registry; `resize-pane`/`select-layout` →
+  geometry hints (anyclaude is the layout authority, not followed verbatim); `show -gv …`
+  → success. An **unknown verb is an explicit error + log** (no silent forwarding).
+
+**Threading boundary** (the one non-obvious bit): `TmuxAdapter` lives in tokio (the
+proxy); `ChildSessionManager` lives in the winit loop. A `ChildSessionEvent` crosses via
+the `EventLoopProxy` (the existing `BytesArrived`-wake pattern) + a `oneshot` reply for
+the synchronous verbs:
+
+```
+shim → POST /api/tmux/split-window {…}        (axum handler, tokio)
+         TmuxAdapter: push (ChildSessionEvent::Register{spec, reply: oneshot}) + wake winit
+         reply_rx.await  →  HTTP body "%N"
+winit user_event:
+         drain → child_sessions.apply(event, &mut state.right) → PaneId
+         → format "%N", send into the oneshot
+```
+`UserEvent` becomes non-`Copy` (it carries the reply channel).
+
+**Build order A → B → C** (each layers on without rework):
+- **A — registry + lifecycle, DONE.** `ChildSessionManager` + `ChildSessionEvent` +
+  `PaneId↔PanelId` registry, reacting against placeholder panels; debug emitter (Ctrl+P =
+  register 6 mocks, Ctrl+K = unregister focused). Code: `src/ui/child_session.rs`.
+- **B (= M2) — `ChildPtySpawner` + surfaces.** `Register` spawns a real `TerminalSurface`;
+  the page renders a live grid (+ grid clip to the page viewport, the deferred M1.5 bit).
+- **C (= M3) — `TmuxAdapter`.** `/api/tmux/*` → events + the threading boundary above.
 
 **Open:** whether Claude Code needs `$TMUX` / `$TMUX_PANE` seeded for the main CC beyond
 `--teammate-mode tmux` (the captured log shows it querying `%0`, so `%0` came from
-somewhere). Resolved by experiment when §8 is built.
+somewhere). Resolved by experiment when C is built.
 
 ---
 
