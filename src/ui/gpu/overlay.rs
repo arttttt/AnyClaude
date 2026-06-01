@@ -17,7 +17,7 @@ use term_gpu::{
 use term_ui::{
     apply_overlay_alpha, build_root, free_subtree, measure, paint, place, place_centered,
     reconcile_root, Animation, Bounds, Interpolator, Modified, NodeId, PaintOutput, RetainedTree,
-    SizeConstraint, Stack,
+    SizeConstraint, Stack, WidgetId,
 };
 
 use crate::ui::chrome_labels;
@@ -171,6 +171,15 @@ impl OverlayRenderer {
         out_rects.extend_from_slice(&self.panels_scratch.rects);
         out_round_rects.extend_from_slice(&self.panels_scratch.round_rects);
         out_glyphs.extend_from_slice(&self.panels_scratch.glyphs);
+    }
+
+    /// Resolve a widget in the (last laid-out) panels tree to its bounds — the
+    /// coordinator hit-tests the pager's strip ids (`pager_{prev,next,dot}_id`)
+    /// against it on a click. `None` when the panels overlay isn't rendered or the
+    /// widget isn't present.
+    pub(super) fn resolve_panel_widget(&self, wid: WidgetId) -> Option<Bounds> {
+        self.panels_root?;
+        self.panels_tree.resolve_widget(wid).map(|nid| self.panels_tree.node(nid).bounds)
     }
 
     /// Reconcile + lay out (tight to `window`) + paint the chrome `view` into the

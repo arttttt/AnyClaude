@@ -15,9 +15,17 @@ use winit::window::CursorIcon;
 use crate::ui::app_state::{ApplyCtx, Msg};
 use crate::ui::gpu::chrome::{CHROME_H_PAD, FOOTER_HEIGHT_LOGICAL, HEADER_HEIGHT_LOGICAL};
 use crate::ui::panel_manager::ManagerId;
-use crate::ui::term_geometry;
+use crate::ui::{panels_view, term_geometry};
+use uikit::{pager_dot_id, pager_next_id, pager_prev_id};
 
 use super::{FONT_SIZE, MULTI_CLICK_THRESHOLD_MS};
+
+/// A click on the teammates pager's bottom strip → a focus change.
+enum PagerStripHit {
+    Prev,
+    Next,
+    Dot(usize),
+}
 
 impl super::GpuApp {
     pub(super) fn cell_metrics(&mut self) -> CellMetrics {
@@ -171,6 +179,23 @@ impl super::GpuApp {
         }
     }
 
+    /// Hit-test the pager's bottom strip (prev/next arrow, page dots) at `p`,
+    /// resolved from the laid-out panels tree. `None` when the click misses it /
+    /// the overlay isn't rendered.
+    fn pager_strip_action(&self, p: Vec2) -> Option<PagerStripHit> {
+        let base = panels_view::pager_base_id();
+        let hit = |wid| self.overlay.resolve_panel_widget(wid).is_some_and(|b| b.contains(p));
+        if hit(pager_prev_id(base)) {
+            return Some(PagerStripHit::Prev);
+        }
+        if hit(pager_next_id(base)) {
+            return Some(PagerStripHit::Next);
+        }
+        (0..self.state.right.len())
+            .find(|&i| hit(pager_dot_id(base, i)))
+            .map(PagerStripHit::Dot)
+    }
+
     pub(super) fn on_mouse_press(&mut self) {
         let Some((x, y)) = self.state.cursor_pos else { return };
         let p = Vec2::new(x, y);
@@ -179,6 +204,21 @@ impl super::GpuApp {
         // overlay rect.
         if self.panel_toggle_zone.is_some_and(|b| b.contains(p)) {
             self.dispatch(Msg::PanelToggle(ManagerId::Right));
+            return;
+        }
+        // A click on the pager strip pages the overlay (the focus change drives
+        // the slide on the next redraw).
+        if let Some(hit) = self.pager_strip_action(p) {
+            match hit {
+                PagerStripHit::Prev => self.state.right.focus_prev(),
+                PagerStripHit::Next => self.state.right.focus_next(),
+                PagerStripHit::Dot(i) => {
+                    if let Some(id) = self.state.right.panels().get(i).map(|panel| panel.id) {
+                        self.state.right.set_focus(id);
+                    }
+                }
+            }
+            self.request_redraw();
             return;
         }
         // The right overlay floats over the terminal, so it takes the press

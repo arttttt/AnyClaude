@@ -57,8 +57,9 @@ const WEIGHT_BOLD: u16 = 700;
 const STRIP_H: f32 = 28.0;
 
 /// Stable base id for the pager's hit-test ids (arrows + dots); distinct from
-/// the toggle pill's id.
-fn pager_base_id() -> WidgetId {
+/// the toggle pill's id. `pub` so the coordinator can derive the same ids
+/// (`uikit::pager_{prev,next,dot}_id`) to hit-test strip clicks.
+pub fn pager_base_id() -> WidgetId {
     WidgetId::from_path(&[0x9A6E2])
 }
 
