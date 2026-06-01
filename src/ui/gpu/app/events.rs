@@ -123,6 +123,10 @@ impl super::GpuApp {
             ChildSessionEvent::Unregister(p) => Some(*p),
             _ => None,
         };
+        let input = match &event {
+            ChildSessionEvent::Input { pane, data } => Some((*pane, data.clone())),
+            _ => None,
+        };
 
         let new_pane = self.child_sessions.apply(event, &mut self.state.right);
 
@@ -138,6 +142,15 @@ impl super::GpuApp {
         }
         if let Some(pane) = closing {
             self.panes.remove(pane);
+        }
+        // send-keys: type the bytes into the pane's PTY (its shell runs the
+        // teammate command). A pure resource op — the registry stayed out of it.
+        if let Some((pane, data)) = input {
+            if let Some(surface) = self.panes.get_mut(pane) {
+                if let Err(e) = surface.write(&data) {
+                    eprintln!("anyclaude: teammate input write failed: {e}");
+                }
+            }
         }
         // Unregistering the last teammate hides the overlay → drop keyboard focus
         // back to the main session.

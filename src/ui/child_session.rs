@@ -67,6 +67,10 @@ pub enum ChildSessionEvent {
     Unregister(PaneId),
     /// A pane was retitled (`tmux select-pane -T`) → update its panel title.
     SetTitle { pane: PaneId, title: String },
+    /// Keystrokes for a pane (`tmux send-keys`) → write to its PTY. A pure
+    /// resource op (no registry/panel change) the coordinator performs; the
+    /// manager ignores it.
+    Input { pane: PaneId, data: Vec<u8> },
 }
 
 /// The registry of child sessions. Reacts to [`ChildSessionEvent`]s, orchestrating
@@ -100,6 +104,9 @@ impl ChildSessionManager {
                 self.set_title(pane, &title, panels);
                 None
             }
+            // Input is a pure resource op (write to a pane's PTY) handled by the
+            // coordinator — it doesn't touch the registry or panels.
+            ChildSessionEvent::Input { .. } => None,
         }
     }
 

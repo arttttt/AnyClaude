@@ -19,6 +19,9 @@ pub enum TmuxAction {
     NewPane(ChildSpec),
     /// `kill-pane -t %N` — remove a pane.
     KillPane(PaneId),
+    /// `send-keys -t %N <keys…>` — type into a pane's PTY (the teammate command
+    /// + Enter). `data` is the already-encoded byte stream.
+    SendKeys { pane: PaneId, data: Vec<u8> },
     /// `select-pane -t %N -T <title>` — retitle a pane.
     SetTitle { pane: PaneId, title: String },
     /// Geometry / option verbs accepted but not acted on — anyclaude owns the
@@ -43,6 +46,7 @@ pub fn parse(args: &[String]) -> TmuxAction {
             Some(pane) => TmuxAction::KillPane(pane),
             None => TmuxAction::Unknown(format!("kill-pane without -t %N: {}", args.join(" "))),
         },
+        "send-keys" | "send" => parse_send_keys(args),
         "select-pane" | "selectp" => parse_select_pane(args),
         // Geometry + options + session bookkeeping: accepted, not followed.
         "resize-pane" | "resizep" | "select-layout" | "selectl" | "set" | "set-option"
@@ -54,6 +58,70 @@ pub fn parse(args: &[String]) -> TmuxAction {
             TmuxAction::Query(args.join(" "))
         }
         other => TmuxAction::Unknown(other.to_string()),
+    }
+}
+
+/// `send-keys [-l] -t %N <keys…>` — encode the key arguments into the byte
+/// stream typed into the pane's PTY. Key names (`Enter`, `C-c`, …) are
+/// interpreted unless `-l` (literal) is given; everything else is typed as-is.
+fn parse_send_keys(args: &[String]) -> TmuxAction {
+    let Some(pane) = target_pane(args) else {
+        return TmuxAction::Unknown(format!("send-keys without -t %N: {}", args.join(" ")));
+    };
+    let literal = args.iter().any(|a| a == "-l");
+    let mut data = Vec::new();
+    for key in key_args(args) {
+        if literal {
+            data.extend_from_slice(key.as_bytes());
+        } else {
+            data.extend_from_slice(&encode_key(&key));
+        }
+    }
+    TmuxAction::SendKeys { pane, data }
+}
+
+/// The key arguments of a `send-keys`: every argv element that isn't the verb,
+/// a flag, or a flag's value. Skips `-t <target>` / `-N <count>` (flag + value)
+/// and bare short flags (`-l`, `-R`, `-M`, an unmodelled `-X` copy command, …).
+fn key_args(args: &[String]) -> Vec<String> {
+    let mut keys = Vec::new();
+    let mut i = 1; // skip the verb
+    while i < args.len() {
+        let a = &args[i];
+        match a.as_str() {
+            "-t" | "-N" => i += 2, // flag with a value
+            _ if a.starts_with('-') && a.len() > 1 => i += 1, // bare flag (incl. -t%0 inline)
+            _ => {
+                keys.push(a.clone());
+                i += 1;
+            }
+        }
+    }
+    keys
+}
+
+/// Encode one `send-keys` token: a tmux key name → its control byte(s), else the
+/// literal UTF-8. Covers the names Claude Code uses to drive a teammate shell
+/// (`Enter` to run the command, the common control chords); arrows / function
+/// keys aren't needed for spawning and fall through to literal.
+fn encode_key(token: &str) -> Vec<u8> {
+    match token {
+        "Enter" | "C-m" | "KPEnter" => vec![b'\r'],
+        "Space" => vec![b' '],
+        "Tab" | "C-i" => vec![b'\t'],
+        "Escape" | "C-[" => vec![0x1b],
+        "BSpace" | "C-?" => vec![0x7f],
+        _ => {
+            // `C-<letter>` → the control byte (letter & 0x1f).
+            if let Some(rest) = token.strip_prefix("C-") {
+                if rest.len() == 1 {
+                    if let Some(c) = rest.chars().next().filter(|c| c.is_ascii_alphabetic()) {
+                        return vec![(c.to_ascii_uppercase() as u8) & 0x1f];
+                    }
+                }
+            }
+            token.as_bytes().to_vec()
+        }
     }
 }
 

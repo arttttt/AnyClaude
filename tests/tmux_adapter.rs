@@ -34,6 +34,47 @@ fn kill_pane_without_a_target_is_unknown() {
 }
 
 #[test]
+fn send_keys_encodes_literal_text_plus_enter() {
+    // The canonical teammate spawn: type a command, then Enter (→ CR).
+    match parse(&argv(&["send-keys", "-t", "%0", "echo hi", "Enter"])) {
+        TmuxAction::SendKeys { pane, data } => {
+            assert_eq!(pane, PaneId(0));
+            assert_eq!(data, b"echo hi\r");
+        }
+        other => panic!("expected SendKeys, got {other:?}"),
+    }
+}
+
+#[test]
+fn send_keys_literal_flag_does_not_interpret_key_names() {
+    match parse(&argv(&["send-keys", "-t", "%1", "-l", "type Enter please"])) {
+        TmuxAction::SendKeys { pane, data } => {
+            assert_eq!(pane, PaneId(1));
+            // `-l`: "Enter" inside the string stays literal, not a CR.
+            assert_eq!(data, b"type Enter please");
+        }
+        other => panic!("expected SendKeys, got {other:?}"),
+    }
+}
+
+#[test]
+fn send_keys_encodes_control_chords() {
+    assert_eq!(
+        parse(&argv(&["send-keys", "-t", "%2", "C-c"])),
+        TmuxAction::SendKeys { pane: PaneId(2), data: vec![0x03] },
+    );
+    assert_eq!(
+        parse(&argv(&["send-keys", "-t", "%2", "Escape"])),
+        TmuxAction::SendKeys { pane: PaneId(2), data: vec![0x1b] },
+    );
+}
+
+#[test]
+fn send_keys_without_a_target_is_unknown() {
+    assert!(matches!(parse(&argv(&["send-keys", "echo hi", "Enter"])), TmuxAction::Unknown(_)));
+}
+
+#[test]
 fn select_pane_dash_t_sets_the_title() {
     assert_eq!(
         parse(&argv(&["select-pane", "-t", "%2", "-T", "module-mapper"])),

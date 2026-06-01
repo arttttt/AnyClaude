@@ -63,6 +63,13 @@ pub async fn handle_tmux(State(state): State<TmuxState>, Json(req): Json<TmuxReq
             cp.submit(ChildSessionEvent::SetTitle { pane, title }).await;
             StatusCode::OK.into_response()
         }
+        TmuxAction::SendKeys { pane, data } => {
+            let Some(cp) = state.control_plane else {
+                return no_ui();
+            };
+            cp.submit(ChildSessionEvent::Input { pane, data }).await;
+            StatusCode::OK.into_response()
+        }
         TmuxAction::Ack => StatusCode::OK.into_response(),
         TmuxAction::Query(q) => {
             // Not answered with real data yet — log so a real CC run reveals the
