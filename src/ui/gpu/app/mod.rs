@@ -30,6 +30,7 @@ use crate::config::ClaudeSettingsManager;
 use crate::metrics::ObservabilityHub;
 use crate::ui::app_state::AppState;
 use crate::ui::child_session::ChildSessionManager;
+use crate::ui::gpu::panes::Panes;
 
 use super::backends::Backends;
 use super::overlay::OverlayRenderer;
@@ -67,6 +68,10 @@ const POPUP_FADE_SECS: f32 = 0.12;
 /// Panel overlay collapse/expand width-slide duration (seconds).
 const PANEL_ANIM_SECS: f32 = 0.14;
 
+/// Initial grid a teammate pane spawns at, before the first render resizes it to
+/// its page rect. Small — it only matters for the first frame.
+const INITIAL_PANE_GRID: (usize, usize) = (40, 12);
+
 /// Pager page-settle spring constants (page units). `DAMPING ≈ 2·√STIFFNESS` is
 /// critical — snappy, no overshoot.
 const PAGE_SPRING_STIFFNESS: f32 = 700.0;
@@ -101,6 +106,9 @@ struct PageSwipe {
 #[derive(Debug, Clone, Copy)]
 pub(super) enum UserEvent {
     PtyBytesArrived,
+    /// A teammate pane's PTY reader queued new bytes (the per-pane analogue of
+    /// `PtyBytesArrived`); the coordinator drains that pane's surface.
+    PtyBytes(crate::ui::child_session::PaneId),
     GestureEnded,
     MomentumTick,
     /// 1Hz heartbeat that keeps Uptime / Reqs / sub / team chrome
@@ -127,10 +135,15 @@ pub(super) struct GpuApp {
     /// Lazily populated in `resumed`. See [`Session`].
     session: Session,
 
-    /// Registry + lifecycle for teammate child sessions (bucket 3 — identity,
-    /// later the per-pane surfaces). Reacts to `ChildSessionEvent`s by
-    /// orchestrating `state.right`. See [`ChildSessionManager`].
+    /// Registry + lifecycle for teammate child sessions (bucket 3 — identity).
+    /// Reacts to `ChildSessionEvent`s by orchestrating `state.right`. See
+    /// [`ChildSessionManager`].
     child_sessions: ChildSessionManager,
+
+    /// Teammate pane resources (bucket 3-T): the live `TerminalSurface`s keyed by
+    /// `PaneId`. Spawned on `Register`, dropped on `Unregister`, drained on
+    /// `PtyBytes`. See [`Panes`].
+    panes: Panes,
 
     /// The single bucket-1 source of UI-decision truth — grid size, scroll +
     /// momentum, selection / input, session header, and the popup overlays.
@@ -222,6 +235,7 @@ impl GpuApp {
             overlay: OverlayRenderer::new(Duration::from_secs_f32(POPUP_FADE_SECS)),
             session: Session::new(spawn_command, spawn_args, spawn_env),
             child_sessions: ChildSessionManager::new(),
+            panes: Panes::new(SCROLLBACK_LINES),
             state,
             timers: Timers::new(),
             session_click_zone: None,

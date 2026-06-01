@@ -225,6 +225,82 @@ impl super::GpuApp {
             &mut overlay_round_rects,
             &mut overlay_glyphs,
         );
+        // ── M2: draw each visible teammate pane's LIVE grid into its page slot ──
+        // The term_ui pager above renders the frame + dots (its bg fill is dropped
+        // so it can't cover these); here the coordinator positions the grids by
+        // the same `page_scroll` math and draws them via `populate_panel` (R5).
+        // Layering (within the overlay layer's fixed rects→round_rects→glyphs
+        // order): an opaque page backdrop + the grid cells go into `overlay_rects`
+        // (so the round-rect border frames them), grid text into `overlay_glyphs`;
+        // both are clipped to the single-page viewport (off-edge neighbours
+        // trimmed) and faded with the collapse animation.
+        if show && expanded && page_w > 1.0 {
+            let border = 1.0_f32;
+            let content_origin = overlay_origin + Vec2::new(border, border);
+            let page_h = (overlay_size.y - 2.0 * border - panels_view::STRIP_H).max(0.0);
+            let clip = [
+                content_origin.x,
+                content_origin.y,
+                content_origin.x + page_w,
+                content_origin.y + page_h,
+            ];
+            let cell_w = (metrics.width_physical / sf).max(1.0);
+            let cell_h = (metrics.height_physical / sf).max(1.0);
+            let cols = (page_w / cell_w) as usize;
+            let rows = (page_h / cell_h) as usize;
+            let current = self.state.right.focus_index().unwrap_or(0);
+            let n = self.state.right.len();
+            let first = current.saturating_sub(1);
+            let last = (current + 1).min(n.saturating_sub(1));
+            // Resolve (index, pane) up front so the panels/registry borrows drop
+            // before the mutable panes/text/atlas borrows below.
+            let window: Vec<_> = (first..=last)
+                .filter_map(|i| {
+                    let panel = self.state.right.panels().get(i)?;
+                    Some((i, self.child_sessions.pane_for(panel.id)?))
+                })
+                .collect();
+            for (i, pane) in window {
+                let Some(surface) = self.panes.get_mut(pane) else { continue };
+                surface.resize(cols, rows);
+                let page_x = content_origin.x + (i as f32 - page_scroll) * page_w;
+                // Opaque backdrop (the overlay floats over the terminal).
+                overlay_rects.push(RectInstance {
+                    pos: [page_x, content_origin.y],
+                    size: [page_w, page_h],
+                    color: with_panel_alpha(panels_view::OVERLAY_BG, fade),
+                    clip,
+                });
+                let snapshot = surface.emulator.snapshot();
+                let rect = term_gpu::PanelRect::new(page_x, content_origin.y, page_w, page_h);
+                let r0 = overlay_rects.len();
+                let g0 = overlay_glyphs.len();
+                populate_panel(
+                    &snapshot,
+                    rect,
+                    &self.text.palette,
+                    &mut self.text.font_system,
+                    &mut self.text.swash_cache,
+                    renderer.atlas_mut(),
+                    &mut self.text.shape_cache,
+                    FONT_SIZE,
+                    sf,
+                    metrics,
+                    0.0,
+                    &mut overlay_rects,
+                    &mut overlay_glyphs,
+                );
+                // Clip the grid to the page viewport + fade with the collapse.
+                for r in &mut overlay_rects[r0..] {
+                    r.clip = clip;
+                    r.color[3] *= fade;
+                }
+                for g in &mut overlay_glyphs[g0..] {
+                    g.clip = clip;
+                    g.color[3] *= fade;
+                }
+            }
+        }
         self.panel_overlay_rect = show.then(|| Bounds::new(overlay_origin, overlay_size));
         // The pill is centred on the divider (the overlay's left edge) and
         // vertically centred in the overlay band — rendered OUTSIDE the faded
@@ -312,4 +388,10 @@ impl super::GpuApp {
             window.request_redraw();
         }
     }
+}
+
+/// Multiply a colour's alpha by `a` (RGB untouched) — bakes the collapse fade
+/// into the coordinator-drawn grid backdrop.
+fn with_panel_alpha(c: [f32; 4], a: f32) -> [f32; 4] {
+    [c[0], c[1], c[2], c[3] * a]
 }

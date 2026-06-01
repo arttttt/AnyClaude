@@ -105,12 +105,38 @@ impl super::GpuApp {
         exit
     }
 
-    /// React to one teammate-session lifecycle event by handing it to the
-    /// [`ChildSessionManager`], which orchestrates `state.right`. The single
-    /// coordinator entry point for `ChildSessionEvent`s — the debug emitter below
-    /// drives it today; the `TmuxAdapter` control plane drives it later.
+    /// React to one teammate-session lifecycle event: the [`ChildSessionManager`]
+    /// updates identity + `state.right` (UI), and the coordinator orchestrates the
+    /// matching resources — spawn a [`TerminalSurface`] into `panes` on `Register`,
+    /// drop it on `Unregister`. The single coordinator entry point for
+    /// `ChildSessionEvent`s (debug emitter today, `TmuxAdapter` later).
     fn apply_child_session_event(&mut self, event: crate::ui::child_session::ChildSessionEvent) {
-        self.child_sessions.apply(event, &mut self.state.right);
+        use crate::ui::child_session::ChildSessionEvent;
+        // Pull out what the resource side needs before the event is consumed.
+        let spec = match &event {
+            ChildSessionEvent::Register(s) => Some(s.clone()),
+            ChildSessionEvent::Unregister(_) => None,
+        };
+        let closing = match &event {
+            ChildSessionEvent::Unregister(p) => Some(*p),
+            ChildSessionEvent::Register(_) => None,
+        };
+
+        let new_pane = self.child_sessions.apply(event, &mut self.state.right);
+
+        if let (Some(spec), Some(pane)) = (spec, new_pane) {
+            let (cols, rows) = super::INITIAL_PANE_GRID;
+            let proxy = self.proxy.clone();
+            let on_data = move || {
+                let _ = proxy.send_event(UserEvent::PtyBytes(pane));
+            };
+            if let Err(e) = self.panes.spawn(pane, &spec, cols, rows, on_data) {
+                eprintln!("anyclaude: teammate pane spawn failed: {e}");
+            }
+        }
+        if let Some(pane) = closing {
+            self.panes.remove(pane);
+        }
         self.request_redraw();
     }
 
@@ -121,7 +147,11 @@ impl super::GpuApp {
     fn debug_toggle_panels(&mut self) {
         use crate::ui::child_session::{ChildSessionEvent, ChildSpec};
         if self.child_sessions.is_empty() {
-            // Agent-ish accent colours echoing Claude Code's teammate palette.
+            // Each mock runs an interactive shell so the pane shows a live grid
+            // (real teammates run `claude` via the control plane). Accent colours
+            // echo Claude Code's teammate palette.
+            let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+            let env = vec![("TERM".to_string(), "xterm-256color".to_string())];
             let mocks = [
                 ("module-mapper", [0.30, 0.55, 0.95, 1.0]),
                 ("flow-tracer", [0.35, 0.80, 0.45, 1.0]),
@@ -131,7 +161,13 @@ impl super::GpuApp {
                 ("doc-writer", [0.45, 0.75, 0.85, 1.0]),
             ];
             for (name, accent) in mocks {
-                let spec = ChildSpec { name: name.to_string(), accent };
+                let spec = ChildSpec {
+                    name: name.to_string(),
+                    accent,
+                    command: shell.clone(),
+                    args: vec![],
+                    env: env.clone(),
+                };
                 self.apply_child_session_event(ChildSessionEvent::Register(spec));
             }
         }
@@ -225,6 +261,11 @@ impl ApplicationHandler<UserEvent> for super::GpuApp {
         match event {
             UserEvent::PtyBytesArrived => {
                 self.dispatch(Msg::PtyBytes);
+            }
+            UserEvent::PtyBytes(pane) => {
+                if self.panes.drain(pane) {
+                    self.request_redraw();
+                }
             }
             UserEvent::GestureEnded => {
                 self.dispatch(Msg::GestureEnd);

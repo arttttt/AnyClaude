@@ -28,15 +28,21 @@ use crate::ui::panel_manager::{PanelId, PanelKind, PanelManager};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PaneId(pub u64);
 
-/// What a registering child announces about itself. Grows with the milestones —
-/// the spawn command / env / backend routing arrive when `Register` actually
-/// launches a process.
+/// What a registering child announces about itself: its display identity plus
+/// the command to run in its pane. (The tmux control plane fills `command` from
+/// `send-keys … claude …`; the debug emitter uses a shell.)
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChildSpec {
     /// Display title (agent / teammate name).
     pub name: String,
     /// Accent colour (agent colour), RGBA in 0..=1.
     pub accent: [f32; 4],
+    /// Program to spawn into the pane's PTY.
+    pub command: String,
+    /// Arguments to `command`.
+    pub args: Vec<String>,
+    /// Extra environment for the child.
+    pub env: Vec<(String, String)>,
 }
 
 /// One registry entry: a registered child and the panel that mirrors it. The

@@ -8,7 +8,7 @@ const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
 const BLUE: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
 
 fn spec(name: &str, accent: [f32; 4]) -> ChildSpec {
-    ChildSpec { name: name.to_string(), accent }
+    ChildSpec { name: name.to_string(), accent, command: String::new(), args: vec![], env: vec![] }
 }
 
 fn register(mgr: &mut ChildSessionManager, panels: &mut PanelManager, name: &str, accent: [f32; 4]) -> PaneId {

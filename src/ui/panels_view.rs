@@ -12,7 +12,7 @@
 //! panel managers. Milestone 1 renders placeholder panels (no live terminal).
 
 use term_ui::{
-    BoxView, CrossAxis, Insets, Modified, Modifier, Modify, Sizing, Stack, Text, WidgetId,
+    BoxView, CrossAxis, Insets, Modified, Modifier, Modify, Sizing, Spacer, Stack, Text, WidgetId,
 };
 use uikit::{edge_toggle, pager, Chevron, EdgeTogglePalette, PagerPalette};
 
@@ -20,8 +20,9 @@ use crate::ui::panel_manager::{Panel, PanelManager, RenderMode};
 
 // ── panels palette (logical px / linear RGBA) ──
 /// Opaque column background — slightly darker than the popup bg so the overlay
-/// reads as a distinct surface floating over the terminal.
-const OVERLAY_BG: [f32; 4] = [0.06, 0.06, 0.08, 1.0];
+/// reads as a distinct surface floating over the terminal. `pub` so the
+/// coordinator paints the same backdrop under the live grid pages.
+pub const OVERLAY_BG: [f32; 4] = [0.06, 0.06, 0.08, 1.0];
 /// The column frame + edge line + pill border.
 const OVERLAY_BORDER: [f32; 4] = [0.25, 0.25, 0.27, 1.0];
 /// Per-panel placeholder box background.
@@ -53,8 +54,9 @@ const CONTENT_PAD: f32 = 10.0;
 const PANEL_CORNER: f32 = 6.0;
 /// `cosmic_text::Weight::BOLD.0` — panel titles.
 const WEIGHT_BOLD: u16 = 700;
-/// Height of the pager's bottom indicator strip (‹ dots ›).
-const STRIP_H: f32 = 28.0;
+/// Height of the pager's bottom indicator strip (‹ dots ›). `pub` so the
+/// coordinator reserves it when sizing the live grid pages.
+pub const STRIP_H: f32 = 28.0;
 
 /// Stable base id for the pager's hit-test ids (arrows + dots); distinct from
 /// the toggle pill's id. `pub` so the coordinator can derive the same ids
@@ -102,17 +104,16 @@ pub fn panel_manager_view(
 
     match mgr.policy().render {
         RenderMode::Pager => {
-            // One page (teammate card) at a time, sliding horizontally on
-            // `scroll`. The card fills the page; the pager clips the off-edge
-            // neighbours to the viewport.
+            // The live teammate grids are drawn by the coordinator (R5) into the
+            // page slots; the pager here renders only the frame + dots strip, with
+            // EMPTY page placeholders (so the dots count + slide positions exist)
+            // and NO background fill — the grids provide the backdrop, and a fill
+            // would draw over them (round-rects paint after the grid's rects).
             let current = mgr.focus_index().unwrap_or(0);
-            let pages: Vec<BoxView> = mgr
-                .panels()
-                .iter()
-                .map(|p| Box::new(panel_box(p, mgr.focus() == Some(p.id))) as BoxView)
-                .collect();
+            let pages: Vec<BoxView> =
+                (0..mgr.len()).map(|_| Box::new(Spacer::fill()) as BoxView).collect();
             pager(pages, current, scroll, page_w, STRIP_H, FONT_SIZE, pager_palette(), pager_base_id())
-                .modify(column)
+                .modify(Modifier::new().border(1.0, OVERLAY_BORDER).alpha(fade))
         }
         RenderMode::Switcher => {
             // Left sessions sidebar (later): a stack of session cards. Scaffold —

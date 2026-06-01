@@ -13,8 +13,11 @@ mod bootstrap;
 mod chrome;
 mod diagnostic;
 mod overlay;
+mod panes;
 pub mod pty;
 mod session;
+mod spawn;
+mod surface;
 mod text;
 mod timers;
 
