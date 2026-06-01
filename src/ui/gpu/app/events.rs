@@ -136,6 +136,9 @@ impl super::GpuApp {
         if let Some(pane) = closing {
             self.panes.remove(pane);
         }
+        // Unregistering the last teammate hides the overlay → drop keyboard focus
+        // back to the main session.
+        self.state.normalize_input_focus();
         self.request_redraw();
     }
 
@@ -171,6 +174,8 @@ impl super::GpuApp {
             }
         }
         self.state.right.toggle();
+        // Collapsing the overlay drops keyboard focus back to the main session.
+        self.state.normalize_input_focus();
         self.request_redraw();
     }
 

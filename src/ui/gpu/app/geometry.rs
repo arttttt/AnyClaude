@@ -13,7 +13,7 @@ use term_gpu::{
 use winit::event::TouchPhase;
 use winit::window::CursorIcon;
 
-use crate::ui::app_state::{ApplyCtx, Msg};
+use crate::ui::app_state::{ApplyCtx, InputFocus, Msg};
 use crate::ui::gpu::chrome::{CHROME_H_PAD, FOOTER_HEIGHT_LOGICAL, HEADER_HEIGHT_LOGICAL};
 use crate::ui::panel_manager::ManagerId;
 use crate::ui::{panels_view, term_geometry};
@@ -208,7 +208,7 @@ impl super::GpuApp {
             return;
         }
         // A click on the pager strip pages the overlay (the focus change drives
-        // the slide on the next redraw).
+        // the slide on the next redraw) and routes the keyboard into it.
         if let Some(hit) = self.pager_strip_action(p) {
             match hit {
                 PagerStripHit::Prev => self.state.right.focus_prev(),
@@ -219,6 +219,7 @@ impl super::GpuApp {
                     }
                 }
             }
+            self.route_input(InputFocus::Teammates);
             self.request_redraw();
             return;
         }
@@ -231,14 +232,20 @@ impl super::GpuApp {
                 let on_edge = x <= rect.origin.x + self.state.right.policy().collapsed_width;
                 if self.state.right.policy().resizable && on_edge {
                     self.dispatch(Msg::PanelEdgeDragStart(ManagerId::Right));
+                } else {
+                    // A click on the page body routes the keyboard INTO the
+                    // overlay (the teammate under it receives keystrokes). The
+                    // press is still swallowed — no terminal selection underneath;
+                    // paging is via the strip / hotkeys / a two-finger swipe, never
+                    // a button drag (it would fight a future in-page selection).
+                    self.route_input(InputFocus::Teammates);
                 }
-                // Every other in-overlay press is swallowed (no terminal
-                // selection underneath); paging is via the strip / hotkeys / a
-                // two-finger swipe, never a button drag (it would fight a future
-                // in-page text selection).
                 return;
             }
         }
+        // A click that reaches the main app (header or terminal body) routes the
+        // keyboard back to the main session.
+        self.route_input(InputFocus::Terminal);
         let in_header = y < HEADER_HEIGHT_LOGICAL;
         let in_session_zone = self
             .session_click_zone
@@ -266,6 +273,17 @@ impl super::GpuApp {
             &ctx,
         );
         let _ = self.perform_effects(fx);
+    }
+
+    /// Point the keyboard at `target` (the main terminal vs the teammates
+    /// overlay) and redraw when it actually changes — so the focus ring follows
+    /// mouse clicks, not just the ⌥↑ toggle. The effective routing is still
+    /// masked by `input_on_teammates` if the overlay isn't live.
+    fn route_input(&mut self, target: InputFocus) {
+        if self.state.input_focus != target {
+            self.state.input_focus = target;
+            self.request_redraw();
+        }
     }
 
     /// Whether the mouse is currently over the teammates overlay rect.

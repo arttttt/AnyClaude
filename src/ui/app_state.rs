@@ -366,6 +366,7 @@ impl AppState {
                 // commit the drag (expand to the new width or snap collapsed).
                 if let Some(mgr) = self.panel_edge_drag.take() {
                     self.manager_mut(mgr).end_edge_drag();
+                    self.normalize_input_focus();
                     return vec![Effect::Redraw];
                 }
                 self.mouse_left_held = false;
@@ -384,6 +385,7 @@ impl AppState {
             Msg::PtyBytes => vec![Effect::Drain],
             Msg::PanelToggle(mgr) => {
                 self.manager_mut(mgr).toggle();
+                self.normalize_input_focus();
                 vec![Effect::Redraw]
             }
             Msg::PanelEdgeDragStart(mgr) => {
@@ -552,12 +554,25 @@ impl AppState {
 
     /// Derived: is the keyboard EFFECTIVELY routed to a teammate this frame? The
     /// stored intent is masked by the overlay's live state, so a collapsed or
-    /// emptied overlay falls back to the terminal without a stored-flag reset
-    /// (R12). Re-opening the overlay restores the teammate target.
+    /// emptied overlay falls back to the terminal even before `normalize_input_focus`
+    /// runs (the safety net).
     pub fn input_on_teammates(&self) -> bool {
         self.input_focus == InputFocus::Teammates
             && self.right.is_visible()
             && !self.right.is_empty()
+    }
+
+    /// Reset the keyboard target to the terminal once the overlay is no longer a
+    /// live keyboard target (collapsed or emptied) — so collapsing the panel
+    /// returns focus to the main session AND a later re-expand starts on the
+    /// terminal (no sticky teammate focus). Call after any overlay
+    /// visibility / population change.
+    pub fn normalize_input_focus(&mut self) {
+        if self.input_focus == InputFocus::Teammates
+            && !(self.right.is_visible() && !self.right.is_empty())
+        {
+            self.input_focus = InputFocus::Terminal;
+        }
     }
 
     /// True when any popup overlay is visible (gates input routing + mouse).
