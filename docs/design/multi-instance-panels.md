@@ -450,7 +450,9 @@ Nothing in M1 is rebuilt later — only extended (add `surface`, child, API).
    teammate, horizontal switches). Built as the web-carousel "translate the track"
    model (continuous `scroll` float = truth, index derived, `current±1` window,
    neighbours clipped to the viewport via the new `Mod::Clip`). No BSP / `term_layout`
-   anywhere. Nav is ⌥←/⌥→ (clicks on the dot/arrow strip + drag-swipe land later).
+   anywhere. Nav: ⌥←/⌥→, clicks on the ‹/›/dots strip, and a two-finger trackpad
+   swipe (continuous-progress: the page follows the finger and snaps on release by
+   `round(pos ± 0.5)` with a velocity nudge, one page per gesture).
 2. **`$TMUX` / `$TMUX_PANE` seeding** for the main CC (see §8) — resolve by experiment
    at M3.
 3. **Scroll/selection targeting** — cursor-under (default, §6) vs follow-focus. Default
