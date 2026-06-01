@@ -90,16 +90,22 @@ impl super::GpuApp {
             return;
         }
         let payload = parts.join(" ");
-        let bracketed = self
-            .session.emulator
-            .as_ref()
-            .map(|e| e.bracketed_paste())
-            .unwrap_or(false);
+        // Paste goes where you TYPE — the focused terminal. Read the bracketed-
+        // paste mode from that same terminal (the focused teammate when input is
+        // routed to the overlay, else the main session).
+        let bracketed = if self.state.input_on_teammates() {
+            self.focused_pane()
+                .and_then(|pane| self.panes.get(pane))
+                .map(|s| s.bracketed_paste())
+                .unwrap_or(false)
+        } else {
+            self.session
+                .emulator
+                .as_ref()
+                .map(|e| e.bracketed_paste())
+                .unwrap_or(false)
+        };
         let bytes = encode_paste(&payload, bracketed);
-        if let Some(pty) = self.session.pty.as_mut() {
-            if let Err(e) = pty.write(&bytes) {
-                eprintln!("anyclaude: paste write failed: {e}");
-            }
-        }
+        self.write_to_focused(&bytes);
     }
 }

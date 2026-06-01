@@ -30,6 +30,16 @@ use crate::ui::panel_manager::{ManagerId, PanelManager, Policy};
 use crate::ui::settings::{SettingsDialogState, SettingsIntent};
 use crate::ui::term_geometry::LastClick;
 
+/// Which terminal the keyboard is routed to. The mouse stays hit-tested under
+/// the cursor (orthogonal); only KEYS follow this. `Terminal` is the main Claude
+/// session; `Teammates` is the focused page of the right overlay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum InputFocus {
+    #[default]
+    Terminal,
+    Teammates,
+}
+
 /// The authoritative UI-decision state. One writer per fact.
 pub struct AppState {
     // Terminal grid sizing (cols × rows), recomputed on resize.
@@ -78,6 +88,12 @@ pub struct AppState {
     /// resize it (analogous to `dragging_selection`). Cursor motion sets the
     /// width; the next mouse-release clears it.
     pub panel_edge_drag: Option<ManagerId>,
+
+    /// Which terminal the keyboard targets (`InputFocus::Terminal` = the main
+    /// session, `Teammates` = the focused overlay page). Stored as INTENT;
+    /// `input_on_teammates` masks it by the overlay's live state so a collapsed
+    /// or emptied overlay falls back to the terminal without a separate reset.
+    pub input_focus: InputFocus,
 }
 
 /// A side effect [`AppState::apply`] asks the coordinator to perform. `apply` is
@@ -106,8 +122,17 @@ pub enum Effect {
     /// Resize the emulator + PTY to a new `cols × rows` grid after a window /
     /// scale change (the `grid_size` transition itself happens in `apply`).
     ResizeEmulatorAndPty { cols: usize, rows: usize },
-    /// Write encoded key/paste bytes to the PTY (a terminal-focused keypress).
+    /// Write bytes to the MAIN session's PTY (mouse reports, restart echo — the
+    /// terminal under the cursor is always the main grid).
     WriteToPty(Vec<u8>),
+    /// Write encoded key bytes to whichever terminal holds KEYBOARD focus — the
+    /// main session or, when input is routed to the overlay, the focused
+    /// teammate pane (the coordinator resolves the target).
+    WriteToFocused(Vec<u8>),
+    /// Flip the keyboard target between the main terminal and the teammates
+    /// overlay (⌥↑). State-only like `ClosePopups`; the coordinator performs the
+    /// flip + redraw.
+    ToggleInputFocus,
     /// Open-or-close a popup (reads resources — backend list / settings registry
     /// / switch log — so the coordinator performs it via its toggle methods).
     ToggleBackendPopup,
@@ -426,6 +451,7 @@ impl AppState {
                         AppShortcut::DebugUnregisterPane => Effect::DebugUnregisterPane,
                         AppShortcut::PagePrev => Effect::PagePrev,
                         AppShortcut::PageNext => Effect::PageNext,
+                        AppShortcut::ToggleInputFocus => Effect::ToggleInputFocus,
                         AppShortcut::Quit => Effect::Quit,
                     }];
                 }
@@ -440,7 +466,7 @@ impl AppState {
             return Vec::new();
         }
         match encode_key(&logical, &logical_unmod, self.modifiers, app_cursor) {
-            Some(bytes) => vec![Effect::WriteToPty(bytes)],
+            Some(bytes) => vec![Effect::WriteToFocused(bytes)],
             None => Vec::new(),
         }
     }
@@ -506,7 +532,32 @@ impl AppState {
             left: PanelManager::new(Policy::sidebar()),
             right: PanelManager::new(Policy::overlay()),
             panel_edge_drag: None,
+            input_focus: InputFocus::Terminal,
         }
+    }
+
+    /// Toggle the keyboard target between the main terminal and the teammates
+    /// overlay. Switching INTO the overlay only takes when it is visible and
+    /// non-empty — you cannot type into a hidden / empty overlay — otherwise the
+    /// focus stays on (or returns to) the terminal.
+    pub fn toggle_input_focus(&mut self) {
+        self.input_focus = match self.input_focus {
+            InputFocus::Teammates => InputFocus::Terminal,
+            InputFocus::Terminal if self.right.is_visible() && !self.right.is_empty() => {
+                InputFocus::Teammates
+            }
+            InputFocus::Terminal => InputFocus::Terminal,
+        };
+    }
+
+    /// Derived: is the keyboard EFFECTIVELY routed to a teammate this frame? The
+    /// stored intent is masked by the overlay's live state, so a collapsed or
+    /// emptied overlay falls back to the terminal without a stored-flag reset
+    /// (R12). Re-opening the overlay restores the teammate target.
+    pub fn input_on_teammates(&self) -> bool {
+        self.input_focus == InputFocus::Teammates
+            && self.right.is_visible()
+            && !self.right.is_empty()
     }
 
     /// True when any popup overlay is visible (gates input routing + mouse).

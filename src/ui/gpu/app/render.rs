@@ -203,8 +203,17 @@ impl super::GpuApp {
         let page_w = (overlay_w - 2.0).max(0.0);
         // The overlay is "on" unless it's the empty + collapsed + idle default.
         let show = !(right_empty && !right_visible && !panel_animating && dragging.is_none());
-        let panels = show
-            .then(|| panels_view::panel_manager_view(&self.state.right, expanded, page_scroll, page_w, fade));
+        let input_focused = self.state.input_on_teammates();
+        let panels = show.then(|| {
+            panels_view::panel_manager_view(
+                &self.state.right,
+                expanded,
+                page_scroll,
+                page_w,
+                fade,
+                input_focused,
+            )
+        });
         let pill = show.then(|| panels_view::pill_view(expanded, self.state.right.any_active()));
         let overlay_origin =
             Vec2::new((window_logical.x - overlay_w).max(0.0), HEADER_HEIGHT_LOGICAL);

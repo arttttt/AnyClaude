@@ -57,4 +57,10 @@ impl Panes {
     pub(super) fn get_mut(&mut self, pane: PaneId) -> Option<&mut TerminalSurface> {
         self.surfaces.get_mut(&pane)
     }
+
+    /// Immutable access to a pane's surface — reads its DECCKM / bracketed-paste
+    /// mode for input encoding without the resize/snapshot mutation path.
+    pub(super) fn get(&self, pane: PaneId) -> Option<&TerminalSurface> {
+        self.surfaces.get(&pane)
+    }
 }

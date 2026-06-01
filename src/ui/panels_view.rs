@@ -25,6 +25,9 @@ use crate::ui::panel_manager::{Panel, PanelManager, RenderMode};
 pub const OVERLAY_BG: [f32; 4] = [0.06, 0.06, 0.08, 1.0];
 /// The column frame + edge line + pill border.
 const OVERLAY_BORDER: [f32; 4] = [0.25, 0.25, 0.27, 1.0];
+/// The column frame when the overlay holds KEYBOARD focus — a bright focus ring
+/// so it reads as "keystrokes go to the teammate here, not the main terminal".
+const OVERLAY_BORDER_ACTIVE: [f32; 4] = [0.30, 0.60, 0.95, 1.0];
 /// Per-panel placeholder box background.
 const PANEL_BG: [f32; 4] = [0.11, 0.11, 0.13, 1.0];
 /// Panel title (bright).
@@ -91,6 +94,7 @@ pub fn panel_manager_view(
     scroll: f32,
     page_w: f32,
     fade: f32,
+    input_focused: bool,
 ) -> Modified {
     let column = Modifier::new().background(OVERLAY_BG).border(1.0, OVERLAY_BORDER).alpha(fade);
 
@@ -112,8 +116,10 @@ pub fn panel_manager_view(
             let current = mgr.focus_index().unwrap_or(0);
             let pages: Vec<BoxView> =
                 (0..mgr.len()).map(|_| Box::new(Spacer::fill()) as BoxView).collect();
+            // The frame turns into a focus ring when the keyboard is routed here.
+            let frame = if input_focused { OVERLAY_BORDER_ACTIVE } else { OVERLAY_BORDER };
             pager(pages, current, scroll, page_w, STRIP_H, FONT_SIZE, pager_palette(), pager_base_id())
-                .modify(Modifier::new().border(1.0, OVERLAY_BORDER).alpha(fade))
+                .modify(Modifier::new().border(1.0, frame).alpha(fade))
         }
         RenderMode::Switcher => {
             // Left sessions sidebar (later): a stack of session cards. Scaffold —

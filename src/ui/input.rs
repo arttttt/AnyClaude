@@ -34,6 +34,10 @@ pub enum AppShortcut {
     /// terminal's word-motion.
     PagePrev,
     PageNext,
+    /// Toggle the keyboard target between the main terminal and the teammates
+    /// overlay (⌥↑). Same ⌥-arrow overlay-nav family as paging, debug-gated for
+    /// now; release builds leave ⌥↑ to the terminal.
+    ToggleInputFocus,
     Quit,
 }
 
@@ -91,6 +95,7 @@ pub fn app_shortcut(code: KeyCode, modifiers: ModifiersState) -> Option<AppShort
         return match code {
             KeyCode::ArrowLeft => Some(AppShortcut::PagePrev),
             KeyCode::ArrowRight => Some(AppShortcut::PageNext),
+            KeyCode::ArrowUp => Some(AppShortcut::ToggleInputFocus),
             _ => None,
         };
     }

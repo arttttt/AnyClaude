@@ -3,6 +3,8 @@
 //! [`Session`](super::session::Session); a `ChildPtySpawner` builds these and the
 //! `Panes` collaborator owns them keyed by `PaneId`.
 
+use std::io;
+
 use term_core::TerminalEmulator;
 
 use crate::ui::gpu::pty::ChildPty;
@@ -35,6 +37,25 @@ impl TerminalSurface {
             self.emulator.process(&chunk);
         }
         true
+    }
+
+    /// Write `bytes` to the pane's PTY stdin — the focused teammate's keyboard
+    /// target. Mirrors the main session's PTY write.
+    pub(super) fn write(&mut self, bytes: &[u8]) -> io::Result<()> {
+        self.pty.write(bytes)
+    }
+
+    /// The pane emulator's DECCKM (cursor-keys application) mode — selects SS3
+    /// vs CSI arrow encoding for THIS pane, so a focused teammate's arrows encode
+    /// against its own mode, not the main session's.
+    pub(super) fn app_cursor(&self) -> bool {
+        self.emulator.cursor_keys_app()
+    }
+
+    /// Whether the pane has bracketed paste enabled (wraps a pasted payload in
+    /// `\x1b[200~`…`\x1b[201~`).
+    pub(super) fn bracketed_paste(&self) -> bool {
+        self.emulator.bracketed_paste()
     }
 
     /// Resize the emulator + PTY to `(cols, rows)`, skipping when unchanged.

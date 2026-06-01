@@ -72,12 +72,11 @@ impl super::GpuApp {
                         pty.resize(cols as u16, rows as u16);
                     }
                 }
-                Effect::WriteToPty(bytes) => {
-                    if let Some(pty) = self.session.pty.as_mut() {
-                        if let Err(e) = pty.write(&bytes) {
-                            eprintln!("anyclaude: PTY write failed: {e}");
-                        }
-                    }
+                Effect::WriteToPty(bytes) => self.write_to_main(&bytes),
+                Effect::WriteToFocused(bytes) => self.write_to_focused(&bytes),
+                Effect::ToggleInputFocus => {
+                    self.state.toggle_input_focus();
+                    self.request_redraw();
                 }
                 Effect::ToggleBackendPopup => self.toggle_backend_switch_popup(),
                 Effect::ToggleHistoryPopup => self.toggle_history_popup(),
@@ -195,6 +194,42 @@ impl super::GpuApp {
             self.state.right.focus_prev();
         }
         self.request_redraw();
+    }
+
+    /// The pane behind the focused teammate panel, if any — the keyboard target
+    /// when input is routed to the overlay. `pub(super)` so the paste path
+    /// (clipboard module) resolves the same target.
+    pub(super) fn focused_pane(&self) -> Option<crate::ui::child_session::PaneId> {
+        let panel = self.state.right.focus()?;
+        self.child_sessions.pane_for(panel)
+    }
+
+    /// Write `bytes` to whichever terminal holds keyboard focus: the focused
+    /// teammate pane when input is routed to the overlay (`input_on_teammates`),
+    /// otherwise the main session. Falls back to the main session if the focused
+    /// pane has vanished (so a keystroke is never silently dropped).
+    pub(super) fn write_to_focused(&mut self, bytes: &[u8]) {
+        if self.state.input_on_teammates() {
+            if let Some(pane) = self.focused_pane() {
+                if let Some(surface) = self.panes.get_mut(pane) {
+                    if let Err(e) = surface.write(bytes) {
+                        eprintln!("anyclaude: teammate PTY write failed: {e}");
+                    }
+                    return;
+                }
+            }
+        }
+        self.write_to_main(bytes);
+    }
+
+    /// Write `bytes` to the main session's PTY — the default keyboard target and
+    /// the sink for mouse reports (always the main grid under the cursor).
+    pub(super) fn write_to_main(&mut self, bytes: &[u8]) {
+        if let Some(pty) = self.session.pty.as_mut() {
+            if let Err(e) = pty.write(bytes) {
+                eprintln!("anyclaude: PTY write failed: {e}");
+            }
+        }
     }
 
     /// Dump a diagnostic snapshot (grid + scroll + emulator) to stderr.
@@ -405,12 +440,20 @@ impl ApplicationHandler<UserEvent> for super::GpuApp {
                 // since the event loop is the coordinator's to drive. Resolve the
                 // resource-backed inputs the encoder needs here: the DECCKM state
                 // (SS3 vs CSI arrows) and the un-composed base key (Meta form).
-                let app_cursor = self
-                    .session
-                    .emulator
-                    .as_ref()
-                    .map(|e| e.cursor_keys_app())
-                    .unwrap_or(false);
+                // The DECCKM is read from the FOCUSED terminal — a focused
+                // teammate's arrows encode against its own mode, not the main's.
+                let app_cursor = if self.state.input_on_teammates() {
+                    self.focused_pane()
+                        .and_then(|pane| self.panes.get(pane))
+                        .map(|s| s.app_cursor())
+                        .unwrap_or(false)
+                } else {
+                    self.session
+                        .emulator
+                        .as_ref()
+                        .map(|e| e.cursor_keys_app())
+                        .unwrap_or(false)
+                };
                 let logical_unmod = key_without_modifiers(&event);
                 if self.dispatch(Msg::Key {
                     logical: event.logical_key,
