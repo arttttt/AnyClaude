@@ -191,9 +191,12 @@ impl super::GpuApp {
         // slide). Same pattern as the width tween — the model holds the discrete
         // focus, this chases it; `value(now)` is the continuous page position.
         let current_page = self.state.right.focus_index().unwrap_or(0);
-        // The spring target chases the focused page, so every paging path (hotkey,
-        // click, two-finger swipe) slides to it.
-        self.page_scroll.set_target(current_page as f32);
+        // While a swipe is active the gesture drives page_scroll directly (the
+        // page follows the finger); otherwise the spring target chases the focused
+        // page — hotkey/click paging AND the post-release snap settle.
+        if !self.page_swipe.active {
+            self.page_scroll.set_target(current_page as f32);
+        }
         let page_scroll = self.page_scroll.value(now);
         let page_animating = self.page_scroll.animating();
         // Page viewport width = the overlay minus the 1px column border each side.

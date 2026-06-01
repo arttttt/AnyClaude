@@ -276,45 +276,105 @@ impl super::GpuApp {
         )
     }
 
-    /// Route a two-finger scroll over the overlay to the pager. A horizontal
-    /// swipe pages once per `PAGE_SWIPE_COMMIT_PX` of travel, then a `committed`
-    /// lock absorbs the rest — crucially the trackpad MOMENTUM, a long tail of
-    /// events after the flick (which macOS even re-segments into its own
-    /// `Started..Ended` cycles). The gesture boundary is a `Started` whose
-    /// velocity is small: a finger-down begins from REST (tiny first `dx`),
-    /// momentum BEGINS at the release velocity (large `dx`), so a small-velocity
-    /// `Started` is a genuine new swipe — even one interrupting the prior
-    /// momentum — and a large one is just momentum that keeps the lock. (A rest
-    /// gap is only a fallback for non-precise wheels with no phase.) Fingers
-    /// right → previous page, matching content-follows-fingers scroll.
+    /// The pager's page viewport width (overlay minus the 1px column border each
+    /// side); clamped ≥ 1 so it never divides by zero. Matches `redraw`'s `page_w`.
+    fn page_viewport_width(&self) -> f32 {
+        self.panel_overlay_rect.map(|r| (r.size.x - 2.0).max(1.0)).unwrap_or(1.0)
+    }
+
+    /// Route a two-finger scroll over the overlay to the pager (the
+    /// continuous-progress + velocity-snap model, à la Compose/Flutter, adapted
+    /// to winit which can't tell active scroll from inertial momentum).
+    ///
+    /// - a `Started` whose `|dx|` is small is a real finger-down (a touch begins
+    ///   from REST); a large-velocity `Started` is macOS momentum BEGINNING at the
+    ///   release speed — ignored, so inertia never starts a phantom gesture (even
+    ///   one interrupting a prior flick's momentum is caught, since the finger
+    ///   still starts from rest);
+    /// - while active, the page FOLLOWS the finger 1:1 (`drive_swipe`);
+    /// - the first `Ended` is the lift → snap (`release_swipe`); subsequent
+    ///   momentum events arrive while inactive and are dropped.
     pub(super) fn page_swipe(&mut self, dx: f32, dy: f32, phase: TouchPhase) {
         if self.state.right.len() < 2 {
             return;
         }
         let now = Instant::now();
-        let gap = now.saturating_duration_since(self.page_swipe.last_t).as_millis() as u64;
-        self.page_swipe.last_t = now;
-        let fresh_touch =
-            phase == TouchPhase::Started && dx.abs() < super::PAGE_SWIPE_START_VELOCITY;
-        if fresh_touch || gap > super::PAGE_SWIPE_GESTURE_GAP_MS {
-            self.page_swipe.accum = 0.0;
-            self.page_swipe.committed = false;
+        match phase {
+            TouchPhase::Started => {
+                if dx.abs() < super::PAGE_SWIPE_START_VELOCITY {
+                    self.page_swipe.active = true;
+                    self.page_swipe.start_scroll = self.page_scroll.value(now);
+                    self.page_swipe.accum_px = 0.0;
+                    self.page_swipe.velocity = 0.0;
+                    self.page_swipe.last_t = now;
+                    self.drive_swipe(dx, dy, now);
+                }
+            }
+            TouchPhase::Moved => {
+                if self.page_swipe.active {
+                    self.drive_swipe(dx, dy, now);
+                }
+            }
+            TouchPhase::Ended | TouchPhase::Cancelled => {
+                if self.page_swipe.active {
+                    self.release_swipe(now);
+                }
+            }
         }
-        // Only a horizontal-dominant event accumulates (a vertical scroll over the
-        // overlay isn't a page gesture); the reset above still ran for it.
+    }
+
+    /// Advance an active swipe by one event: accumulate horizontal travel, update
+    /// the velocity estimate (pages/sec, EMA), and snap `page_scroll` to the
+    /// dragged position so the page tracks the finger — clamped to ONE page of
+    /// travel (the one-page-per-gesture guarantee) and to the valid page range.
+    fn drive_swipe(&mut self, dx: f32, dy: f32, now: Instant) {
+        let dt = now.saturating_duration_since(self.page_swipe.last_t).as_secs_f32();
+        self.page_swipe.last_t = now;
+        // Axis-lock: a vertical-dominant event isn't a page gesture.
         if dx.abs() < dy.abs() {
             return;
         }
-        self.page_swipe.accum += dx;
-        if !self.page_swipe.committed && self.page_swipe.accum.abs() >= super::PAGE_SWIPE_COMMIT_PX {
-            if self.page_swipe.accum < 0.0 {
-                self.state.right.focus_next();
-            } else {
-                self.state.right.focus_prev();
-            }
-            self.page_swipe.committed = true;
-            self.request_redraw();
+        let page_w = self.page_viewport_width();
+        self.page_swipe.accum_px += dx;
+        // page_scroll rises toward the next page; a leftward swipe (dx < 0) goes
+        // there, so velocity in pages/sec is `-dx/page_w/dt`. Skip the seed event
+        // (dt ≈ 0). EMA-smooth so the release reads a stable fling speed.
+        if dt > 1e-3 {
+            let inst_v = -(dx / page_w) / dt;
+            self.page_swipe.velocity = 0.6 * inst_v + 0.4 * self.page_swipe.velocity;
         }
+        let max = (self.state.right.len() - 1) as f32;
+        let start = self.page_swipe.start_scroll;
+        let pos = (start - self.page_swipe.accum_px / page_w)
+            .clamp(start - 1.0, start + 1.0)
+            .clamp(0.0, max);
+        self.page_scroll.snap(pos);
+        self.request_redraw();
+    }
+
+    /// End an active swipe: pick the snap target from the dragged position plus a
+    /// velocity nudge — Flutter's `round(pos ± 0.5)`, so past halfway OR a fling
+    /// advances one page, else it settles back — focus it, and spring
+    /// `page_scroll` there carrying the release velocity.
+    fn release_swipe(&mut self, now: Instant) {
+        self.page_swipe.active = false;
+        let max = (self.state.right.len() - 1) as f32;
+        let pos = self.page_scroll.value(now);
+        let v = self.page_swipe.velocity;
+        let nudged = if v > super::PAGE_SWIPE_FLING_VELOCITY {
+            pos + 0.5
+        } else if v < -super::PAGE_SWIPE_FLING_VELOCITY {
+            pos - 0.5
+        } else {
+            pos
+        };
+        let target = nudged.round().clamp(0.0, max) as usize;
+        if let Some(id) = self.state.right.panels().get(target).map(|panel| panel.id) {
+            self.state.right.set_focus(id);
+        }
+        self.page_scroll.set_target(target as f32);
+        self.page_scroll.kick(v);
+        self.request_redraw();
     }
 
     /// Encode a mouse event for the PTY when an app has reporting on (§6), or

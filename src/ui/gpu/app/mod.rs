@@ -70,28 +70,29 @@ const PANEL_ANIM_SECS: f32 = 0.14;
 /// critical — snappy, no overshoot.
 const PAGE_SPRING_STIFFNESS: f32 = 700.0;
 const PAGE_SPRING_DAMPING: f32 = 53.0;
-/// Horizontal two-finger travel (logical px) that pages the overlay once.
-const PAGE_SWIPE_COMMIT_PX: f32 = 50.0;
-/// Max `|dx|` of a `Started` event that counts as a fresh finger-down. A real
-/// touch begins from REST (its first event is tiny — a few px); macOS momentum
-/// BEGINS at the release velocity (its re-segment `Started` is large). So a
-/// small-velocity `Started` is a new swipe — even one interrupting the previous
-/// flick's momentum — and resets the gesture; a large one is just momentum and
-/// keeps the one-page lock. (Logged touches start ~2-8 px, momentum ~54-94 px.)
+/// Max `|dx|` (logical px) of a `Started` event that counts as a fresh
+/// finger-down. A real touch begins from REST (its first event is tiny — a few
+/// px); macOS momentum BEGINS at the release velocity (winit reports its start as
+/// a large-`dx` `Started`). So a small-velocity `Started` is a genuine new swipe
+/// — even one interrupting the previous flick's momentum — and a large one is
+/// just inertia, ignored. (Logged touches start ~2-8 px, momentum ~54-94 px.)
 const PAGE_SWIPE_START_VELOCITY: f32 = 30.0;
-/// Fallback rest gap (ms) for non-precise wheels with no `Started` phase; far
-/// above any trackpad momentum cadence so it never fires mid-flick.
-const PAGE_SWIPE_GESTURE_GAP_MS: u64 = 150;
+/// Release speed (pages/sec) above which a swipe is a FLING — it advances one
+/// page in its direction even if dragged under halfway (Flutter's ±0.5 nudge);
+/// below it the page snaps to whichever side it was dragged past.
+const PAGE_SWIPE_FLING_VELOCITY: f32 = 1.5;
 
-/// Accumulator for the pager's horizontal two-finger swipe (a trackpad gesture,
-/// NOT a mouse-button drag — that would fight text selection inside a page). One
-/// page commits per [`PAGE_SWIPE_COMMIT_PX`] of travel, then `committed` locks
-/// further commits until a [`PAGE_SWIPE_GESTURE_GAP_MS`] gap ends the gesture.
+/// State of the pager's horizontal two-finger swipe (a trackpad gesture, NOT a
+/// mouse-button drag — that would fight text selection inside a page). While
+/// `active`, the page tracks the finger from `start_scroll` by `accum_px` of
+/// travel; `velocity` (pages/sec) drives the release snap.
 #[derive(Debug, Clone, Copy)]
 struct PageSwipe {
-    accum: f32,
+    active: bool,
+    start_scroll: f32,
+    accum_px: f32,
+    velocity: f32,
     last_t: Instant,
-    committed: bool,
 }
 
 /// User event delivered to the winit loop. Drives redraws in response
@@ -221,7 +222,13 @@ impl GpuApp {
             panel_toggle_zone: None,
             panel_width,
             page_scroll,
-            page_swipe: PageSwipe { accum: 0.0, last_t: Instant::now(), committed: false },
+            page_swipe: PageSwipe {
+                active: false,
+                start_scroll: 0.0,
+                accum_px: 0.0,
+                velocity: 0.0,
+                last_t: Instant::now(),
+            },
             current_cursor: winit::window::CursorIcon::Default,
             clipboard: make_clipboard(),
             backends: Backends {
