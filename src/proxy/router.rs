@@ -152,7 +152,7 @@ pub fn build_router(
     // teammate lifecycle event driven through the winit coordinator. No auth
     // (localhost curl from the shim), separate state (only the UI bridge).
     let tmux_routes = Router::new()
-        .route("/api/tmux/split-window", post(crate::proxy::tmux_api::handle_split_window))
+        .route("/api/tmux", post(crate::proxy::tmux_api::handle_tmux))
         .with_state(TmuxState { control_plane: engine.control_plane.clone() });
 
     let mut router = Router::new()

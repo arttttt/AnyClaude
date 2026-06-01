@@ -1,53 +1,84 @@
-//! `/api/tmux/*` — the tmux control plane (M3).
+//! `/api/tmux` — the tmux control plane endpoint (M3).
 //!
-//! The teammate tmux shim POSTs the tmux verbs Claude Code issues here; each is
-//! translated into a teammate lifecycle [`ChildSessionEvent`](
-//! crate::ui::child_session::ChildSessionEvent) and driven through the winit
-//! coordinator via the [`ControlPlaneHandle`]. anyclaude is the layout authority
-//! — it doesn't run a real tmux — so a verb's job is to register / unregister /
-//! retitle a pane, and synchronous verbs (`split-window -P`) reply the pane's
+//! The teammate tmux shim POSTs the tmux argv Claude Code issues (`{"args":[…]}`)
+//! here; [`tmux_adapter::parse`](super::tmux_adapter::parse) reduces it to a
+//! [`TmuxAction`], which this handler maps to a teammate lifecycle
+//! [`ChildSessionEvent`](crate::ui::child_session::ChildSessionEvent) driven
+//! through the winit coordinator via the [`ControlPlaneHandle`]. anyclaude is the
+//! layout authority — there is no real tmux — so a verb registers / unregisters /
+//! retitles a pane, and synchronous verbs (`split-window -P`) reply the pane's
 //! tmux `%N`.
-//!
-//! C1 wires the boundary with a single smoke handler (`split-window`); the full
-//! verb set (`kill-pane`, `select-pane`, `send-keys`, queries) lands in C2/C3.
 
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use axum::Json;
+use serde::Deserialize;
 
-use crate::ui::child_session::{ChildSessionEvent, ChildSpec};
+use crate::proxy::tmux_adapter::{parse, TmuxAction};
+use crate::ui::child_session::ChildSessionEvent;
 use crate::ui::control_plane::ControlPlaneHandle;
 
-/// Axum state for the `/api/tmux/*` routes — only the bridge to the UI. Kept
-/// separate from `HookState` so these handlers depend on nothing else (ISP).
+/// Axum state for `/api/tmux` — only the bridge to the UI. Separate from
+/// `HookState` so these handlers depend on nothing else (ISP).
 #[derive(Clone)]
 pub struct TmuxState {
     /// `None` when the proxy runs headless (no GPU UI) — handlers then 503.
     pub control_plane: Option<ControlPlaneHandle>,
 }
 
-/// Default accent for a teammate pane until `select-pane -P` sets its colour.
-const DEFAULT_ACCENT: [f32; 4] = [0.30, 0.55, 0.95, 1.0];
+/// The tmux invocation the shim forwards: the full argv (`args[0]` is the verb).
+#[derive(Deserialize)]
+pub struct TmuxRequest {
+    pub args: Vec<String>,
+}
 
-/// POST /api/tmux/split-window
+/// POST /api/tmux
 ///
-/// C1 smoke handler: register a placeholder teammate (a live shell) through the
-/// control plane and reply its tmux `%N`. C3 replaces the placeholder spec with
-/// the real `claude …` command parsed from the following `send-keys`.
-pub async fn handle_split_window(State(state): State<TmuxState>) -> Response {
-    let Some(cp) = state.control_plane else {
-        // Headless proxy (no UI attached) — nothing to drive.
-        return (StatusCode::SERVICE_UNAVAILABLE, "no UI attached").into_response();
-    };
-    let spec = ChildSpec {
-        name: "teammate".to_string(),
-        accent: DEFAULT_ACCENT,
-        command: std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string()),
-        args: vec![],
-        env: vec![("TERM".to_string(), "xterm-256color".to_string())],
-    };
-    match cp.submit(ChildSessionEvent::Register(spec)).await {
-        Some(pane) => format!("%{}", pane.0).into_response(),
-        None => (StatusCode::SERVICE_UNAVAILABLE, "UI did not reply").into_response(),
+/// Parse the tmux argv and apply it. Lifecycle verbs cross to the coordinator;
+/// `split-window` replies the minted `%N`; geometry/option verbs ack; queries
+/// return empty (real data in a later step); an unknown verb is a 400 + log.
+pub async fn handle_tmux(State(state): State<TmuxState>, Json(req): Json<TmuxRequest>) -> Response {
+    match parse(&req.args) {
+        TmuxAction::NewPane(spec) => {
+            let Some(cp) = state.control_plane else {
+                return no_ui();
+            };
+            match cp.submit(ChildSessionEvent::Register(spec)).await {
+                Some(pane) => format!("%{}", pane.0).into_response(),
+                None => (StatusCode::SERVICE_UNAVAILABLE, "UI did not reply").into_response(),
+            }
+        }
+        TmuxAction::KillPane(pane) => {
+            let Some(cp) = state.control_plane else {
+                return no_ui();
+            };
+            cp.submit(ChildSessionEvent::Unregister(pane)).await;
+            StatusCode::OK.into_response()
+        }
+        TmuxAction::SetTitle { pane, title } => {
+            let Some(cp) = state.control_plane else {
+                return no_ui();
+            };
+            cp.submit(ChildSessionEvent::SetTitle { pane, title }).await;
+            StatusCode::OK.into_response()
+        }
+        TmuxAction::Ack => StatusCode::OK.into_response(),
+        TmuxAction::Query(q) => {
+            // Not answered with real data yet — log so a real CC run reveals the
+            // expected format, return empty (CC tolerates an empty query result
+            // better than a 5xx). Real registry-backed queries land in a later step.
+            crate::metrics::app_log("tmux", &format!("unanswered query: {q}"));
+            StatusCode::OK.into_response()
+        }
+        TmuxAction::Unknown(verb) => {
+            crate::metrics::app_log("tmux", &format!("unknown verb: {verb}"));
+            (StatusCode::BAD_REQUEST, format!("unknown tmux verb: {verb}")).into_response()
+        }
     }
+}
+
+/// 503 when the proxy is headless (no UI to drive).
+fn no_ui() -> Response {
+    (StatusCode::SERVICE_UNAVAILABLE, "no UI attached").into_response()
 }

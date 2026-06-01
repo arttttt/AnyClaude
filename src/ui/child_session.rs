@@ -65,6 +65,8 @@ pub enum ChildSessionEvent {
     Register(ChildSpec),
     /// A child session ended → remove its pane/panel.
     Unregister(PaneId),
+    /// A pane was retitled (`tmux select-pane -T`) → update its panel title.
+    SetTitle { pane: PaneId, title: String },
 }
 
 /// The registry of child sessions. Reacts to [`ChildSessionEvent`]s, orchestrating
@@ -94,6 +96,10 @@ impl ChildSessionManager {
                 self.unregister(pane, panels);
                 None
             }
+            ChildSessionEvent::SetTitle { pane, title } => {
+                self.set_title(pane, &title, panels);
+                None
+            }
         }
     }
 
@@ -119,6 +125,15 @@ impl ChildSessionManager {
             if self.registry.is_empty() {
                 panels.set_visible(false);
             }
+        }
+    }
+
+    /// Retitle a pane: update the registry entry's name and its panel's title.
+    /// No-op if the pane is unknown.
+    fn set_title(&mut self, pane: PaneId, title: &str, panels: &mut PanelManager) {
+        if let Some(session) = self.registry.get_mut(&pane) {
+            session.name = title.to_string();
+            panels.set_title(session.panel_id, title);
         }
     }
 

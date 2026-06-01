@@ -312,6 +312,13 @@ impl PanelManager {
         }
     }
 
+    /// Rename a panel (e.g. from `tmux select-pane -T`). No-op if unknown.
+    pub fn set_title(&mut self, id: PanelId, title: impl Into<String>) {
+        if let Some(p) = self.panels.iter_mut().find(|p| p.id == id) {
+            p.title = title.into();
+        }
+    }
+
     // ── visibility + size ────────────────────────────────────────────────
 
     pub fn set_visible(&mut self, visible: bool) {

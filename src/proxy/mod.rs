@@ -9,6 +9,7 @@ pub mod server;
 pub mod shutdown;
 pub mod thinking;
 pub mod timeout;
+pub mod tmux_adapter;
 pub mod tmux_api;
 pub mod pipeline;
 

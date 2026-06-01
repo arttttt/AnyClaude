@@ -117,11 +117,11 @@ impl super::GpuApp {
         // Pull out what the resource side needs before the event is consumed.
         let spec = match &event {
             ChildSessionEvent::Register(s) => Some(s.clone()),
-            ChildSessionEvent::Unregister(_) => None,
+            _ => None,
         };
         let closing = match &event {
             ChildSessionEvent::Unregister(p) => Some(*p),
-            ChildSessionEvent::Register(_) => None,
+            _ => None,
         };
 
         let new_pane = self.child_sessions.apply(event, &mut self.state.right);
