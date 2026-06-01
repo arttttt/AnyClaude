@@ -1,10 +1,14 @@
 # Multi-Instance Panels (`PanelManager`) — Design Doc (DRAFT 2026-05-31)
 
-> Status: **M1 + M1.5 IMPLEMENTED (2026-06-01)** on `feat/multi-instance-panels`
-> (placeholders, user-verified): the right overlay UI, the resizable/collapsible
-> pill, and the internal layout as a **horizontal pager** (§11.1 resolved — see
-> `uikit::pager`). M2+ (per-panel emulator/PTY, `/api/tmux/*`, left sidebar) not
-> started. Architecture below was agreed in conversation 2026-05-31.
+> Status: **M1 + M1.5 + M2 IMPLEMENTED (2026-06-02)** on `feat/multi-instance-panels`
+> (user-verified): the right overlay UI, the resizable/collapsible pill, the internal
+> layout as a **horizontal pager** (§11.1 resolved — see `uikit::pager`), and now
+> **M2 — live per-panel terminals**: B1 spawns a real `TerminalSurface` (emulator +
+> PTY) per teammate and renders its grid into the page; B2 routes the keyboard to the
+> focused terminal (⌥↑ / click toggles main ↔ overlay, blue focus-ring, collapse /
+> unregister returns focus to main) and re-fits a pane only when the overlay width
+> settles. M3 (`/api/tmux/*` control plane) and the left sidebar (M4) not started.
+> Architecture below was agreed in conversation 2026-05-31.
 > This doc works out the *architecture* of showing multiple Claude instances inside
 > anyclaude's GPU terminal — the long-term home for both the "teammates on the right"
 > view and the "CLAUDES sidebar on the left" view from the product mockup.
@@ -408,8 +412,13 @@ winit user_event:
 - **A — registry + lifecycle, DONE.** `ChildSessionManager` + `ChildSessionEvent` +
   `PaneId↔PanelId` registry, reacting against placeholder panels; debug emitter (Ctrl+P =
   register 6 mocks, Ctrl+K = unregister focused). Code: `src/ui/child_session.rs`.
-- **B (= M2) — `ChildPtySpawner` + surfaces.** `Register` spawns a real `TerminalSurface`;
-  the page renders a live grid (+ grid clip to the page viewport, the deferred M1.5 bit).
+- **B (= M2) — `ChildPtySpawner` + surfaces, DONE.** `Register` spawns a real
+  `TerminalSurface` (`src/ui/gpu/{surface,spawn,panes}.rs`); the page renders a live grid
+  (clipped to the page viewport via the M1.5-deferred `RectInstance` clip). B2 routes the
+  keyboard to the focused terminal — `AppState.input_focus` (+ derived `input_on_teammates`
+  / `normalize_input_focus`), `Effect::WriteToFocused` → focused pane PTY, ⌥↑ / click focus
+  toggle with a blue focus-ring, collapse / unregister returns focus to main — and re-fits
+  a pane only when the overlay width settles (no destructive reflow mid-animation).
 - **C (= M3) — `TmuxAdapter`.** `/api/tmux/*` → events + the threading boundary above.
 
 **Open:** whether Claude Code needs `$TMUX` / `$TMUX_PANE` seeded for the main CC beyond
@@ -444,7 +453,7 @@ main panel has a surface; placeholders have none.
 | # | Scope |
 |---|---|
 | **M1 — UI only** | The right `PanelManager` instance + `panel_manager_view`, rendering **placeholder** panels in a resizable overlay with the centered toggle/indicator button and collapse/expand animation. Manual (debug-only) controls to create/remove/reorder placeholders, resize, and toggle. The main CC grid renders in `content_rect`. **No `/api/tmux/*`, no child processes, no per-panel emulator.** The left instance is scaffolded (same class) but empty. |
-| M2 — Resources | Per-panel `TerminalSurface` (emulator + PTY) via the `term_grid` port; teammate grids render live; panel-addressed input/scroll/selection; single `focus` routes keyboard. |
+| **M2 — Resources ✅** | Per-panel `TerminalSurface` (emulator + PTY) via the `term_grid` port; teammate grids render live; the keyboard routes to the focused terminal (⌥↑ / click toggles main ↔ overlay, collapse / unregister returns to main); panes re-fit only when the overlay width settles. (Per-pane mouse scroll / in-pane selection deferred to when teammates need them.) |
 | M3 — Control plane | `/api/tmux/*` + the shim full-emulation cutover; `split-window`/`send-keys`/`kill-pane` drive real teammate panels; per-teammate routing folded in. |
 | M4 — Sessions / left sidebar | The left instance goes live: top-level sessions, switcher, displace; `SwitchSession` re-points the right manager at the active session's teammates. |
 
