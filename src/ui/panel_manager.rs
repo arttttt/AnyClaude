@@ -244,11 +244,19 @@ impl PanelManager {
     }
 
     /// Remove the panel with `id`. If it held focus, focus falls back to the
-    /// first remaining panel (or `None` when empty).
+    /// PREVIOUS panel (the neighbour before it) — clamping to the new first when
+    /// the removed one was first, and to `None` when none remain.
     pub fn remove(&mut self, id: PanelId) {
+        let removed = self.panels.iter().position(|p| p.id == id);
         self.panels.retain(|p| p.id != id);
         if self.focus == Some(id) {
-            self.focus = self.panels.first().map(|p| p.id);
+            self.focus = match removed {
+                Some(i) if !self.panels.is_empty() => {
+                    let idx = i.saturating_sub(1).min(self.panels.len() - 1);
+                    Some(self.panels[idx].id)
+                }
+                _ => None,
+            };
         }
     }
 

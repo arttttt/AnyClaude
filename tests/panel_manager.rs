@@ -73,6 +73,24 @@ fn remove_reassigns_focus_to_first_remaining() {
 }
 
 #[test]
+fn remove_focused_falls_back_to_the_previous_panel() {
+    let mut m = PanelManager::new(Policy::overlay());
+    let a = m.create(PanelKind::Teammate, "a", BLUE);
+    let b = m.create(PanelKind::Teammate, "b", BLUE);
+    let c = m.create(PanelKind::Teammate, "c", BLUE);
+    m.set_focus(c); // focus the LAST (index 2)
+    m.remove(c);
+    assert_eq!(m.focus(), Some(b), "removing the focused panel falls back to the previous");
+    m.remove(b); // now the last + focused (index 1) → previous is a
+    assert_eq!(m.focus(), Some(a));
+    // Removing the first focused clamps to the new first (no previous).
+    let d = m.create(PanelKind::Teammate, "d", BLUE); // panels [a, d], focus a
+    assert_eq!(m.focus(), Some(a));
+    m.remove(a);
+    assert_eq!(m.focus(), Some(d), "removing the first focused clamps to the new first");
+}
+
+#[test]
 fn set_focus_only_accepts_known_ids() {
     let mut m = PanelManager::new(Policy::overlay());
     let a = m.create(PanelKind::Teammate, "a", BLUE);
