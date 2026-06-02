@@ -404,6 +404,13 @@ impl Grid {
         self.rows.iter()
     }
 
+    /// The whole buffer (scrollback first, then visible) as a slice — the
+    /// zero-copy backing for [`RenderView`](crate::RenderView). Pairs with
+    /// [`visible_rows`](Self::visible_rows) to locate the visible region.
+    pub fn all_rows(&self) -> &[Row] {
+        &self.rows
+    }
+
     // ─── Printing ──────────────────────────────────────────────────────────
 
     /// Print one character at the cursor. East-Asian Wide / Fullwidth

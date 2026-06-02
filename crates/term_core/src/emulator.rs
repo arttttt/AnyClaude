@@ -18,9 +18,12 @@ pub struct CursorState {
     pub style: CursorStyle,
 }
 
-/// Snapshot of the rendered state taken at one point in time. Clones
-/// the visible rows so the renderer can hold the data across frames
-/// without taking a long-lived borrow on the emulator.
+/// Owned snapshot of the rendered state at one point in time. **Deep-clones
+/// the entire buffer** (scrollback + visible) so the caller can hold the data
+/// across frames / across an emulator borrow. That clone is O(scrollback) —
+/// only use this when an owned copy is genuinely needed (tests, the rare
+/// owned consumer). The per-frame render path must use [`RenderView`]
+/// ([`TerminalEmulator::view`]), which borrows instead of cloning.
 ///
 /// `rows` contains the **entire** buffer (scrollback first, then the
 /// currently visible region). `visible_rows` indicates how many trailing
@@ -46,6 +49,45 @@ impl RenderSnapshot {
         let start = self.visible_start();
         self.rows[start..].iter()
     }
+
+    /// Borrow this owned snapshot as a [`RenderView`] so owned and borrowed
+    /// consumers share one render-facing type.
+    pub fn as_view(&self) -> RenderView<'_> {
+        RenderView {
+            rows: &self.rows,
+            visible_rows: self.visible_rows,
+            cursor: self.cursor,
+        }
+    }
+}
+
+/// Zero-copy borrowed view of the buffer for the per-frame render path —
+/// the Warp model (the renderer borrows the grid; it never clones it each
+/// frame). Carries only what the renderer + selection + hit-testing read:
+/// the rows slice, the visible-row count, and the cursor. Produced cheaply by
+/// [`TerminalEmulator::view`] (no allocation) and consumed within the frame;
+/// for an owned copy use [`RenderSnapshot`].
+///
+/// `rows` is the **entire** buffer (scrollback first, then visible); the
+/// renderer windows it to the on-screen rows itself.
+#[derive(Debug, Clone, Copy)]
+pub struct RenderView<'a> {
+    pub rows: &'a [Row],
+    pub visible_rows: usize,
+    pub cursor: CursorState,
+}
+
+impl<'a> RenderView<'a> {
+    /// Index of the first visible row inside `rows`.
+    pub fn visible_start(&self) -> usize {
+        self.rows.len().saturating_sub(self.visible_rows)
+    }
+
+    /// Iterate the visible region top-to-bottom (skipping scrollback).
+    pub fn visible_iter(&self) -> impl Iterator<Item = &Row> {
+        let start = self.visible_start();
+        self.rows[start..].iter()
+    }
 }
 
 /// Public terminal-emulator interface. Wraps the parser+grid so callers
@@ -57,8 +99,14 @@ pub trait TerminalEmulator: Send {
     /// Resize the visible grid (columns and rows in cells, not pixels).
     fn resize(&mut self, cols: usize, rows: usize);
 
-    /// Snapshot for rendering. Cheap-ish (clones visible rows only).
+    /// Owned snapshot for rendering. **Deep-clones the whole buffer**
+    /// (O(scrollback)) — prefer [`view`](Self::view) on the per-frame path.
     fn snapshot(&self) -> RenderSnapshot;
+
+    /// Zero-copy borrowed [`RenderView`] for the per-frame render path —
+    /// borrows the grid instead of cloning it. No allocation; consume it
+    /// within the frame.
+    fn view(&self) -> RenderView<'_>;
 
     /// Take and clear the pending PTY response buffer (DA, DSR, focus
     /// notifications, …). The caller writes the returned bytes to the PTY.
@@ -107,6 +155,17 @@ impl VtEmulator {
 
     pub fn grid_mut(&mut self) -> &mut Grid {
         &mut self.grid
+    }
+
+    /// Current cursor state — shared by `snapshot()` (owned) and `view()`
+    /// (borrowed) so the two render-facing producers can't drift.
+    fn cursor_state(&self) -> CursorState {
+        CursorState {
+            row: self.grid.cursor_row,
+            col: self.grid.cursor_col,
+            visible: self.grid.cursor_visible,
+            style: self.grid.cursor_style,
+        }
     }
 
     fn apply_action(&mut self, action: Action) {
@@ -366,14 +425,17 @@ impl TerminalEmulator for VtEmulator {
         RenderSnapshot {
             rows: self.grid.iter_all().cloned().collect(),
             visible_rows: self.grid.visible_rows(),
-            cursor: CursorState {
-                row: self.grid.cursor_row,
-                col: self.grid.cursor_col,
-                visible: self.grid.cursor_visible,
-                style: self.grid.cursor_style,
-            },
+            cursor: self.cursor_state(),
             title: self.title.clone(),
             cwd: self.cwd.clone(),
+        }
+    }
+
+    fn view(&self) -> RenderView<'_> {
+        RenderView {
+            rows: self.grid.all_rows(),
+            visible_rows: self.grid.visible_rows(),
+            cursor: self.cursor_state(),
         }
     }
 
