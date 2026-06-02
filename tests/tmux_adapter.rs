@@ -109,6 +109,25 @@ fn unknown_verb_and_empty_argv_are_errors() {
 }
 
 #[test]
+fn global_server_flags_before_the_verb_are_skipped() {
+    // CC (inside tmux via $TMUX) prefixes `-S <socket>`; the verb follows.
+    match parse(&argv(&["-S", "/tmp/anyclaude.sock", "split-window", "-P"])) {
+        TmuxAction::NewPane(_) => {}
+        other => panic!("expected NewPane after stripping -S, got {other:?}"),
+    }
+    // Combined bare + value globals, then a targeted verb.
+    assert_eq!(
+        parse(&argv(&["-2", "-S", "/tmp/s", "kill-pane", "-t", "%4"])),
+        TmuxAction::KillPane(PaneId(4)),
+    );
+    // list-sessions (CC's inside-tmux probe) is a query, not unknown.
+    assert!(matches!(
+        parse(&argv(&["-S", "/tmp/s", "list-sessions", "-F", "#{session_name}"])),
+        TmuxAction::Query(_),
+    ));
+}
+
+#[test]
 fn pane_id_must_be_a_percent_target() {
     // A window target (`@0`) or bare number is not a pane id → no kill target.
     assert!(matches!(parse(&argv(&["kill-pane", "-t", "@0"])), TmuxAction::Unknown(_)));

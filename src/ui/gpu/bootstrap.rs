@@ -137,14 +137,19 @@ pub fn run(
         .args
         .extend(ArgAssembler::new().with_subagent_hooks(actual_addr.port()).build());
 
-    // --- Inject shim PATH into spawn.env ----------------------------
+    // --- Inject shim PATH + fake $TMUX into spawn.env ---------------
     if let Some(ref shim) = teammate_shim {
         let (key, value) = shim.path_env();
-        if let Some(existing) = spawn.env.iter_mut().find(|(k, _)| k == &key) {
-            existing.1 = value;
-        } else {
-            spawn.env.push((key, value));
-        }
+        set_env(&mut spawn.env, &key, value);
+        // Make Claude Code believe it runs INSIDE a tmux session so its
+        // BackendRegistry picks the tmux pane backend (which drives our
+        // /api/tmux shim) instead of spawning teammates in-process. CC checks
+        // `!!process.env.TMUX` (truthiness) and parses it as `socket,pid,session`
+        // — the socket is only used as `tmux -S <socket>`, which our shim
+        // ignores. `$TMUX_PANE = %0` marks the main CC pane.
+        let tmux_socket = format!("/tmp/anyclaude-tmux-{session_id}.sock");
+        set_env(&mut spawn.env, "TMUX", format!("{tmux_socket},{},0", std::process::id()));
+        set_env(&mut spawn.env, "TMUX_PANE", "%0".to_string());
     }
 
     // --- Capture proxy state and run proxy as a tokio task ----------
@@ -180,4 +185,14 @@ pub fn run(
     drop(teammate_shim);
     drop(async_runtime);
     Ok(())
+}
+
+/// Set `key=value` in a spawn-env list, overriding any existing entry (so an
+/// inherited `$TMUX`/`PATH` from the parent is replaced, not duplicated).
+fn set_env(env: &mut Vec<(String, String)>, key: &str, value: String) {
+    if let Some(existing) = env.iter_mut().find(|(k, _)| k == key) {
+        existing.1 = value;
+    } else {
+        env.push((key.to_string(), value));
+    }
 }

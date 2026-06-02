@@ -35,8 +35,11 @@ pub enum TmuxAction {
     Unknown(String),
 }
 
-/// Parse a tmux argv (`args[0]` is the verb, as the shim forwards `"$@"`).
+/// Parse a tmux argv. The shim forwards `"$@"`, and Claude Code (believing it is
+/// inside tmux via `$TMUX`) prefixes server flags — `tmux -S <socket> <verb> …` —
+/// so the verb is not always `args[0]`; [`verb_start`] skips those globals first.
 pub fn parse(args: &[String]) -> TmuxAction {
+    let args = &args[verb_start(args)..];
     let Some(verb) = args.first() else {
         return TmuxAction::Unknown(String::new());
     };
@@ -54,12 +57,33 @@ pub fn parse(args: &[String]) -> TmuxAction {
         | "show-window-options" | "rename-window" | "renamew" | "new-session" | "new"
         | "has-session" | "kill-session" | "rename-session" | "attach-session" | "attach"
         | "kill-server" | "start-server" => TmuxAction::Ack,
-        // Registry queries (no real data yet — C2 returns empty, logged).
-        "list-panes" | "lsp" | "display-message" | "display" | "displayp" => {
+        // Registry queries (no real data yet — return empty, logged).
+        "list-panes" | "lsp" | "list-sessions" | "ls" | "list-windows" | "lsw"
+        | "list-clients" | "lsc" | "display-message" | "display" | "displayp" => {
             TmuxAction::Query(args.join(" "))
         }
         other => TmuxAction::Unknown(other.to_string()),
     }
+}
+
+/// Skip tmux's global/server flags that precede the verb. CC invokes
+/// `tmux [-S <socket>] [-L <name>] [-f <file>] [-2] … <verb> …` (it inherits the
+/// socket from `$TMUX`), so the verb is the first NON-flag token. Value-taking
+/// globals (`-S`/`-L`/`-f`/`-c`/`-T`) consume the next token; the rest are bare.
+fn verb_start(args: &[String]) -> usize {
+    let mut i = 0;
+    while i < args.len() {
+        let a = &args[i];
+        if !a.starts_with('-') {
+            break;
+        }
+        if matches!(a.as_str(), "-S" | "-L" | "-f" | "-c" | "-T") {
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    i.min(args.len())
 }
 
 /// `send-keys [-l] -t %N <keys…>` — encode the key arguments into the byte
