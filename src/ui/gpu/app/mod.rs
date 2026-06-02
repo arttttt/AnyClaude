@@ -19,7 +19,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use term_clipboard::Clipboard;
-use term_gpu::GpuRenderer;
+use term_gpu::{GlyphInstance, GpuRenderer, RectInstance, Selection};
 use term_ui::{Animation, Bounds, Interpolator, Spring};
 use uuid::Uuid;
 use winit::event_loop::EventLoopProxy;
@@ -110,6 +110,33 @@ struct PageSwipe {
     accum_px: f32,
     velocity: f32,
     last_t: Instant,
+}
+
+/// Cached terminal base layer (grid backgrounds + glyphs + selection + cursor)
+/// and the key identifying the inputs that produced it. The base layer is reused
+/// across frames whose inputs are unchanged — overlay-only animation frames, idle
+/// redraws — so the O(visible) grid emit is skipped (Stage 3, Warp's "rebuild
+/// only on change"). See [`GridCacheKey`] for the invalidation inputs.
+struct GridBaseCache {
+    key: GridCacheKey,
+    rects: Vec<RectInstance>,
+    glyphs: Vec<GlyphInstance>,
+}
+
+/// The inputs that fully determine the terminal base layer: equal key ⇒
+/// byte-identical emitted geometry, so [`GridBaseCache`] may be reused.
+/// `content_seq` covers every grid / cursor mutation; `atlas_evict_gen` guards
+/// the cached glyph UVs against atlas eviction (reuse only while no placed glyph
+/// could have moved); the rest are the app-side view parameters, compared
+/// bit-exactly (`f32::to_bits`, no NaN on these paths).
+#[derive(Clone, Copy, PartialEq)]
+struct GridCacheKey {
+    content_seq: u64,
+    atlas_evict_gen: u64,
+    scroll_bits: u32,
+    panel_bits: [u32; 4],
+    scale_bits: u32,
+    selection: Option<Selection>,
 }
 
 /// User event delivered to the winit loop. Drives redraws in response
@@ -204,6 +231,11 @@ pub(super) struct GpuApp {
 
     clipboard: Box<dyn Clipboard>,
 
+    /// Cached terminal base layer reused across frames whose grid inputs are
+    /// unchanged (Stage 3). `None` until the first frame builds it. See
+    /// [`GridBaseCache`].
+    grid_base: Option<GridBaseCache>,
+
     /// Proxy + config handles — backend state, subagent / teammate overrides,
     /// observability, settings manager. See [`Backends`].
     backends: Backends,
@@ -268,6 +300,7 @@ impl GpuApp {
             },
             current_cursor: winit::window::CursorIcon::Default,
             clipboard: make_clipboard(),
+            grid_base: None,
             backends: Backends {
                 backend_state,
                 subagent_backend,

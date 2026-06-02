@@ -47,7 +47,7 @@ impl Ord for CellPoint {
 }
 
 /// Linear text selection inside a single grid.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Selection {
     /// Where the mouse first pressed down.
     pub anchor: CellPoint,

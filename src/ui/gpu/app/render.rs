@@ -41,45 +41,59 @@ impl super::GpuApp {
         };
         let sf = self.scale_factor.max(0.0001);
 
-        let view = emulator.view();
         let scroll_offset_y = self.state.scroll.offset_y;
-        let mut rects: Vec<RectInstance> = Vec::new();
-        let mut glyphs: Vec<GlyphInstance> = Vec::new();
-        populate_panel(
-            view,
-            panel,
-            &self.text.palette,
-            &mut self.text.font_system,
-            &mut self.text.swash_cache,
-            renderer.atlas_mut(),
-            &mut self.text.shape_cache,
-            FONT_SIZE,
-            sf,
-            metrics,
-            scroll_offset_y,
-            &mut rects,
-            &mut glyphs,
-        );
-        if let Some(sel) = self.state.selection {
-            push_selection_rects(
-                &sel,
+        // Stage 3: skip rebuilding the terminal base layer when nothing that
+        // affects it changed (overlay-only animation frames, idle redraws). The
+        // key folds in `content_seq` (grid + cursor mutations), the atlas
+        // eviction generation (so cached glyph UVs are never reused after a slot
+        // could have moved), and the app-side view params. On a miss we rebuild
+        // and restash; on a hit the render below draws straight from the cache.
+        let grid_key = super::GridCacheKey {
+            content_seq: emulator.content_seq(),
+            atlas_evict_gen: renderer.atlas_mut().evict_gen(),
+            scroll_bits: scroll_offset_y.to_bits(),
+            panel_bits: [
+                panel.x.to_bits(),
+                panel.y.to_bits(),
+                panel.w.to_bits(),
+                panel.h.to_bits(),
+            ],
+            scale_bits: sf.to_bits(),
+            selection: self.state.selection,
+        };
+        if self.grid_base.as_ref().map(|c| c.key) != Some(grid_key) {
+            let view = emulator.view();
+            let mut rects: Vec<RectInstance> = Vec::new();
+            let mut glyphs: Vec<GlyphInstance> = Vec::new();
+            populate_panel(
                 view,
                 panel,
+                &self.text.palette,
+                &mut self.text.font_system,
+                &mut self.text.swash_cache,
+                renderer.atlas_mut(),
+                &mut self.text.shape_cache,
+                FONT_SIZE,
                 sf,
                 metrics,
                 scroll_offset_y,
                 &mut rects,
+                &mut glyphs,
             );
-        }
-        if let Some(cursor_rect) = build_cursor_rect(
-            view.cursor,
-            view.visible_start(),
-            panel,
-            sf,
-            metrics,
-            scroll_offset_y,
-        ) {
-            rects.push(cursor_rect);
+            if let Some(sel) = self.state.selection {
+                push_selection_rects(&sel, view, panel, sf, metrics, scroll_offset_y, &mut rects);
+            }
+            if let Some(cursor_rect) = build_cursor_rect(
+                view.cursor,
+                view.visible_start(),
+                panel,
+                sf,
+                metrics,
+                scroll_offset_y,
+            ) {
+                rects.push(cursor_rect);
+            }
+            self.grid_base = Some(super::GridBaseCache { key: grid_key, rects, glyphs });
         }
 
         // Chrome (header + footer) and any popup render in the OVERLAY layer,
@@ -424,8 +438,11 @@ impl super::GpuApp {
         // The overlay always carries the chrome bars (and a popup when one is
         // open), so it is never empty.
         window.pre_present_notify();
+        // The terminal base layer comes from the Stage 3 cache (rebuilt above
+        // only on a key change); the overlay is rebuilt every frame.
+        let base = self.grid_base.as_ref().expect("grid_base populated above");
         renderer.render(
-            RenderLayer::rects_and_glyphs(&rects, &glyphs),
+            RenderLayer::rects_and_glyphs(&base.rects, &base.glyphs),
             Some(RenderLayer {
                 shadows: &overlay_shadows,
                 rects: &overlay_rects,
