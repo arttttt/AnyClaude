@@ -700,8 +700,13 @@ impl Grid {
                 }
             }
             EraseMode::Scrollback => {
+                // ED 3 — clear scrollback. The viewport anchor counts every
+                // line that leaves the top of the buffer, so a drained
+                // scrollback must advance lines_evicted too; otherwise a
+                // scrolled-up viewport loses its anchor and jumps.
                 let start = self.visible_start();
                 self.rows.drain(0..start);
+                self.lines_evicted += start as u64;
             }
         }
     }
