@@ -394,6 +394,7 @@ impl super::GpuApp {
     fn release_swipe(&mut self, now: Instant) {
         self.page_swipe.active = false;
         let max = (self.state.right.len() - 1) as f32;
+        let start = self.page_swipe.start_scroll;
         let pos = self.page_scroll.value(now);
         let v = self.page_swipe.velocity;
         let nudged = if v > super::PAGE_SWIPE_FLING_VELOCITY {
@@ -403,7 +404,15 @@ impl super::GpuApp {
         } else {
             pos
         };
-        let target = nudged.round().clamp(0.0, max) as usize;
+        // Snap to at most one page from where the gesture started: `pos` is
+        // already clamped to `start ± 1` in drive_swipe, but the fling nudge
+        // (±0.5) plus round() could push a full-page swipe to `start ± 2`,
+        // breaking the one-page-per-gesture guarantee. Clamp the rounded
+        // target back to `start ± 1` before leaving the page range.
+        let target = nudged
+            .round()
+            .clamp(start - 1.0, start + 1.0)
+            .clamp(0.0, max) as usize;
         if let Some(id) = self.state.right.panels().get(target).map(|panel| panel.id) {
             self.state.right.set_focus(id);
         }
