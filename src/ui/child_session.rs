@@ -84,7 +84,10 @@ pub struct ChildSessionManager {
 
 impl ChildSessionManager {
     pub fn new() -> Self {
-        Self { registry: HashMap::new(), next_pane: 0 }
+        // Mint teammate panes from %1 — `%0` is the main Claude Code pane (CC is
+        // told `$TMUX_PANE=%0` and splits new panes off it), so reserving %0
+        // keeps our ids aligned with what CC expects back from split-window.
+        Self { registry: HashMap::new(), next_pane: 1 }
     }
 
     /// React to one lifecycle event, driving `panels`. `Register` returns the new

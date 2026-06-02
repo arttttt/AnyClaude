@@ -71,6 +71,7 @@ pub async fn handle_tmux(State(state): State<TmuxState>, Json(req): Json<TmuxReq
             StatusCode::OK.into_response()
         }
         TmuxAction::Ack => StatusCode::OK.into_response(),
+        TmuxAction::Print(value) => value.into_response(),
         TmuxAction::Query(q) => {
             // Not answered with real data yet — log so a real CC run reveals the
             // expected format, return empty (CC tolerates an empty query result

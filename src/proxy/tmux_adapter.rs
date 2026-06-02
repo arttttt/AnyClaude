@@ -28,8 +28,11 @@ pub enum TmuxAction {
     /// layout (`resize-pane`, `select-layout`, `set`/`set-option`, `select-pane`
     /// without `-T`, session bookkeeping). Returns success, no UI change.
     Ack,
-    /// A registry query we don't answer with real data yet (`list-panes`,
-    /// `display-message`) — logged so a real CC run reveals what's needed.
+    /// A resolved value to print on stdout — `display-message -p <format>`, which
+    /// CC parses (e.g. `#{window_id}` → `@0`) to drive its next command.
+    Print(String),
+    /// A registry query we don't answer with real data yet (`list-panes`) —
+    /// logged so a real CC run reveals what's needed.
     Query(String),
     /// An unrecognised verb — surfaced as an error (no silent forwarding).
     Unknown(String),
@@ -50,6 +53,7 @@ pub fn parse(args: &[String]) -> TmuxAction {
             None => TmuxAction::Unknown(format!("kill-pane without -t %N: {}", args.join(" "))),
         },
         "send-keys" | "send" => parse_send_keys(args),
+        "display-message" | "display" | "displayp" => parse_display_message(args),
         "select-pane" | "selectp" => parse_select_pane(args),
         // Geometry + options + session bookkeeping: accepted, not followed.
         "resize-pane" | "resizep" | "select-layout" | "selectl" | "set" | "set-option"
@@ -59,11 +63,31 @@ pub fn parse(args: &[String]) -> TmuxAction {
         | "kill-server" | "start-server" => TmuxAction::Ack,
         // Registry queries (no real data yet — return empty, logged).
         "list-panes" | "lsp" | "list-sessions" | "ls" | "list-windows" | "lsw"
-        | "list-clients" | "lsc" | "display-message" | "display" | "displayp" => {
-            TmuxAction::Query(args.join(" "))
-        }
+        | "list-clients" | "lsc" => TmuxAction::Query(args.join(" ")),
         other => TmuxAction::Unknown(other.to_string()),
     }
+}
+
+/// `display-message -p <format>` — resolve the format string CC will parse to
+/// drive its next command. Without `-p` it just shows a message (no stdout).
+fn parse_display_message(args: &[String]) -> TmuxAction {
+    match flag_value(args, "-p") {
+        Some(format) => TmuxAction::Print(resolve_format(&format, target_pane(args))),
+        None => TmuxAction::Ack,
+    }
+}
+
+/// Substitute the tmux format tokens CC queries. There is one window (`@0`); the
+/// `-t` target (or the main `%0`) answers `#{pane_id}`. Unknown tokens are left
+/// as-is — CC uses single known tokens, so this covers the spawn handshake.
+fn resolve_format(format: &str, target: Option<PaneId>) -> String {
+    let pane = target.map(|p| format!("%{}", p.0)).unwrap_or_else(|| "%0".to_string());
+    format
+        .replace("#{window_id}", "@0")
+        .replace("#{pane_id}", &pane)
+        .replace("#{client_control_mode}", "1")
+        .replace("#{client_termtype}", "xterm-256color")
+        .replace("#{session_name}", "anyclaude")
 }
 
 /// Skip tmux's global/server flags that precede the verb. CC invokes

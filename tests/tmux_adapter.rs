@@ -97,15 +97,30 @@ fn geometry_and_option_verbs_are_acked() {
 }
 
 #[test]
-fn queries_are_flagged_for_later() {
+fn list_panes_is_flagged_for_later() {
     assert!(matches!(parse(&argv(&["list-panes", "-F", "#{pane_id}"])), TmuxAction::Query(_)));
-    assert!(matches!(parse(&argv(&["display-message", "-p", "#{pane_id}"])), TmuxAction::Query(_)));
 }
 
 #[test]
 fn unknown_verb_and_empty_argv_are_errors() {
     assert!(matches!(parse(&argv(&["frobnicate"])), TmuxAction::Unknown(_)));
     assert!(matches!(parse(&argv(&[])), TmuxAction::Unknown(_)));
+}
+
+#[test]
+fn display_message_resolves_the_window_id() {
+    // The exact probe that stalled real CC: it needs `@0` back to continue.
+    assert_eq!(
+        parse(&argv(&["-S", "/tmp/s", "display-message", "-t", "%0", "-p", "#{window_id}"])),
+        TmuxAction::Print("@0".to_string()),
+    );
+    // `#{pane_id}` resolves to the -t target.
+    assert_eq!(
+        parse(&argv(&["display-message", "-t", "%3", "-p", "#{pane_id}"])),
+        TmuxAction::Print("%3".to_string()),
+    );
+    // display-message without -p just shows a message → ack.
+    assert_eq!(parse(&argv(&["display-message", "hello"])), TmuxAction::Ack);
 }
 
 #[test]
