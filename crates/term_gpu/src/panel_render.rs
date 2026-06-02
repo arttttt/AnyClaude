@@ -546,13 +546,16 @@ pub fn paint_block_char(
         // ⏸ PAUSE (U+23F8) — two vertical bars. No installed monospace font
         // (Menlo) has this glyph, and no single substitute glyph gives the
         // two-bar look (‖ / ∥ are absent too), so paint it natively as two
-        // rects — like Warp's render_native_glyph. Centered pair, ~0.22 cell
-        // wide each with a gap, spanning the middle ~76% of the cell height.
+        // rects. Warp doesn't render this natively (it just has the glyph in
+        // its font), so there's no Warp geometry to copy — instead we align
+        // the bars to the surrounding text: bottom on the baseline (~0.78h,
+        // where the underline sits) and top at the cap line (~0.20h), so the
+        // pair matches capital-letter height rather than the full cell.
         '\u{23F8}' => {
-            let bar_w = w * 0.22;
+            let bar_w = w * 0.20;
             let gap = w * 0.16;
-            let bar_h = h * 0.76;
-            let top = y + h * 0.12;
+            let top = y + h * 0.20;
+            let bar_h = h * 0.58; // bottom ≈ 0.78h = text baseline
             let left = x + (w - (bar_w * 2.0 + gap)) / 2.0;
             rects.push(RectInstance { pos: [left, top], size: [bar_w, bar_h], color, clip: crate::NO_CLIP });
             rects.push(RectInstance { pos: [left + bar_w + gap, top], size: [bar_w, bar_h], color, clip: crate::NO_CLIP });
