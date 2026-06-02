@@ -256,55 +256,30 @@ impl GpuRenderer {
         self.atlas.end_frame();
     }
 
-    /// Allocate per-layer vertex buffers and stream the layer's
-    /// instance bytes into them. Returns the three buffers (shadow,
-    /// rect, glyph) for the draw pass.
+    /// Allocate per-layer vertex buffers and stream the layer's instance
+    /// bytes into them. Buffers are created only for non-empty instance
+    /// lists — an empty list yields `None` and skips both the allocation and
+    /// the per-buffer label string (a layer with no rects/shadows/etc. is
+    /// common, e.g. the overlay layer at rest).
     fn upload_layer_instances(&self, layer: RenderLayer<'_>, name: &str) -> LayerBuffers {
-        let shadow_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some(&format!("term_gpu/{name}_shadow_buffer")),
-            size: (std::mem::size_of::<ShadowInstance>() * layer.shadows.len().max(1)) as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        if !layer.shadows.is_empty() {
-            self.queue
-                .write_buffer(&shadow_buf, 0, ShadowInstance::as_bytes(&layer.shadows));
-        }
-        let rect_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some(&format!("term_gpu/{name}_rect_buffer")),
-            size: (std::mem::size_of::<RectInstance>() * layer.rects.len().max(1)) as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        if !layer.rects.is_empty() {
-            self.queue
-                .write_buffer(&rect_buf, 0, RectInstance::as_bytes(&layer.rects));
-        }
-        let round_rect_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some(&format!("term_gpu/{name}_round_rect_buffer")),
-            size: (std::mem::size_of::<RoundRectInstance>() * layer.round_rects.len().max(1)) as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        if !layer.round_rects.is_empty() {
-            self.queue
-                .write_buffer(&round_rect_buf, 0, RoundRectInstance::as_bytes(&layer.round_rects));
-        }
-        let glyph_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some(&format!("term_gpu/{name}_glyph_buffer")),
-            size: (std::mem::size_of::<GlyphInstance>() * layer.glyphs.len().max(1)) as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        if !layer.glyphs.is_empty() {
-            self.queue
-                .write_buffer(&glyph_buf, 0, GlyphInstance::as_bytes(&layer.glyphs));
-        }
+        let make = |bytes: &[u8], kind: &str| -> Option<wgpu::Buffer> {
+            if bytes.is_empty() {
+                return None;
+            }
+            let buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(&format!("term_gpu/{name}_{kind}_buffer")),
+                size: bytes.len() as u64,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            self.queue.write_buffer(&buf, 0, bytes);
+            Some(buf)
+        };
         LayerBuffers {
-            shadow: shadow_buf,
-            rect: rect_buf,
-            round_rect: round_rect_buf,
-            glyph: glyph_buf,
+            shadow: make(ShadowInstance::as_bytes(&layer.shadows), "shadow"),
+            rect: make(RectInstance::as_bytes(&layer.rects), "rect"),
+            round_rect: make(RoundRectInstance::as_bytes(&layer.round_rects), "round_rect"),
+            glyph: make(GlyphInstance::as_bytes(&layer.glyphs), "glyph"),
         }
     }
 
@@ -318,33 +293,33 @@ impl GpuRenderer {
         layer: RenderLayer<'_>,
         buffers: &'a LayerBuffers,
     ) {
-        if !layer.shadows.is_empty() {
+        if let Some(buf) = &buffers.shadow {
             pass.set_pipeline(&self.shadow_pipeline);
-            pass.set_vertex_buffer(0, buffers.shadow.slice(..));
+            pass.set_vertex_buffer(0, buf.slice(..));
             pass.draw(0..6, 0..layer.shadows.len() as u32);
         }
-        if !layer.rects.is_empty() {
+        if let Some(buf) = &buffers.rect {
             pass.set_pipeline(&self.prim_pipeline);
-            pass.set_vertex_buffer(0, buffers.rect.slice(..));
+            pass.set_vertex_buffer(0, buf.slice(..));
             pass.draw(0..6, 0..layer.rects.len() as u32);
         }
-        if !layer.round_rects.is_empty() {
+        if let Some(buf) = &buffers.round_rect {
             pass.set_pipeline(&self.roundrect_pipeline);
-            pass.set_vertex_buffer(0, buffers.round_rect.slice(..));
+            pass.set_vertex_buffer(0, buf.slice(..));
             pass.draw(0..6, 0..layer.round_rects.len() as u32);
         }
-        if !layer.glyphs.is_empty() {
+        if let Some(buf) = &buffers.glyph {
             pass.set_pipeline(&self.text_pipeline);
             pass.set_bind_group(1, &self.atlas_bind_group, &[]);
-            pass.set_vertex_buffer(0, buffers.glyph.slice(..));
+            pass.set_vertex_buffer(0, buf.slice(..));
             pass.draw(0..6, 0..layer.glyphs.len() as u32);
         }
     }
 }
 
 struct LayerBuffers {
-    shadow: wgpu::Buffer,
-    rect: wgpu::Buffer,
-    round_rect: wgpu::Buffer,
-    glyph: wgpu::Buffer,
+    shadow: Option<wgpu::Buffer>,
+    rect: Option<wgpu::Buffer>,
+    round_rect: Option<wgpu::Buffer>,
+    glyph: Option<wgpu::Buffer>,
 }
