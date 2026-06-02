@@ -52,7 +52,8 @@ pub fn parse(args: &[String]) -> TmuxAction {
         "resize-pane" | "resizep" | "select-layout" | "selectl" | "set" | "set-option"
         | "setw" | "set-window-option" | "set-hook" | "show" | "show-options" | "showw"
         | "show-window-options" | "rename-window" | "renamew" | "new-session" | "new"
-        | "has-session" | "kill-server" | "start-server" => TmuxAction::Ack,
+        | "has-session" | "kill-session" | "rename-session" | "attach-session" | "attach"
+        | "kill-server" | "start-server" => TmuxAction::Ack,
         // Registry queries (no real data yet — C2 returns empty, logged).
         "list-panes" | "lsp" | "display-message" | "display" | "displayp" => {
             TmuxAction::Query(args.join(" "))

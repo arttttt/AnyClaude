@@ -61,6 +61,19 @@ json_escape() {
   printf '%s' "$s"
 }
 
+# Capability probe: Claude Code runs `tmux -V` and gates tmux-teammate mode on
+# its EXIT CODE (non-zero → "tmux is not installed" → silent in-process
+# fallback). Answer it locally and statically so CC commits to tmux mode and
+# starts driving the control plane. Version string kept recent for any minimum
+# check downstream.
+case "$1" in
+  -V|--version)
+    slog "probe: tmux -V -> tmux 3.4"
+    echo "tmux 3.4"
+    exit 0
+    ;;
+esac
+
 # Rewrite a send-keys teammate spawn: register the agent and inject the
 # teammate-routed ANTHROPIC_BASE_URL + session-token header into the keystrokes.
 # Uses sed with | delimiter to avoid conflicts with / and : in URLs.
