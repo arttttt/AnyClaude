@@ -307,8 +307,11 @@ impl super::GpuApp {
                     (inner_x + inner_w).min(page_clip[2]),
                     (inner_y + inner_h).min(page_clip[3]),
                 ];
-                let scroll_off = surface.scroll_offset();
                 let snapshot = surface.emulator.snapshot();
+                // Refresh this pane's scroll bounds from the frame it's about to
+                // render (so a wheel event needs no snapshot of its own).
+                surface.set_scroll_viewport(snapshot.rows.len() as f32 * cell_h, inner_h);
+                let scroll_off = surface.scroll_offset();
                 let rect = term_gpu::PanelRect::new(inner_x, inner_y, inner_w, inner_h);
                 let r0 = overlay_rects.len();
                 let g0 = overlay_glyphs.len();

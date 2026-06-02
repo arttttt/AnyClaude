@@ -36,12 +36,18 @@ impl TerminalSurface {
         self.scroll.offset_y
     }
 
-    /// Scroll this pane by `dy` logical px, clamped to its content. `visible_px`
-    /// is the page's visible height and `cell_h_px` the line height — used to
-    /// recompute the scroll bounds from the live snapshot before clamping.
-    pub(super) fn scroll_by(&mut self, dy: f32, visible_px: f32, cell_h_px: f32) {
-        self.scroll.total_size_px = self.emulator.snapshot().rows.len() as f32 * cell_h_px;
+    /// Refresh the scroll bounds from the current frame's content height +
+    /// visible viewport. Called during render (which already holds the snapshot),
+    /// so a wheel event needs NO snapshot of its own. Re-clamps the offset.
+    pub(super) fn set_scroll_viewport(&mut self, content_px: f32, visible_px: f32) {
+        self.scroll.total_size_px = content_px;
         self.scroll.visible_px = visible_px;
+        self.scroll.offset_y = self.scroll.offset_y.clamp(0.0, self.scroll.max_offset());
+    }
+
+    /// Scroll this pane by `dy` logical px against the bounds set at the last
+    /// render — cheap (no snapshot), so rapid trackpad events don't lag.
+    pub(super) fn scroll_by(&mut self, dy: f32) {
         self.scroll.scroll_by(dy);
         self.scroll.offset_y = self.scroll.offset_y.clamp(0.0, self.scroll.max_offset());
     }

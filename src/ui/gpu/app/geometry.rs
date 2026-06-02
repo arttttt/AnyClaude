@@ -287,22 +287,13 @@ impl super::GpuApp {
     }
 
     /// Scroll the focused teammate pane by `dy` logical px (a vertical wheel over
-    /// the overlay). Recomputes the pane's scroll bounds from its visible page
-    /// height + line height. Returns whether a pane took the scroll.
+    /// the overlay). Bounds come from the last render (`set_scroll_viewport`), so
+    /// this is cheap. Returns whether a pane took the scroll.
     pub(super) fn scroll_focused_pane(&mut self, dy: f32) -> bool {
         let Some(pane) = self.focused_pane() else { return false };
-        let metrics = self.cell_metrics();
-        let sf = self.scale_factor.max(0.0001);
-        let cell_h = (metrics.height_physical / sf).max(1.0);
-        // Visible page height = overlay band minus the borders, dots strip, and
-        // the grid's own top/bottom padding (matches `redraw`'s `inner_h`).
-        let visible_px = self
-            .panel_overlay_rect
-            .map(|r| (r.size.y - 2.0 - panels_view::STRIP_H - 2.0 * super::PANE_PAD).max(1.0))
-            .unwrap_or(1.0);
         match self.panes.get_mut(pane) {
             Some(surface) => {
-                surface.scroll_by(dy, visible_px, cell_h);
+                surface.scroll_by(dy);
                 true
             }
             None => false,
