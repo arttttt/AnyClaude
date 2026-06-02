@@ -267,8 +267,10 @@ fn key(physical: KeyCode) -> Msg {
 }
 
 #[test]
-fn terminal_key_emits_write_to_pty() {
-    // No popup, no Super: a plain key encodes to PTY bytes.
+fn terminal_key_emits_write_to_focused() {
+    // No popup, no Super: a plain key encodes to bytes routed to the
+    // keyboard-focused terminal (main session, or the focused teammate pane
+    // when input is routed to the overlay).
     let mut s = state();
     let fx = s.apply(
         Msg::Key {
@@ -279,7 +281,10 @@ fn terminal_key_emits_write_to_pty() {
         },
         &ctx(),
     );
-    assert!(matches!(fx.as_slice(), [Effect::WriteToPty(_)]), "terminal key writes to PTY: {fx:?}");
+    assert!(
+        matches!(fx.as_slice(), [Effect::WriteToFocused(_)]),
+        "terminal key writes to the focused terminal: {fx:?}"
+    );
 }
 
 #[test]
@@ -288,11 +293,11 @@ fn ctrl_shortcut_maps_to_its_effect() {
     s.modifiers = ModifiersState::CONTROL;
     assert_eq!(s.apply(key(KeyCode::KeyQ), &ctx()), vec![Effect::Quit]);
     assert_eq!(s.apply(key(KeyCode::KeyT), &ctx()), vec![Effect::ToggleBackendPopup]);
-    // Ctrl+B is not an app shortcut — it falls through to encode_key → the PTY
-    // (so Claude Code still receives it).
+    // Ctrl+B is not an app shortcut — it falls through to encode_key → the
+    // focused terminal (so Claude Code still receives it).
     assert!(matches!(
         s.apply(key(KeyCode::KeyB), &ctx()).as_slice(),
-        [Effect::WriteToPty(_)]
+        [Effect::WriteToFocused(_)]
     ));
 }
 
