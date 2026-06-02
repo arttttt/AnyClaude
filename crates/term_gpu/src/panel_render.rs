@@ -465,9 +465,21 @@ pub fn build_cursor_rect(
 /// (tinted to fg), and matches Warp (whose configured font merely happens to
 /// cover U+23FA). Only the glyph lookup is remapped; the cell keeps the original
 /// char, so selection / copy are unaffected.
+///
+/// The same problem hits Claude Code's other media-status glyphs (pause / stop /
+/// play-pause / rewind / fast-forward). Menlo covers NONE of the U+23xx media
+/// codepoints but DOES cover the geometric-shapes block (U+25xx), so each maps
+/// to its closest monochrome shape. These targets are outside the block-painter
+/// range (U+2580–259F), so they still shape through the font path and tint to fg
+/// — unlike the colour-emoji boxes they replace.
 fn mono_symbol_substitute(ch: char) -> char {
     match ch {
-        '\u{23FA}' => '\u{25CF}',
+        '\u{23FA}' => '\u{25CF}', // ⏺ record       → ● black circle
+        '\u{23F8}' => '\u{25AE}', // ⏸ pause        → ▮ black vertical rectangle
+        '\u{23F9}' => '\u{25A0}', // ⏹ stop         → ■ black square
+        '\u{23EF}' => '\u{25B6}', // ⏯ play/pause   → ▶ black right triangle
+        '\u{23EA}' => '\u{25C0}', // ⏪ rewind       → ◀ black left triangle
+        '\u{23E9}' => '\u{25B6}', // ⏩ fast-forward → ▶ black right triangle
         _ => ch,
     }
 }
