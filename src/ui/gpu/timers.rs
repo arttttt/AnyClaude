@@ -40,6 +40,13 @@ impl Timers {
         }
     }
 
+    /// Abort the periodic heartbeat.
+    pub(super) fn cancel_periodic(&mut self) {
+        if let Some(a) = self.periodic.take() {
+            a.abort();
+        }
+    }
+
     /// Start (or restart) the momentum-tick loop firing `MomentumTick` every
     /// `interval`.
     pub(super) fn schedule_momentum(
@@ -47,6 +54,10 @@ impl Timers {
         proxy: &EventLoopProxy<UserEvent>,
         interval: Duration,
     ) {
+        // Abort any prior handle first: dropping an AbortHandle does NOT abort
+        // its future, so a bare reassignment would leak the old timer thread
+        // and run two momentum loops at once (double decay + double redraw).
+        self.cancel_momentum();
         self.momentum = Some(schedule_loop(proxy.clone(), interval, || UserEvent::MomentumTick));
     }
 
@@ -57,12 +68,14 @@ impl Timers {
         proxy: &EventLoopProxy<UserEvent>,
         delay: Duration,
     ) {
+        self.cancel_gesture_end();
         self.gesture_end = Some(schedule_once(proxy.clone(), delay, UserEvent::GestureEnded));
     }
 
     /// Start the 1 Hz `TickRedraw` heartbeat that keeps the chrome (Uptime /
     /// Reqs / sub / team) fresh while the PTY is idle.
     pub(super) fn start_periodic(&mut self, proxy: &EventLoopProxy<UserEvent>) {
+        self.cancel_periodic();
         self.periodic =
             Some(schedule_loop(proxy.clone(), Duration::from_secs(1), || UserEvent::TickRedraw));
     }
