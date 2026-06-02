@@ -385,8 +385,12 @@ impl ApplicationHandler<UserEvent> for super::GpuApp {
                 // Over the teammates overlay the wheel never reaches the terminal
                 // underneath: a horizontal two-finger swipe PAGES the overlay,
                 // while a vertical wheel SCROLLS the focused teammate's grid.
+                // Once a swipe is in flight, keep ALL its events (incl. the
+                // dx≈dy≈0 `Ended`) going to it so it still snaps on release —
+                // routing that `Ended` to the scroll branch would strand the page
+                // mid-swipe (no `release_swipe`).
                 if self.cursor_over_overlay() {
-                    if dx.abs() > dy.abs() {
+                    if self.page_swipe.active || dx.abs() > dy.abs() {
                         self.page_swipe(dx, dy, phase);
                     } else if self.scroll_focused_pane(dy) {
                         self.request_redraw();
