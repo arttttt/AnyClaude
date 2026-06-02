@@ -179,6 +179,9 @@ impl super::GpuApp {
             self.panel_width.retarget(target, now);
             self.panel_width.value(now)
         };
+        // Cap the rendered width at a fraction of the window (tracks resizes even
+        // if a remembered width was set on a wider window).
+        let overlay_w = overlay_w.min(window_logical.x * super::MAX_OVERLAY_WIDTH_FRACTION);
         let panel_animating = self.panel_width.animating(now);
         // Show the panel stack whenever the overlay is wider than the bare strip.
         let expanded = overlay_w > strip_w + 1.0;
@@ -269,6 +272,21 @@ impl super::GpuApp {
             let cell_h = (metrics.height_physical / sf).max(1.0);
             let cols = (inner_w / cell_w) as usize;
             let rows = (inner_h / cell_h) as usize;
+            // Opaque backdrop for the WHOLE overlay band (content + dots strip),
+            // so no gap below the grid lets the main terminal show through. Drawn
+            // first in the rects pass; grids, pill, and dots all paint over it.
+            let overlay_clip = [
+                overlay_origin.x,
+                overlay_origin.y,
+                overlay_origin.x + overlay_size.x,
+                overlay_origin.y + overlay_size.y,
+            ];
+            overlay_rects.push(RectInstance {
+                pos: [overlay_origin.x, overlay_origin.y],
+                size: [overlay_size.x, overlay_size.y],
+                color: with_panel_alpha(panels_view::OVERLAY_BG, fade),
+                clip: overlay_clip,
+            });
             let current = self.state.right.focus_index().unwrap_or(0);
             let n = self.state.right.len();
             let first = current.saturating_sub(1);
@@ -287,14 +305,8 @@ impl super::GpuApp {
                     surface.resize(cols, rows);
                 }
                 let page_x = content_origin.x + (i as f32 - page_scroll) * page_w;
-                // Opaque backdrop spans the full page (the overlay floats over the
-                // terminal); clipped to the page, faded with the collapse.
-                overlay_rects.push(RectInstance {
-                    pos: [page_x, content_origin.y],
-                    size: [page_w, page_h],
-                    color: with_panel_alpha(panels_view::OVERLAY_BG, fade),
-                    clip: page_clip,
-                });
+                // (The full-overlay backdrop above already fills the page; the
+                // grid just draws over it.)
                 // The grid sits inside the padding; clip it to the padded box
                 // INTERSECTED with the page viewport, so text never spills into
                 // the padding/pill AND an off-edge (mid-swipe) neighbour never

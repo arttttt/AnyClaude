@@ -78,6 +78,11 @@ const INITIAL_PANE_GRID: (usize, usize) = (40, 12);
 const PANE_PAD: f32 = 4.0;
 const PANE_PAD_LEFT: f32 = 12.0;
 
+/// The teammates overlay can be dragged no wider than this fraction of the
+/// window (the absolute `Policy::max_width` is the upper sanity cap). Dynamic so
+/// it tracks window resizes rather than a fixed pixel ceiling.
+const MAX_OVERLAY_WIDTH_FRACTION: f32 = 0.75;
+
 /// Pager page-settle spring constants (page units). `DAMPING ≈ 2·√STIFFNESS` is
 /// critical — snappy, no overshoot.
 const PAGE_SPRING_STIFFNESS: f32 = 700.0;

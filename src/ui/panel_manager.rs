@@ -123,7 +123,9 @@ impl Policy {
             edge_toggle: true,
             has_indicator: true,
             min_width: 220.0,
-            max_width: 900.0,
+            // Absolute sanity cap; the real ceiling is dynamic (a fraction of the
+            // window width, enforced by the coordinator) so it tracks resizes.
+            max_width: 5120.0,
             default_width: 420.0,
             // Small so the collapsed pill (centred on the divider = the overlay's
             // left edge at `window.right - collapsed_width`) sits near the edge.

@@ -417,7 +417,10 @@ impl ApplicationHandler<UserEvent> for super::GpuApp {
                 if let Some(mgr) = self.state.panel_edge_drag {
                     let win_w = self.window.as_ref().map(|w| w.inner_size().width as f32 / sf);
                     if let Some(win_w) = win_w {
-                        self.dispatch(Msg::PanelResize { mgr, width: win_w - lx });
+                        // Cap the overlay at a fraction of the window width.
+                        let width =
+                            (win_w - lx).min(win_w * super::MAX_OVERLAY_WIDTH_FRACTION);
+                        self.dispatch(Msg::PanelResize { mgr, width });
                     }
                     return;
                 }
