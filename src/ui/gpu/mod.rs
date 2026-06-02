@@ -11,7 +11,6 @@ pub mod app;
 mod backends;
 mod bootstrap;
 mod chrome;
-mod diagnostic;
 mod overlay;
 mod panes;
 pub mod pty;

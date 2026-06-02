@@ -22,7 +22,6 @@ use winit::event_loop::ActiveEventLoop;
 use winit::window::{WindowAttributes, WindowId};
 
 use crate::ui::app_state::{ApplyCtx, Effect, Msg};
-use crate::ui::gpu::diagnostic;
 use crate::ui::gpu::pty::ChildPty;
 
 use super::{UserEvent, INITIAL_H, INITIAL_W, MULTI_CLICK_THRESHOLD_MS, SCROLLBACK_LINES};
@@ -74,10 +73,6 @@ impl super::GpuApp {
                 }
                 Effect::WriteToPty(bytes) => self.write_to_main(&bytes),
                 Effect::WriteToFocused(bytes) => self.write_to_focused(&bytes),
-                Effect::ToggleInputFocus => {
-                    self.state.toggle_input_focus();
-                    self.request_redraw();
-                }
                 Effect::ToggleBackendPopup => self.toggle_backend_switch_popup(),
                 Effect::ToggleHistoryPopup => self.toggle_history_popup(),
                 Effect::ToggleSettingsPopup => self.toggle_settings_popup(),
@@ -88,11 +83,7 @@ impl super::GpuApp {
                 Effect::CopySessionId => self.copy_session_id(),
                 Effect::Paste => self.paste_into_pty(),
                 Effect::RestartPty => self.restart_pty(),
-                Effect::DumpDiagnostic => self.dump_diagnostic(),
                 Effect::DebugTogglePanels => self.debug_toggle_panels(),
-                Effect::DebugUnregisterPane => self.debug_unregister_focused_pane(),
-                Effect::PagePrev => self.page_panel(false),
-                Effect::PageNext => self.page_panel(true),
                 Effect::Quit => exit = true,
                 Effect::Drain => {
                     if self.drain_pty() {
@@ -159,65 +150,13 @@ impl super::GpuApp {
         new_pane
     }
 
-    /// Debug-only (Ctrl+P): the first hit REGISTERS a few mock teammate sessions
-    /// (through `ChildSessionEvent`s — exercising the real registry → panel flow,
-    /// just with no process behind them yet), then toggle the overlay. Real
-    /// teammates arrive when the `TmuxAdapter` produces the same events.
+    /// Debug-only (Ctrl+P): show / hide the right teammates overlay. Real
+    /// teammates register through the control plane (`/api/tmux`) and auto-show
+    /// the overlay; this is just a dev convenience to toggle it by keyboard.
     fn debug_toggle_panels(&mut self) {
-        use crate::ui::child_session::{ChildSessionEvent, ChildSpec};
-        if self.child_sessions.is_empty() {
-            // Each mock runs an interactive shell so the pane shows a live grid
-            // (real teammates run `claude` via the control plane). Accent colours
-            // echo Claude Code's teammate palette.
-            let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
-            let env = vec![("TERM".to_string(), "xterm-256color".to_string())];
-            let mocks = [
-                ("module-mapper", [0.30, 0.55, 0.95, 1.0]),
-                ("flow-tracer", [0.35, 0.80, 0.45, 1.0]),
-                ("deps-mapper", [0.90, 0.75, 0.30, 1.0]),
-                ("type-checker", [0.80, 0.45, 0.85, 1.0]),
-                ("test-runner", [0.95, 0.50, 0.40, 1.0]),
-                ("doc-writer", [0.45, 0.75, 0.85, 1.0]),
-            ];
-            for (name, accent) in mocks {
-                let spec = ChildSpec {
-                    name: name.to_string(),
-                    accent,
-                    command: shell.clone(),
-                    args: vec![],
-                    env: env.clone(),
-                };
-                self.apply_child_session_event(ChildSessionEvent::Register(spec));
-            }
-        } else {
-            // The seeding press shows the overlay (register does); subsequent
-            // presses just collapse / expand it.
-            self.state.right.toggle();
-        }
+        self.state.right.toggle();
         // Collapsing the overlay drops keyboard focus back to the main session.
         self.state.normalize_input_focus();
-        self.request_redraw();
-    }
-
-    /// Debug-only (Ctrl+K): UNREGISTER the focused teammate's session — proves the
-    /// `Unregister` lifecycle live (panel removed, focus falls back). A no-op when
-    /// the focused panel isn't a registered child.
-    fn debug_unregister_focused_pane(&mut self) {
-        use crate::ui::child_session::ChildSessionEvent;
-        let Some(panel) = self.state.right.focus() else { return };
-        let Some(pane) = self.child_sessions.pane_for(panel) else { return };
-        self.apply_child_session_event(ChildSessionEvent::Unregister(pane));
-    }
-
-    /// Page the right teammates overlay forward / back (⌥→ / ⌥←): move its focus
-    /// one panel; the pager's `page_scroll` tween then slides to it. Coordinator-
-    /// side state mutation like `debug_toggle_panels`; a no-op when empty.
-    fn page_panel(&mut self, forward: bool) {
-        if forward {
-            self.state.right.focus_next();
-        } else {
-            self.state.right.focus_prev();
-        }
         self.request_redraw();
     }
 
@@ -257,16 +196,6 @@ impl super::GpuApp {
         }
     }
 
-    /// Dump a diagnostic snapshot (grid + scroll + emulator) to stderr.
-    fn dump_diagnostic(&self) {
-        let snap = self.session.emulator.as_ref().map(|e| e.snapshot());
-        diagnostic::dump_snapshot(
-            self.state.grid_size,
-            self.state.scroll.offset_y,
-            self.state.scroll.max_offset(),
-            snap.as_ref(),
-        );
-    }
 }
 
 impl ApplicationHandler<UserEvent> for super::GpuApp {

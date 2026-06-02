@@ -21,23 +21,10 @@ pub enum AppShortcut {
     ToggleHistoryPopup,
     ToggleSettingsPopup,
     RestartPty,
-    DumpDiagnostic,
-    /// Debug-only (Ctrl+P): seed placeholder teammates + toggle the right
-    /// overlay — the Milestone-1 manual experiment trigger. Like
-    /// `DumpDiagnostic`, only its keybinding is `cfg(debug_assertions)`-gated.
+    /// Debug-only (Ctrl+P): show / hide the right teammates overlay. The only
+    /// remaining debug keybinding (`cfg(debug_assertions)`-gated); real teammates
+    /// also auto-show the overlay on register and the pill toggles it.
     DebugTogglePanels,
-    /// Debug-only (Ctrl+K): unregister the focused teammate session (exercise the
-    /// `Unregister` lifecycle live). `cfg(debug_assertions)`-gated.
-    DebugUnregisterPane,
-    /// Page the teammates overlay back / forward (⌥← / ⌥→). Debug-gated for now
-    /// (the panels are debug-seeded); release builds leave ⌥+arrows to the
-    /// terminal's word-motion.
-    PagePrev,
-    PageNext,
-    /// Toggle the keyboard target between the main terminal and the teammates
-    /// overlay (⌥↑). Same ⌥-arrow overlay-nav family as paging, debug-gated for
-    /// now; release builds leave ⌥↑ to the terminal.
-    ToggleInputFocus,
     Quit,
 }
 
@@ -58,10 +45,8 @@ impl AppShortcut {
 
 /// Map a modifier combo to its app shortcut. Clipboard is **Cmd+C / Cmd+V**;
 /// app features are a single **Ctrl** chord. `Ctrl+B` (Claude Code) and `Ctrl+D`
-/// (EOF) are deliberately left for the terminal — backend takes `Ctrl+T`,
-/// diagnostic `Ctrl+G`. Diagnostic is a debug-build-only dev aid, so in a
-/// release build `Ctrl+G` falls through to the terminal too. `None` when no
-/// combo matches.
+/// (EOF) are deliberately left for the terminal — backend takes `Ctrl+T`. `None`
+/// when no combo matches.
 pub fn app_shortcut(code: KeyCode, modifiers: ModifiersState) -> Option<AppShortcut> {
     // macOS clipboard — Cmd, not Ctrl (Ctrl+C/V are interrupt / literal-next).
     if modifiers.super_key() {
@@ -79,25 +64,11 @@ pub fn app_shortcut(code: KeyCode, modifiers: ModifiersState) -> Option<AppShort
             KeyCode::KeyE => AppShortcut::ToggleSettingsPopup,
             KeyCode::KeyR => AppShortcut::RestartPty,
             KeyCode::KeyQ => AppShortcut::Quit,
-            #[cfg(debug_assertions)]
-            KeyCode::KeyG => AppShortcut::DumpDiagnostic,
+            // The only remaining debug keybinding: show / hide the overlay.
             #[cfg(debug_assertions)]
             KeyCode::KeyP => AppShortcut::DebugTogglePanels,
-            #[cfg(debug_assertions)]
-            KeyCode::KeyK => AppShortcut::DebugUnregisterPane,
             _ => return None,
         });
-    }
-    // ⌥ + arrows page the teammates overlay (debug-only; release leaves them to
-    // the terminal). Checked after Ctrl/Cmd so a combined chord prefers those.
-    #[cfg(debug_assertions)]
-    if modifiers.alt_key() {
-        return match code {
-            KeyCode::ArrowLeft => Some(AppShortcut::PagePrev),
-            KeyCode::ArrowRight => Some(AppShortcut::PageNext),
-            KeyCode::ArrowUp => Some(AppShortcut::ToggleInputFocus),
-            _ => None,
-        };
     }
     None
 }

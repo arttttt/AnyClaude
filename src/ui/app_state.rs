@@ -129,10 +129,6 @@ pub enum Effect {
     /// main session or, when input is routed to the overlay, the focused
     /// teammate pane (the coordinator resolves the target).
     WriteToFocused(Vec<u8>),
-    /// Flip the keyboard target between the main terminal and the teammates
-    /// overlay (⌥↑). State-only like `ClosePopups`; the coordinator performs the
-    /// flip + redraw.
-    ToggleInputFocus,
     /// Open-or-close a popup (reads resources — backend list / settings registry
     /// / switch log — so the coordinator performs it via its toggle methods).
     ToggleBackendPopup,
@@ -152,17 +148,8 @@ pub enum Effect {
     Paste,
     /// Tear down + respawn the Claude session (Cmd+R).
     RestartPty,
-    /// Dump a diagnostic snapshot to stderr (Cmd+Shift+D).
-    DumpDiagnostic,
-    /// Debug-only: seed placeholder teammates + toggle the right overlay (the
-    /// Milestone-1 panels experiment trigger; coordinator-side, debug builds).
+    /// Debug-only (Ctrl+P): show / hide the right teammates overlay.
     DebugTogglePanels,
-    /// Debug-only: unregister the focused teammate session (Unregister lifecycle).
-    DebugUnregisterPane,
-    /// Page the teammates overlay back / forward (move the right manager's focus
-    /// one panel; the pager slides to it).
-    PagePrev,
-    PageNext,
     /// Exit the app (Cmd+Q / window close). Performed by the coordinator, which
     /// owns the `ActiveEventLoop` — surfaced as `perform_effects`' return.
     Quit,
@@ -448,12 +435,7 @@ impl AppState {
                         AppShortcut::ToggleHistoryPopup => Effect::ToggleHistoryPopup,
                         AppShortcut::ToggleSettingsPopup => Effect::ToggleSettingsPopup,
                         AppShortcut::RestartPty => Effect::RestartPty,
-                        AppShortcut::DumpDiagnostic => Effect::DumpDiagnostic,
                         AppShortcut::DebugTogglePanels => Effect::DebugTogglePanels,
-                        AppShortcut::DebugUnregisterPane => Effect::DebugUnregisterPane,
-                        AppShortcut::PagePrev => Effect::PagePrev,
-                        AppShortcut::PageNext => Effect::PageNext,
-                        AppShortcut::ToggleInputFocus => Effect::ToggleInputFocus,
                         AppShortcut::Quit => Effect::Quit,
                     }];
                 }
@@ -536,20 +518,6 @@ impl AppState {
             panel_edge_drag: None,
             input_focus: InputFocus::Terminal,
         }
-    }
-
-    /// Toggle the keyboard target between the main terminal and the teammates
-    /// overlay. Switching INTO the overlay only takes when it is visible and
-    /// non-empty — you cannot type into a hidden / empty overlay — otherwise the
-    /// focus stays on (or returns to) the terminal.
-    pub fn toggle_input_focus(&mut self) {
-        self.input_focus = match self.input_focus {
-            InputFocus::Teammates => InputFocus::Terminal,
-            InputFocus::Terminal if self.right.is_visible() && !self.right.is_empty() => {
-                InputFocus::Teammates
-            }
-            InputFocus::Terminal => InputFocus::Terminal,
-        };
     }
 
     /// Derived: is the keyboard EFFECTIVELY routed to a teammate this frame? The

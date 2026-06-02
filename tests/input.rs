@@ -11,7 +11,6 @@ use winit::keyboard::{KeyCode, ModifiersState};
 
 const SUPER: ModifiersState = ModifiersState::SUPER;
 const CTRL: ModifiersState = ModifiersState::CONTROL;
-const ALT: ModifiersState = ModifiersState::ALT;
 
 #[test]
 fn clipboard_is_on_cmd_not_ctrl() {
@@ -59,25 +58,9 @@ fn ctrl_b_and_ctrl_d_pass_through_to_the_terminal() {
 
 #[cfg(debug_assertions)]
 #[test]
-fn diagnostic_on_ctrl_g_debug_only() {
-    // The diagnostic dump is a debug-build-only dev aid.
-    assert_eq!(app_shortcut(KeyCode::KeyG, CTRL), Some(AppShortcut::DumpDiagnostic));
-}
-
-#[cfg(debug_assertions)]
-#[test]
-fn ctrl_k_unregisters_the_focused_pane_debug_only() {
-    assert_eq!(app_shortcut(KeyCode::KeyK, CTRL), Some(AppShortcut::DebugUnregisterPane));
-}
-
-#[cfg(debug_assertions)]
-#[test]
-fn alt_arrows_page_the_overlay_debug_only() {
-    assert_eq!(app_shortcut(KeyCode::ArrowLeft, ALT), Some(AppShortcut::PagePrev));
-    assert_eq!(app_shortcut(KeyCode::ArrowRight, ALT), Some(AppShortcut::PageNext));
-    // Other ⌥ keys still fall through to the terminal (word-motion etc.).
-    assert_eq!(app_shortcut(KeyCode::ArrowUp, ALT), None);
-    assert_eq!(app_shortcut(KeyCode::KeyB, ALT), None);
+fn ctrl_p_toggles_the_overlay_debug_only() {
+    // The one remaining debug keybinding: show / hide the teammates overlay.
+    assert_eq!(app_shortcut(KeyCode::KeyP, CTRL), Some(AppShortcut::DebugTogglePanels));
 }
 
 #[test]
