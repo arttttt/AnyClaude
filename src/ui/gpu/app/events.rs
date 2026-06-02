@@ -439,6 +439,9 @@ impl ApplicationHandler<UserEvent> for super::GpuApp {
             WindowEvent::RedrawRequested => {
                 self.redraw();
             }
+            WindowEvent::DroppedFile(path) => {
+                self.on_file_dropped(path);
+            }
             _ => {}
         }
     }

@@ -39,6 +39,7 @@ use super::text::TextResources;
 use super::timers::Timers;
 
 mod clipboard;
+mod dnd;
 mod events;
 mod geometry;
 mod popups;
