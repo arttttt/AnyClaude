@@ -406,10 +406,23 @@ impl Grid {
 
     // ─── Printing ──────────────────────────────────────────────────────────
 
-    /// Print one grapheme base character at the cursor; advances the cursor
-    /// by 1 (callers handle wide-char spacing separately).
+    /// Print one character at the cursor. East-Asian Wide / Fullwidth
+    /// characters (`UnicodeWidthChar::width` == 2) occupy two cells: the
+    /// base cell carries `WIDE_CHAR` and the following cell is a blank
+    /// `WIDE_CHAR_SPACER`. All other printables advance the cursor by one.
+    /// Width comes from `unicode-width` (same source as Warp), so the
+    /// column accounting matches what the application expects.
     pub fn print(&mut self, c: char) {
-        if self.auto_wrap && self.cursor_col >= self.cols {
+        use unicode_width::UnicodeWidthChar;
+        // Treat width-0 (combining/zero-width) and unknown as 1 cell here:
+        // the parser only forwards printables, and zero-width composition is
+        // a separate concern (push_zerowidth). Clamp to the row width.
+        let width = UnicodeWidthChar::width(c).unwrap_or(1).max(1).min(self.cols.max(1));
+
+        // Wrap if the glyph doesn't fit on the current row. A wide char that
+        // would straddle the right edge wraps wholesale to the next row,
+        // leaving the last column blank (matches xterm / Warp).
+        if self.auto_wrap && self.cursor_col + width > self.cols {
             let cols = self.cols;
             if cols > 0 {
                 self.row_mut(self.cursor_row).cells[cols - 1]
@@ -420,7 +433,11 @@ impl Grid {
             self.linefeed();
         }
         let col = self.cursor_col.min(self.cols.saturating_sub(1));
-        let (fg, bg, flags) = (self.current_fg, self.current_bg, self.current_flags);
+        let (fg, bg) = (self.current_fg, self.current_bg);
+        let mut flags = self.current_flags;
+        if width == 2 {
+            flags.set(CellFlags::WIDE_CHAR);
+        }
 
         // Attach OSC 8 hyperlink (sticky) and OSC 133 prompt marker
         // (one-shot — taken here, not on subsequent prints).
@@ -443,7 +460,24 @@ impl Grid {
             flags,
             extra,
         };
-        self.cursor_col = col + 1;
+
+        // Wide char: write the trailing spacer cell. It has no glyph of its
+        // own (renderers skip it) but carries the same bg so bce/selection
+        // stay consistent across the pair.
+        if width == 2 && col + 1 < self.cols {
+            let mut spacer_flags = self.current_flags;
+            spacer_flags.set(CellFlags::WIDE_CHAR_SPACER);
+            let spacer = &mut self.row_mut(self.cursor_row).cells[col + 1];
+            *spacer = Cell {
+                c: ' ',
+                fg,
+                bg,
+                flags: spacer_flags,
+                extra: None,
+            };
+        }
+
+        self.cursor_col = (col + width).min(self.cols);
         self.last_printed = Some(c);
     }
 

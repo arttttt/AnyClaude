@@ -161,6 +161,13 @@ Following this research (user approval May 2026):
 - **Include all P0 + P1 sequences from §3.** P2 deferred unless observed as needed in real Claude Code traces. P3 explicitly out of scope.
 - **Skip everything in §4** (Warp features that don't apply).
 
+> **Amended 2026-06-02:** the "0 external deps" stance was retired for one
+> case — `unicode-width`. East-Asian / emoji cell width is a Unicode-data
+> problem (large table, revised each Unicode release), not hand-rollable
+> without drift. Warp uses the same crate (`UnicodeWidthChar::width`), so
+> `term_core` now does too for wide-char (WIDE_CHAR / WIDE_CHAR_SPACER)
+> accounting. The parser + grid remain otherwise dependency-free.
+
 ## Reference file paths (Warp commit `fc110333`)
 
 - https://github.com/warpdotdev/warp/blob/main/crates/warp_terminal/Cargo.toml

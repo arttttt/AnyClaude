@@ -329,3 +329,51 @@ fn bce_default_background_stays_default() {
     let snap = em.snapshot();
     assert_eq!(snap.rows[0].cells[0].bg, TermColor::Default);
 }
+
+#[test]
+fn wide_char_occupies_two_cells() {
+    use term_core::CellFlags;
+    // U+3042 あ (Hiragana) is East-Asian Wide → 2 cells. The base cell
+    // carries WIDE_CHAR, the next is a WIDE_CHAR_SPACER, and the cursor
+    // advances by 2.
+    let mut em = VtEmulator::new(10, 1, 0);
+    em.process("あ".as_bytes());
+    let snap = em.snapshot();
+    assert_eq!(snap.rows[0].cells[0].c, 'あ');
+    assert!(
+        snap.rows[0].cells[0].flags.contains(CellFlags::WIDE_CHAR),
+        "base cell must be flagged WIDE_CHAR"
+    );
+    assert!(
+        snap.rows[0].cells[1].flags.contains(CellFlags::WIDE_CHAR_SPACER),
+        "following cell must be a WIDE_CHAR_SPACER"
+    );
+    assert_eq!(snap.cursor.col, 2, "cursor advances by 2 for a wide char");
+}
+
+#[test]
+fn narrow_char_still_one_cell() {
+    use term_core::CellFlags;
+    let mut em = VtEmulator::new(10, 1, 0);
+    em.process(b"A");
+    let snap = em.snapshot();
+    assert!(!snap.rows[0].cells[0].flags.contains(CellFlags::WIDE_CHAR));
+    assert_eq!(snap.cursor.col, 1);
+}
+
+#[test]
+fn wide_char_wraps_whole_at_right_edge() {
+    use term_core::CellFlags;
+    // 3-col grid, two narrow chars then a wide one: the wide char can't fit
+    // in the last column, so it wraps to the next row as a pair.
+    let mut em = VtEmulator::new(3, 2, 0);
+    em.process(b"ab");
+    em.process("漢".as_bytes());
+    let snap = em.snapshot();
+    // Wrapped onto row 1, cells 0-1.
+    assert_eq!(snap.rows[1].cells[0].c, '漢');
+    assert!(snap.rows[1].cells[0].flags.contains(CellFlags::WIDE_CHAR));
+    assert!(snap.rows[1].cells[1].flags.contains(CellFlags::WIDE_CHAR_SPACER));
+    assert_eq!(snap.cursor.row, 1);
+    assert_eq!(snap.cursor.col, 2);
+}
