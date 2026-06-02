@@ -27,8 +27,8 @@ pub use instances::{
 };
 pub use label::{measure_label_width, push_label};
 pub use panel_render::{
-    build_cursor_rect, measure_cell_metrics, populate_panel, CellMetrics, PanelRect,
-    CURSOR_COLOR, CURSOR_STROKE_PHYSICAL, DEFAULT_FG,
+    build_cursor_rect, measure_cell_metrics, paint_block_char, populate_panel, CellMetrics,
+    PanelRect, CURSOR_COLOR, CURSOR_STROKE_PHYSICAL, DEFAULT_FG,
 };
 pub use paste::{encode_paste, shell_quote_path};
 pub use renderer::GpuRenderer;

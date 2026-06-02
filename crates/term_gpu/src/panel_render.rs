@@ -466,16 +466,19 @@ pub fn build_cursor_rect(
 /// cover U+23FA). Only the glyph lookup is remapped; the cell keeps the original
 /// char, so selection / copy are unaffected.
 ///
-/// The same problem hits Claude Code's other media-status glyphs (pause / stop /
+/// The same problem hits Claude Code's other media-status glyphs (stop /
 /// play-pause / rewind / fast-forward). Menlo covers NONE of the U+23xx media
 /// codepoints but DOES cover the geometric-shapes block (U+25xx), so each maps
 /// to its closest monochrome shape. These targets are outside the block-painter
 /// range (U+2580–259F), so they still shape through the font path and tint to fg
 /// — unlike the colour-emoji boxes they replace.
+///
+/// `⏸` (pause, U+23F8) is the exception: no single mono glyph gives its
+/// two-bar look, so it is NOT remapped here — it is painted natively as two
+/// rects in `paint_block_char`.
 fn mono_symbol_substitute(ch: char) -> char {
     match ch {
         '\u{23FA}' => '\u{25CF}', // ⏺ record       → ● black circle
-        '\u{23F8}' => '\u{25AE}', // ⏸ pause        → ▮ black vertical rectangle
         '\u{23F9}' => '\u{25A0}', // ⏹ stop         → ■ black square
         '\u{23EF}' => '\u{25B6}', // ⏯ play/pause   → ▶ black right triangle
         '\u{23EA}' => '\u{25C0}', // ⏪ rewind       → ◀ black left triangle
@@ -484,10 +487,10 @@ fn mono_symbol_substitute(ch: char) -> char {
     }
 }
 
-/// Paint a Unicode block / shade character (U+2580–U+259F) as
-/// one or more solid rects filling specific fractions of the
-/// cell. Returns `true` when `ch` was handled (caller must skip
-/// the shaped-glyph path); `false` otherwise.
+/// Paint a Unicode block / shade character (U+2580–U+259F), or the pause
+/// glyph U+23F8, as one or more solid rects filling specific fractions of
+/// the cell. Returns `true` when `ch` was handled (caller must skip the
+/// shaped-glyph path); `false` otherwise.
 ///
 /// The block char glyphs in monospace fonts are designed to span
 /// `[0, cell_size]` in their respective dimensions, but cosmic-text's
@@ -540,6 +543,20 @@ pub fn paint_block_char(
     }
 
     match ch {
+        // ⏸ PAUSE (U+23F8) — two vertical bars. No installed monospace font
+        // (Menlo) has this glyph, and no single substitute glyph gives the
+        // two-bar look (‖ / ∥ are absent too), so paint it natively as two
+        // rects — like Warp's render_native_glyph. Centered pair, ~0.22 cell
+        // wide each with a gap, spanning the middle ~76% of the cell height.
+        '\u{23F8}' => {
+            let bar_w = w * 0.22;
+            let gap = w * 0.16;
+            let bar_h = h * 0.76;
+            let top = y + h * 0.12;
+            let left = x + (w - (bar_w * 2.0 + gap)) / 2.0;
+            rects.push(RectInstance { pos: [left, top], size: [bar_w, bar_h], color, clip: crate::NO_CLIP });
+            rects.push(RectInstance { pos: [left + bar_w + gap, top], size: [bar_w, bar_h], color, clip: crate::NO_CLIP });
+        }
         // ▀ Upper half (U+2580)
         '\u{2580}' => rects.push(RectInstance { pos: [x, y], size: [w, h4], color, clip: crate::NO_CLIP }),
         // ▁ Lower 1/8 (U+2581)
