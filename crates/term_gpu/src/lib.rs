@@ -22,11 +22,13 @@ pub use input::{
     encode_key, encode_motion_report, encode_mouse_report, encode_mouse_sgr, encode_mouse_x10,
     MouseButton, MouseEventKind,
 };
-pub use instances::{GlyphInstance, RectInstance, RenderLayer, ShadowInstance, Uniforms};
+pub use instances::{
+    GlyphInstance, RectInstance, RenderLayer, RoundRectInstance, ShadowInstance, Uniforms, NO_CLIP,
+};
 pub use label::{measure_label_width, push_label};
 pub use panel_render::{
-    build_cursor_rect, measure_cell_metrics, populate_panel, CellMetrics, PanelRect,
-    CURSOR_COLOR, CURSOR_STROKE_PHYSICAL, DEFAULT_FG,
+    build_cursor_rect, measure_cell_metrics, paint_block_char, populate_panel, CellMetrics,
+    PanelRect, CURSOR_COLOR, CURSOR_STROKE_PHYSICAL, DEFAULT_FG,
 };
 pub use paste::{encode_paste, shell_quote_path};
 pub use renderer::GpuRenderer;

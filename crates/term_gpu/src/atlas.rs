@@ -165,6 +165,14 @@ pub struct GlyphAtlas {
     frame: u32,
     /// Set when a glyph could not pack into ANY layer this frame.
     out_of_space: bool,
+    /// Monotonic generation bumped whenever `end_frame` REMOVES entries (stale
+    /// eviction or wholesale compaction) — i.e. whenever a previously-placed
+    /// glyph's slot may have been freed/moved. A consumer that cached glyph UVs
+    /// can compare this across frames: unchanged ⇒ every surviving entry kept
+    /// its placement, so cached UVs are still valid. (Empty-layer reclaim does
+    /// NOT bump it: it only resets layers with no live entries, so no cached UV
+    /// is affected.)
+    evict_gen: u64,
 }
 
 impl GlyphAtlas {
@@ -200,6 +208,7 @@ impl GlyphAtlas {
             view,
             frame: 0,
             out_of_space: false,
+            evict_gen: 0,
         }
     }
 
@@ -209,6 +218,13 @@ impl GlyphAtlas {
 
     pub fn view(&self) -> &wgpu::TextureView {
         &self.view
+    }
+
+    /// Generation that changes whenever placed glyphs are evicted (see
+    /// [`evict_gen`](Self::evict_gen)). A UV-caching consumer compares it across
+    /// frames: unchanged ⇒ cached glyph placements are still valid.
+    pub fn evict_gen(&self) -> u64 {
+        self.evict_gen
     }
 
     /// Look up `key` in the cache, or rasterize and insert it. The
@@ -260,13 +276,19 @@ impl GlyphAtlas {
             self.entries.clear();
             self.current_layer = 0;
             self.out_of_space = false;
+            self.evict_gen = self.evict_gen.wrapping_add(1);
             return true;
         }
 
-        // Drop entries unused for too long.
+        // Drop entries unused for too long. If any were removed, their slots are
+        // now free/reusable, so bump the generation to invalidate UV caches.
         let now = self.frame;
+        let before = self.entries.len();
         self.entries
             .retain(|_, e| now.wrapping_sub(e.last_used_frame) <= MAX_UNUSED_FRAMES);
+        if self.entries.len() != before {
+            self.evict_gen = self.evict_gen.wrapping_add(1);
+        }
 
         // Reclaim any layer whose glyphs are all gone — reset its packer and
         // clear its pixels (keeping the 1px-padding-is-zero invariant) so the

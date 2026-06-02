@@ -13,15 +13,16 @@ use term_gpu::{
     build_cursor_rect, populate_panel, push_selection_rects, GlyphInstance, RectInstance,
     RenderLayer,
 };
-use term_ui::Block;
+use term_ui::{Bounds, Modified};
 
 use crate::ui::chrome_labels;
 use crate::ui::gpu::chrome::{
     CHROME_FONT_SIZE, CHROME_H_PAD, FOOTER_HEIGHT_LOGICAL, HEADER_HEIGHT_LOGICAL,
 };
+use crate::ui::panels_view;
 use crate::ui::popup_view;
 
-use super::{FONT_SIZE, POPUP_FADE_SECS};
+use super::FONT_SIZE;
 
 impl super::GpuApp {
     /// Render one frame: clear, populate cells, push cursor, draw
@@ -40,45 +41,59 @@ impl super::GpuApp {
         };
         let sf = self.scale_factor.max(0.0001);
 
-        let snapshot = emulator.snapshot();
         let scroll_offset_y = self.state.scroll.offset_y;
-        let mut rects: Vec<RectInstance> = Vec::new();
-        let mut glyphs: Vec<GlyphInstance> = Vec::new();
-        populate_panel(
-            &snapshot,
-            panel,
-            &self.text.palette,
-            &mut self.text.font_system,
-            &mut self.text.swash_cache,
-            renderer.atlas_mut(),
-            &mut self.text.shape_cache,
-            FONT_SIZE,
-            sf,
-            metrics,
-            scroll_offset_y,
-            &mut rects,
-            &mut glyphs,
-        );
-        if let Some(sel) = self.state.selection {
-            push_selection_rects(
-                &sel,
-                &snapshot,
+        // Stage 3: skip rebuilding the terminal base layer when nothing that
+        // affects it changed (overlay-only animation frames, idle redraws). The
+        // key folds in `content_seq` (grid + cursor mutations), the atlas
+        // eviction generation (so cached glyph UVs are never reused after a slot
+        // could have moved), and the app-side view params. On a miss we rebuild
+        // and restash; on a hit the render below draws straight from the cache.
+        let grid_key = super::GridCacheKey {
+            content_seq: emulator.content_seq(),
+            atlas_evict_gen: renderer.atlas_mut().evict_gen(),
+            scroll_bits: scroll_offset_y.to_bits(),
+            panel_bits: [
+                panel.x.to_bits(),
+                panel.y.to_bits(),
+                panel.w.to_bits(),
+                panel.h.to_bits(),
+            ],
+            scale_bits: sf.to_bits(),
+            selection: self.state.selection,
+        };
+        if self.grid_base.as_ref().map(|c| c.key) != Some(grid_key) {
+            let view = emulator.view();
+            let mut rects: Vec<RectInstance> = Vec::new();
+            let mut glyphs: Vec<GlyphInstance> = Vec::new();
+            populate_panel(
+                view,
                 panel,
+                &self.text.palette,
+                &mut self.text.font_system,
+                &mut self.text.swash_cache,
+                renderer.atlas_mut(),
+                &mut self.text.shape_cache,
+                FONT_SIZE,
                 sf,
                 metrics,
                 scroll_offset_y,
                 &mut rects,
+                &mut glyphs,
             );
-        }
-        if let Some(cursor_rect) = build_cursor_rect(
-            snapshot.cursor,
-            snapshot.visible_start(),
-            panel,
-            sf,
-            metrics,
-            scroll_offset_y,
-        ) {
-            rects.push(cursor_rect);
+            if let Some(sel) = self.state.selection {
+                push_selection_rects(&sel, view, panel, sf, metrics, scroll_offset_y, &mut rects);
+            }
+            if let Some(cursor_rect) = build_cursor_rect(
+                view.cursor,
+                view.visible_start(),
+                panel,
+                sf,
+                metrics,
+                scroll_offset_y,
+            ) {
+                rects.push(cursor_rect);
+            }
+            self.grid_base = Some(super::GridBaseCache { key: grid_key, rects, glyphs });
         }
 
         // Chrome (header + footer) and any popup render in the OVERLAY layer,
@@ -87,6 +102,10 @@ impl super::GpuApp {
         // the bar text sits on top, and a popup sits on top of the bars.
         let mut overlay_shadows: Vec<term_gpu::ShadowInstance> = Vec::new();
         let mut overlay_rects: Vec<RectInstance> = Vec::new();
+        // Round-rect overlay decorations (modifier backgrounds / borders) — the
+        // chrome / popup / panels views emit them; drawn over the sharp rects and
+        // under the glyphs.
+        let mut overlay_round_rects: Vec<term_gpu::RoundRectInstance> = Vec::new();
         let mut overlay_glyphs: Vec<GlyphInstance> = Vec::new();
 
         // The copied-flash is DERIVED from the deadline + frame clock (R12) —
@@ -149,8 +168,226 @@ impl super::GpuApp {
             &mut self.text.ui_shape_cache,
             sf,
             &mut overlay_rects,
+            &mut overlay_round_rects,
             &mut overlay_glyphs,
         );
+        // Right teammates overlay (M1: placeholder panels). Floats over the
+        // terminal content on the right, drawn AFTER the chrome and BEFORE the
+        // popup so a popup still sits on top. Empty + collapsed → `None`, which
+        // tears the tree down and leaves the default app byte-identical. Spans
+        // the content band (between header + footer), positioned at the right
+        // edge; collapsed renders just the edge strip width.
+        // Right overlay width via the `panel_width` tween (R12). A hand-drag
+        // snaps it to the live cursor width (instant); otherwise it retargets the
+        // collapse/expand slide between the bare strip width and the visible
+        // target width. `now` is the frame clock used above.
+        let strip_w = self.state.right.policy().collapsed_width;
+        let right_visible = self.state.right.is_visible();
+        let right_empty = self.state.right.is_empty();
+        let dragging = self.state.right.drag_width();
+        let overlay_w = if let Some(dw) = dragging {
+            self.panel_width.snap(dw);
+            dw
+        } else {
+            let target = if right_visible { self.state.right.width() } else { strip_w };
+            self.panel_width.retarget(target, now);
+            self.panel_width.value(now)
+        };
+        // Cap the rendered width at a fraction of the window (tracks resizes even
+        // if a remembered width was set on a wider window).
+        let overlay_w = overlay_w.min(window_logical.x * super::MAX_OVERLAY_WIDTH_FRACTION);
+        let panel_animating = self.panel_width.animating(now);
+        // Show the panel stack whenever the overlay is wider than the bare strip.
+        let expanded = overlay_w > strip_w + 1.0;
+        // Column-decoration fade, tied to the SAME width tween (so it animates
+        // over the same duration): transparent when collapsed (panel fully
+        // hidden, only the opaque pill remains near the edge), opaque when open.
+        let target_w = self.state.right.width();
+        let fade = ((overlay_w - strip_w) / (target_w - strip_w).max(1.0)).clamp(0.0, 1.0);
+        // Pager position: ease toward the focused page index (the horizontal
+        // slide). Same pattern as the width tween — the model holds the discrete
+        // focus, this chases it; `value(now)` is the continuous page position.
+        let current_page = self.state.right.focus_index().unwrap_or(0);
+        // While a swipe is active the gesture drives page_scroll directly (the
+        // page follows the finger); otherwise the spring target chases the focused
+        // page — hotkey/click paging AND the post-release snap settle.
+        if !self.page_swipe.active {
+            self.page_scroll.set_target(current_page as f32);
+        }
+        let page_scroll = self.page_scroll.value(now);
+        let page_animating = self.page_scroll.animating();
+        // Page viewport width = the overlay minus the 1px column border each side.
+        let page_w = (overlay_w - 2.0).max(0.0);
+        // The overlay is "on" unless it's the empty + collapsed + idle default.
+        let show = !(right_empty && !right_visible && !panel_animating && dragging.is_none());
+        let input_focused = self.state.input_on_teammates();
+        let panels = show.then(|| {
+            panels_view::panel_manager_view(
+                &self.state.right,
+                expanded,
+                page_scroll,
+                page_w,
+                fade,
+                input_focused,
+            )
+        });
+        let pill = show.then(|| panels_view::pill_view(expanded, self.state.right.any_active()));
+        let overlay_origin =
+            Vec2::new((window_logical.x - overlay_w).max(0.0), HEADER_HEIGHT_LOGICAL);
+        let overlay_size = Vec2::new(
+            overlay_w,
+            (window_logical.y - HEADER_HEIGHT_LOGICAL - FOOTER_HEIGHT_LOGICAL).max(0.0),
+        );
+        self.overlay.render_panels(
+            panels,
+            overlay_origin,
+            overlay_size,
+            &mut self.text.font_system,
+            &mut self.text.swash_cache,
+            renderer.atlas_mut(),
+            &mut self.text.ui_shape_cache,
+            sf,
+            &mut overlay_rects,
+            &mut overlay_round_rects,
+            &mut overlay_glyphs,
+        );
+        // ── M2: draw each visible teammate pane's LIVE grid into its page slot ──
+        // The term_ui pager above renders the frame + dots (its bg fill is dropped
+        // so it can't cover these); here the coordinator positions the grids by
+        // the same `page_scroll` math and draws them via `populate_panel` (R5).
+        // Layering (within the overlay layer's fixed rects→round_rects→glyphs
+        // order): an opaque page backdrop + the grid cells go into `overlay_rects`
+        // (so the round-rect border frames them), grid text into `overlay_glyphs`;
+        // both are clipped to the single-page viewport (off-edge neighbours
+        // trimmed) and faded with the collapse animation.
+        if show && expanded && page_w > 1.0 {
+            // Only re-fit a pane's grid when the overlay width has SETTLED — not
+            // mid collapse/expand slide or hand-drag, where `page_w` sweeps and a
+            // per-frame resize would destructively reflow the teammate's shell
+            // (the term_grid shrink lesson). While unsettled the grid paints at
+            // its last size, clipped to the page; the settle frame resizes once.
+            let settled = !panel_animating && dragging.is_none();
+            let border = 1.0_f32;
+            let content_origin = overlay_origin + Vec2::new(border, border);
+            let page_h = (overlay_size.y - 2.0 * border - panels_view::STRIP_H).max(0.0);
+            // Backdrop spans the whole page; the grid is inset by padding so text
+            // never touches the frame, with a wider LEFT inset that clears the
+            // collapse pill (centred on the divider) — so the grid never draws
+            // over it (the pill's round-rect is painted onto the backdrop after).
+            let page_clip = [
+                content_origin.x,
+                content_origin.y,
+                content_origin.x + page_w,
+                content_origin.y + page_h,
+            ];
+            let inner_w = (page_w - super::PANE_PAD_LEFT - super::PANE_PAD).max(1.0);
+            let inner_h = (page_h - 2.0 * super::PANE_PAD).max(1.0);
+            let cell_w = (metrics.width_physical / sf).max(1.0);
+            let cell_h = (metrics.height_physical / sf).max(1.0);
+            let cols = (inner_w / cell_w) as usize;
+            let rows = (inner_h / cell_h) as usize;
+            // Opaque backdrop for the WHOLE overlay band (content + dots strip),
+            // so no gap below the grid lets the main terminal show through. Drawn
+            // first in the rects pass; grids, pill, and dots all paint over it.
+            let overlay_clip = [
+                overlay_origin.x,
+                overlay_origin.y,
+                overlay_origin.x + overlay_size.x,
+                overlay_origin.y + overlay_size.y,
+            ];
+            overlay_rects.push(RectInstance {
+                pos: [overlay_origin.x, overlay_origin.y],
+                size: [overlay_size.x, overlay_size.y],
+                color: with_panel_alpha(panels_view::OVERLAY_BG, fade),
+                clip: overlay_clip,
+            });
+            let current = self.state.right.focus_index().unwrap_or(0);
+            let n = self.state.right.len();
+            let first = current.saturating_sub(1);
+            let last = (current + 1).min(n.saturating_sub(1));
+            // Resolve (index, pane) up front so the panels/registry borrows drop
+            // before the mutable panes/text/atlas borrows below.
+            let window: Vec<_> = (first..=last)
+                .filter_map(|i| {
+                    let panel = self.state.right.panels().get(i)?;
+                    Some((i, self.child_sessions.pane_for(panel.id)?))
+                })
+                .collect();
+            for (i, pane) in window {
+                let Some(surface) = self.panes.get_mut(pane) else { continue };
+                if settled {
+                    surface.resize(cols, rows);
+                }
+                let page_x = content_origin.x + (i as f32 - page_scroll) * page_w;
+                // (The full-overlay backdrop above already fills the page; the
+                // grid just draws over it.)
+                // The grid sits inside the padding; clip it to the padded box
+                // INTERSECTED with the page viewport, so text never spills into
+                // the padding/pill AND an off-edge (mid-swipe) neighbour never
+                // bleeds past the overlay onto the main terminal.
+                let inner_x = page_x + super::PANE_PAD_LEFT;
+                let inner_y = content_origin.y + super::PANE_PAD;
+                let inner_clip = [
+                    inner_x.max(page_clip[0]),
+                    inner_y.max(page_clip[1]),
+                    (inner_x + inner_w).min(page_clip[2]),
+                    (inner_y + inner_h).min(page_clip[3]),
+                ];
+                // Refresh this pane's scroll bounds from the row count BEFORE
+                // borrowing the emulator for the view — `set_scroll_viewport`
+                // needs `&mut surface`, so the one-shot `view()` here drops its
+                // borrow at the `;`. A wheel event still needs no snapshot.
+                let content_rows = surface.emulator.view().rows.len();
+                surface.set_scroll_viewport(content_rows as f32 * cell_h, inner_h);
+                let scroll_off = surface.scroll_offset();
+                let rect = term_gpu::PanelRect::new(inner_x, inner_y, inner_w, inner_h);
+                let r0 = overlay_rects.len();
+                let g0 = overlay_glyphs.len();
+                let view = surface.emulator.view();
+                populate_panel(
+                    view,
+                    rect,
+                    &self.text.palette,
+                    &mut self.text.font_system,
+                    &mut self.text.swash_cache,
+                    renderer.atlas_mut(),
+                    &mut self.text.shape_cache,
+                    FONT_SIZE,
+                    sf,
+                    metrics,
+                    scroll_off,
+                    &mut overlay_rects,
+                    &mut overlay_glyphs,
+                );
+                // Clip the grid to the padded inner box + fade with the collapse.
+                for r in &mut overlay_rects[r0..] {
+                    r.clip = inner_clip;
+                    r.color[3] *= fade;
+                }
+                for g in &mut overlay_glyphs[g0..] {
+                    g.clip = inner_clip;
+                    g.color[3] *= fade;
+                }
+            }
+        }
+        self.panel_overlay_rect = show.then(|| Bounds::new(overlay_origin, overlay_size));
+        // The pill is centred on the divider (the overlay's left edge) and
+        // vertically centred in the overlay band — rendered OUTSIDE the faded
+        // column so it stays opaque when the panel collapses.
+        self.panel_toggle_zone = self.overlay.render_panel_pill(
+            pill,
+            overlay_origin.x,
+            overlay_origin.y,
+            overlay_size.y,
+            &mut self.text.font_system,
+            &mut self.text.swash_cache,
+            renderer.atlas_mut(),
+            &mut self.text.ui_shape_cache,
+            sf,
+            &mut overlay_round_rects,
+            &mut overlay_glyphs,
+        );
+
         // Popup overlay — all three popups render via the term_ui SECOND TREE.
         // The backend switch needs runtime data AppState doesn't carry (the
         // backend list + active/override ids), so it is built here via
@@ -160,7 +397,7 @@ impl super::GpuApp {
         // place_centered, and painted into the overlay on top of the chrome (its
         // term_ui Block drop shadow flows through too). Popups are mutually
         // exclusive, so at most one is ever built.
-        let popup: Option<Block> = if self.state.backend_switch.is_visible() {
+        let popup: Option<Modified> = if self.state.backend_switch.is_visible() {
             let items_and_ids: Vec<(String, String)> = self
                 .backends.backend_state
                 .get_config()
@@ -187,7 +424,6 @@ impl super::GpuApp {
             popup,
             window_logical,
             now,
-            POPUP_FADE_SECS,
             popup_view::POPUP_MIN_WIDTH,
             &mut self.text.font_system,
             &mut self.text.swash_cache,
@@ -196,26 +432,38 @@ impl super::GpuApp {
             sf,
             &mut overlay_shadows,
             &mut overlay_rects,
+            &mut overlay_round_rects,
             &mut overlay_glyphs,
         );
         // The overlay always carries the chrome bars (and a popup when one is
         // open), so it is never empty.
         window.pre_present_notify();
+        // The terminal base layer comes from the Stage 3 cache (rebuilt above
+        // only on a key change); the overlay is rebuilt every frame.
+        let base = self.grid_base.as_ref().expect("grid_base populated above");
         renderer.render(
-            RenderLayer::rects_and_glyphs(&rects, &glyphs),
+            RenderLayer::rects_and_glyphs(&base.rects, &base.glyphs),
             Some(RenderLayer {
                 shadows: &overlay_shadows,
                 rects: &overlay_rects,
+                round_rects: &overlay_round_rects,
                 glyphs: &overlay_glyphs,
             }),
             0.0,
         );
         self.text.shape_cache.end_frame();
         self.text.ui_shape_cache.end_frame();
-        // Drive the popup fade to completion: while a transition is in flight,
-        // request the next frame (the event-driven redraws alone wouldn't tick).
-        if popup_animating {
+        // Drive the popup fade + panel slide + pager slide to completion: while a
+        // transition is in flight, request the next frame (event-driven redraws
+        // alone wouldn't tick).
+        if popup_animating || panel_animating || page_animating {
             window.request_redraw();
         }
     }
+}
+
+/// Multiply a colour's alpha by `a` (RGB untouched) — bakes the collapse fade
+/// into the coordinator-drawn grid backdrop.
+fn with_panel_alpha(c: [f32; 4], a: f32) -> [f32; 4] {
+    [c[0], c[1], c[2], c[3] * a]
 }

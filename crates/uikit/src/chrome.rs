@@ -9,7 +9,7 @@
 //! constraint). A 1px hairline fences the bar against the content region:
 //! `header_bar` fences its BOTTOM edge, `footer_bar` its TOP edge.
 
-use term_ui::{Block, BlockStyle, CrossAxis, Insets, Sizing, Stack, Text, WidgetId};
+use term_ui::{CrossAxis, Insets, Modified, Modifier, Modify, Sizing, Stack, Text, WidgetId};
 
 /// Thickness of the chrome / content fence line, in logical pixels.
 const FENCE_PX: f32 = 1.0;
@@ -115,19 +115,10 @@ fn footer_row(left: &[Segment], right: &[Segment], font_size: f32) -> Stack {
     row
 }
 
-/// A 1px-tall horizontal rule: a `Block` filled with `color` wrapping an empty
-/// `Spacer`. The parent pins it to `Sizing::Fixed(FENCE_PX)` on the main axis
-/// and `CrossAxis::Stretch` widens it to the full cross extent, so it paints as
-/// a full-width hairline regardless of where it sits in the bar.
-fn fence(color: [f32; 4]) -> Block {
-    Block::new(
-        BlockStyle {
-            background: color,
-            border_color: [0.0; 4],
-            border_width: 0.0,
-            padding: Insets::default(),
-            shadow: None,
-        },
-        term_ui::Spacer::fixed(0.0),
-    )
+/// A 1px-tall horizontal rule: an empty `Spacer` with a `color` background via a
+/// modifier. The parent pins it to `Sizing::Fixed(FENCE_PX)` on the main axis and
+/// `CrossAxis::Stretch` widens it to the full cross extent, so it paints as a
+/// full-width hairline regardless of where it sits in the bar.
+fn fence(color: [f32; 4]) -> Modified {
+    term_ui::Spacer::fixed(0.0).modify(Modifier::new().background(color))
 }

@@ -15,7 +15,7 @@
 use std::time::Instant;
 
 use glam::Vec2;
-use term_core::RenderSnapshot;
+use term_core::RenderView;
 use term_gpu::{
     decay_velocity, encode_key, expand_line, expand_word, CellPoint, ScrollState, ScrollVelocity,
     Selection, MOMENTUM_MIN_VELOCITY, MOMENTUM_THRESHOLD,
@@ -26,8 +26,19 @@ use winit::keyboard::{Key, KeyCode, ModifiersState, PhysicalKey};
 use crate::ui::backend_switch::{BackendSwitchIntent, BackendSwitchState};
 use crate::ui::history::{HistoryDialogState, HistoryIntent};
 use crate::ui::input::{self, AppShortcut};
+use crate::ui::panel_manager::{ManagerId, PanelManager, Policy};
 use crate::ui::settings::{SettingsDialogState, SettingsIntent};
 use crate::ui::term_geometry::LastClick;
+
+/// Which terminal the keyboard is routed to. The mouse stays hit-tested under
+/// the cursor (orthogonal); only KEYS follow this. `Terminal` is the main Claude
+/// session; `Teammates` is the focused page of the right overlay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum InputFocus {
+    #[default]
+    Terminal,
+    Teammates,
+}
 
 /// The authoritative UI-decision state. One writer per fact.
 pub struct AppState {
@@ -66,6 +77,23 @@ pub struct AppState {
     pub backend_switch: BackendSwitchState,
     pub history: HistoryDialogState,
     pub settings: SettingsDialogState,
+
+    // Multi-instance panel managers — one reusable type, two instances (R10:
+    // nested UI-decision truth inside the one AppState). `left` is the sessions
+    // sidebar (lands in a later milestone), `right` is the teammates overlay.
+    // Both start empty + collapsed, so they're inert until populated/shown.
+    pub left: PanelManager,
+    pub right: PanelManager,
+    /// While `Some(mgr)`, the user is dragging that manager's inner edge to
+    /// resize it (analogous to `dragging_selection`). Cursor motion sets the
+    /// width; the next mouse-release clears it.
+    pub panel_edge_drag: Option<ManagerId>,
+
+    /// Which terminal the keyboard targets (`InputFocus::Terminal` = the main
+    /// session, `Teammates` = the focused overlay page). Stored as INTENT;
+    /// `input_on_teammates` masks it by the overlay's live state so a collapsed
+    /// or emptied overlay falls back to the terminal without a separate reset.
+    pub input_focus: InputFocus,
 }
 
 /// A side effect [`AppState::apply`] asks the coordinator to perform. `apply` is
@@ -94,8 +122,13 @@ pub enum Effect {
     /// Resize the emulator + PTY to a new `cols × rows` grid after a window /
     /// scale change (the `grid_size` transition itself happens in `apply`).
     ResizeEmulatorAndPty { cols: usize, rows: usize },
-    /// Write encoded key/paste bytes to the PTY (a terminal-focused keypress).
+    /// Write bytes to the MAIN session's PTY (mouse reports, restart echo — the
+    /// terminal under the cursor is always the main grid).
     WriteToPty(Vec<u8>),
+    /// Write encoded key bytes to whichever terminal holds KEYBOARD focus — the
+    /// main session or, when input is routed to the overlay, the focused
+    /// teammate pane (the coordinator resolves the target).
+    WriteToFocused(Vec<u8>),
     /// Open-or-close a popup (reads resources — backend list / settings registry
     /// / switch log — so the coordinator performs it via its toggle methods).
     ToggleBackendPopup,
@@ -115,8 +148,8 @@ pub enum Effect {
     Paste,
     /// Tear down + respawn the Claude session (Cmd+R).
     RestartPty,
-    /// Dump a diagnostic snapshot to stderr (Cmd+Shift+D).
-    DumpDiagnostic,
+    /// Debug-only (Ctrl+P): show / hide the right teammates overlay.
+    DebugTogglePanels,
     /// Exit the app (Cmd+Q / window close). Performed by the coordinator, which
     /// owns the `ActiveEventLoop` — surfaced as `perform_effects`' return.
     Quit,
@@ -192,23 +225,30 @@ pub enum Msg {
     Close,
     /// The PTY signalled that new output is ready to drain.
     PtyBytes,
+    /// Collapse/expand a panel manager's overlay (a click on its edge toggle
+    /// button, coordinator-resolved to the manager).
+    PanelToggle(ManagerId),
+    /// Begin dragging a manager's inner edge to resize it (press on the edge).
+    PanelEdgeDragStart(ManagerId),
+    /// Set a manager's width mid-drag (clamped to its policy bounds). `width` is
+    /// coordinator-computed from the cursor (the overlay hugs the window edge).
+    PanelResize { mgr: ManagerId, width: f32 },
 }
 
 /// Read-only context the coordinator supplies to [`AppState::apply`]: the frame
-/// clock, plus (for selection) the current emulator snapshot. Resource WRITES
+/// clock, plus (for selection) a borrowed view of the emulator. Resource WRITES
 /// never happen through this — they come back as [`Effect`]s.
 ///
-/// `snapshot` is `None` on the common path (`GpuApp::dispatch`); only the
+/// `view` is `None` on the common path (`GpuApp::dispatch`); only the
 /// mouse-press path (`on_mouse_press`) builds a ctx that carries it, because
-/// only word/line selection-expansion needs the grid content. That's a
-/// deliberate two-entry seam into `apply`: threading the snapshot through every
-/// event would clone it per keystroke / tick for nothing. Cheaper than the
-/// uniform alternative, but a seam worth keeping an eye on.
+/// only word/line selection-expansion needs the grid content. It is a borrowed
+/// [`RenderView`] (zero-copy), so even that path doesn't clone the buffer.
 pub struct ApplyCtx<'a> {
     pub now: Instant,
-    /// The emulator's current content, for selection word / line expansion.
-    /// `None` when no emulator is live or the transition doesn't need it.
-    pub snapshot: Option<&'a RenderSnapshot>,
+    /// The emulator's current content (borrowed), for selection word / line
+    /// expansion. `None` when no emulator is live or the transition doesn't
+    /// need it.
+    pub view: Option<RenderView<'a>>,
     /// Max ms between presses at the same cell to count as a multi-click
     /// (coordinator UX tuning, passed in so `AppState` stays config-free).
     pub multi_click_threshold_ms: u128,
@@ -300,14 +340,21 @@ impl AppState {
                     self.mouse_motion_cell = point.map(|p| (p.col as u16, p.row as u16));
                     return vec![Effect::WriteToPty(bytes)];
                 }
-                let (Some(p), Some(snap)) = (point, ctx.snapshot) else {
+                let (Some(p), Some(view)) = (point, ctx.view) else {
                     return Vec::new();
                 };
                 let count = self.next_click(p, ctx.now, ctx.multi_click_threshold_ms);
-                self.begin_selection(p, count, snap);
+                self.begin_selection(p, count, view);
                 vec![Effect::Redraw]
             }
             Msg::MouseRelease { mouse_report } => {
+                // A panel-edge resize drag ends here (no selection involved):
+                // commit the drag (expand to the new width or snap collapsed).
+                if let Some(mgr) = self.panel_edge_drag.take() {
+                    self.manager_mut(mgr).end_edge_drag();
+                    self.normalize_input_focus();
+                    return vec![Effect::Redraw];
+                }
                 self.mouse_left_held = false;
                 if let Some(bytes) = mouse_report {
                     return vec![Effect::WriteToPty(bytes)];
@@ -322,6 +369,29 @@ impl AppState {
             Msg::Tick => vec![Effect::Redraw],
             Msg::Close => vec![Effect::Quit],
             Msg::PtyBytes => vec![Effect::Drain],
+            Msg::PanelToggle(mgr) => {
+                self.manager_mut(mgr).toggle();
+                self.normalize_input_focus();
+                vec![Effect::Redraw]
+            }
+            Msg::PanelEdgeDragStart(mgr) => {
+                self.panel_edge_drag = Some(mgr);
+                self.manager_mut(mgr).begin_edge_drag();
+                Vec::new()
+            }
+            Msg::PanelResize { mgr, width } => {
+                self.manager_mut(mgr).edge_drag_to(width);
+                vec![Effect::Redraw]
+            }
+        }
+    }
+
+    /// The panel manager addressed by `mgr` (mutable). One reusable type, two
+    /// instances; this is the addressing seam the panel messages route through.
+    pub fn manager_mut(&mut self, mgr: ManagerId) -> &mut PanelManager {
+        match mgr {
+            ManagerId::Left => &mut self.left,
+            ManagerId::Right => &mut self.right,
         }
     }
 
@@ -337,8 +407,10 @@ impl AppState {
         vec![Effect::Redraw]
     }
 
-    /// Route a key press. Popups own input while open; the clipboard (Cmd+C/V)
-    /// and app features (a single Ctrl chord) are app shortcuts resolved before
+    /// Route a key press. A popup-toggle shortcut resolves first (so its hotkey
+    /// closes the open popup / switches popups); otherwise an open popup owns
+    /// input (Esc / nav / Enter). With no popup open, the clipboard (Cmd+C/V) and
+    /// app features (a single Ctrl chord) are app shortcuts resolved before
     /// terminal encoding; an unbound Cmd combo is swallowed (never leaked to the
     /// PTY); everything else is a terminal key encoded via `encode_key`.
     fn on_key(
@@ -348,22 +420,28 @@ impl AppState {
         physical: PhysicalKey,
         app_cursor: bool,
     ) -> Vec<Effect> {
-        if self.any_popup_visible() {
-            return self.on_popup_key(physical);
-        }
+        // App shortcuts. A popup TOGGLE resolves even while a popup is open — so
+        // the same hotkey closes it (and a sibling hotkey switches popups);
+        // every other shortcut stays modal while a popup is open and falls
+        // through to the popup router below.
         if let PhysicalKey::Code(code) = physical {
             if let Some(shortcut) = input::app_shortcut(code, self.modifiers) {
-                return vec![match shortcut {
-                    AppShortcut::CopySelection => Effect::CopySelection,
-                    AppShortcut::Paste => Effect::Paste,
-                    AppShortcut::ToggleBackendPopup => Effect::ToggleBackendPopup,
-                    AppShortcut::ToggleHistoryPopup => Effect::ToggleHistoryPopup,
-                    AppShortcut::ToggleSettingsPopup => Effect::ToggleSettingsPopup,
-                    AppShortcut::RestartPty => Effect::RestartPty,
-                    AppShortcut::DumpDiagnostic => Effect::DumpDiagnostic,
-                    AppShortcut::Quit => Effect::Quit,
-                }];
+                if shortcut.toggles_popup() || !self.any_popup_visible() {
+                    return vec![match shortcut {
+                        AppShortcut::CopySelection => Effect::CopySelection,
+                        AppShortcut::Paste => Effect::Paste,
+                        AppShortcut::ToggleBackendPopup => Effect::ToggleBackendPopup,
+                        AppShortcut::ToggleHistoryPopup => Effect::ToggleHistoryPopup,
+                        AppShortcut::ToggleSettingsPopup => Effect::ToggleSettingsPopup,
+                        AppShortcut::RestartPty => Effect::RestartPty,
+                        AppShortcut::DebugTogglePanels => Effect::DebugTogglePanels,
+                        AppShortcut::Quit => Effect::Quit,
+                    }];
+                }
             }
+        }
+        if self.any_popup_visible() {
+            return self.on_popup_key(physical);
         }
         // A Cmd combo with no bound shortcut is swallowed — Cmd+key has no
         // terminal byte and must not leak to the PTY.
@@ -371,7 +449,7 @@ impl AppState {
             return Vec::new();
         }
         match encode_key(&logical, &logical_unmod, self.modifiers, app_cursor) {
-            Some(bytes) => vec![Effect::WriteToPty(bytes)],
+            Some(bytes) => vec![Effect::WriteToFocused(bytes)],
             None => Vec::new(),
         }
     }
@@ -434,6 +512,33 @@ impl AppState {
             backend_switch: BackendSwitchState::default(),
             history: HistoryDialogState::default(),
             settings: SettingsDialogState::default(),
+            left: PanelManager::new(Policy::sidebar()),
+            right: PanelManager::new(Policy::overlay()),
+            panel_edge_drag: None,
+            input_focus: InputFocus::Terminal,
+        }
+    }
+
+    /// Derived: is the keyboard EFFECTIVELY routed to a teammate this frame? The
+    /// stored intent is masked by the overlay's live state, so a collapsed or
+    /// emptied overlay falls back to the terminal even before `normalize_input_focus`
+    /// runs (the safety net).
+    pub fn input_on_teammates(&self) -> bool {
+        self.input_focus == InputFocus::Teammates
+            && self.right.is_visible()
+            && !self.right.is_empty()
+    }
+
+    /// Reset the keyboard target to the terminal once the overlay is no longer a
+    /// live keyboard target (collapsed or emptied) — so collapsing the panel
+    /// returns focus to the main session AND a later re-expand starts on the
+    /// terminal (no sticky teammate focus). Call after any overlay
+    /// visibility / population change.
+    pub fn normalize_input_focus(&mut self) {
+        if self.input_focus == InputFocus::Teammates
+            && !(self.right.is_visible() && !self.right.is_empty())
+        {
+            self.input_focus = InputFocus::Terminal;
         }
     }
 
@@ -562,20 +667,20 @@ impl AppState {
 
     /// Begin a selection at `point` for the given click `count`: 1 = linear
     /// (drag continues), 2 = word, 3 = line (both snap and end the drag).
-    /// Word/line boundaries come from `snapshot`.
-    pub fn begin_selection(&mut self, point: CellPoint, count: u32, snapshot: &RenderSnapshot) {
+    /// Word/line boundaries come from `view`.
+    pub fn begin_selection(&mut self, point: CellPoint, count: u32, view: RenderView) {
         match count {
             1 => {
                 self.selection = Some(Selection::new(point));
                 self.dragging_selection = true;
             }
             2 => {
-                let (anchor, cursor) = expand_word(point, snapshot);
+                let (anchor, cursor) = expand_word(point, view);
                 self.selection = Some(Selection { anchor, cursor });
                 self.dragging_selection = false;
             }
             _ => {
-                let (anchor, cursor) = expand_line(point, snapshot);
+                let (anchor, cursor) = expand_line(point, view);
                 self.selection = Some(Selection { anchor, cursor });
                 self.dragging_selection = false;
             }

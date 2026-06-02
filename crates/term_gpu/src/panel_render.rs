@@ -1,6 +1,6 @@
 //! Bridge between `term_core`'s VT grid and the GPU rendering buffers.
 //!
-//! `populate_panel` walks a `RenderSnapshot` and emits the rectangles
+//! `populate_panel` walks a borrowed `RenderView` and emits the rectangles
 //! and glyph instances that the renderer feeds to wgpu. `build_cursor_rect`
 //! produces the cursor's rect for the same coordinate system.
 //!
@@ -10,7 +10,7 @@
 //! to swap a different grid representation in the future.
 
 use cosmic_text::{CacheKey, CacheKeyFlags, FontSystem, Style, SwashCache, Weight};
-use term_core::{AnsiPalette, CellFlags, CursorState, CursorStyle, RenderSnapshot, TermColor};
+use term_core::{AnsiPalette, CellFlags, CursorState, CursorStyle, RenderView, TermColor};
 
 use crate::{rasterize_glyph, GlyphAtlas, GlyphInstance, RectInstance, TextShapeCache};
 
@@ -104,7 +104,7 @@ pub fn measure_cell_metrics(
 /// combining clusters fall through to `TextShapeCache::shape`.
 #[allow(clippy::too_many_arguments)]
 pub fn populate_panel(
-    snapshot: &RenderSnapshot,
+    view: RenderView,
     panel_rect: PanelRect,
     palette: &AnsiPalette,
     font_system: &mut FontSystem,
@@ -124,8 +124,8 @@ pub fn populate_panel(
     let panel_origin_x_physical = panel_rect.x * sf;
     let panel_origin_y_physical = panel_rect.y * sf;
     let scroll_offset_y_physical = scroll_offset_y_logical * sf;
-    let total_rows = snapshot.rows.len();
-    let visible_rows = snapshot.visible_rows;
+    let total_rows = view.rows.len();
+    let visible_rows = view.visible_rows;
     // The visible region of the buffer is anchored at the BOTTOM of
     // the panel — i.e. with `scroll_offset_y = 0` (no scrollback
     // shown) row `total - visible` should land at the panel's first
@@ -137,7 +137,21 @@ pub fn populate_panel(
 
     let panel_max_x_phys = panel_rect.w * sf;
     let panel_max_y_phys = panel_rect.h * sf;
-    for (row_idx, row) in snapshot.rows.iter().enumerate() {
+    // Iterate only the on-screen row window instead of the whole buffer. A row
+    // is visible iff `row_y + h > 0 && row_y < panel_max_y`, with
+    // `row_y = row_idx*h - shift` and `shift = baseline_offset - scroll`.
+    // Solving for `row_idx` gives the band below; a ±1-row margin keeps it a
+    // superset and the per-row cull below stays the exact gate, so the output is
+    // identical to the full walk — but the cost is O(visible), not O(scrollback)
+    // (the lag that grew with content). `as isize` float casts saturate, so
+    // degenerate metrics collapse the range to empty rather than misbehaving.
+    let row_h = metrics.height_physical;
+    let shift = baseline_offset_phys - scroll_offset_y_physical;
+    let first_row = ((shift / row_h).floor() as isize - 1).max(0) as usize;
+    let last_row = ((((shift + panel_max_y_phys) / row_h).ceil() as isize + 1).max(0) as usize)
+        .min(total_rows);
+    for row_idx in first_row..last_row {
+        let row = &view.rows[row_idx];
         // Y of this row's top edge relative to panel top, in physical px.
         // `+ scroll_offset` because scrolling UP visually moves rows DOWN.
         let row_y_phys = row_idx as f32 * metrics.height_physical - baseline_offset_phys
@@ -188,6 +202,7 @@ pub fn populate_panel(
                     pos: [pos_x_logical, pos_y_logical],
                     size: [cell_w_logical, cell_h_logical],
                     color: bg,
+                    clip: crate::NO_CLIP,
                 });
             }
 
@@ -236,6 +251,7 @@ pub fn populate_panel(
                             pos: [pos_x_logical, pos_y_logical + cell_h_logical * 0.78],
                             size: [cell_w_logical, 1.0],
                             color,
+                            clip: crate::NO_CLIP,
                         });
                     }
                     if cell.flags.strike() {
@@ -243,6 +259,7 @@ pub fn populate_panel(
                             pos: [pos_x_logical, pos_y_logical + cell_h_logical * 0.42],
                             size: [cell_w_logical, 1.0],
                             color,
+                            clip: crate::NO_CLIP,
                         });
                     }
                     continue;
@@ -301,6 +318,7 @@ pub fn populate_panel(
                                 uv_max: placed.uv_max,
                                 color,
                                 layer: placed.layer,
+                                clip: crate::NO_CLIP,
                             });
                         }
                         fast_path_handled = true;
@@ -342,6 +360,7 @@ pub fn populate_panel(
                                 uv_max: placed.uv_max,
                                 color,
                                 layer: placed.layer,
+                                clip: crate::NO_CLIP,
                             });
                         }
                     }
@@ -358,6 +377,7 @@ pub fn populate_panel(
                     pos: [pos_x_logical, pos_y_logical + cell_h_logical * 0.78],
                     size: [cell_w_logical, 1.0],
                     color,
+                    clip: crate::NO_CLIP,
                 });
             }
             if cell.flags.double_underline() {
@@ -365,11 +385,13 @@ pub fn populate_panel(
                     pos: [pos_x_logical, pos_y_logical + cell_h_logical * 0.72],
                     size: [cell_w_logical, 0.8],
                     color,
+                    clip: crate::NO_CLIP,
                 });
                 rects.push(RectInstance {
                     pos: [pos_x_logical, pos_y_logical + cell_h_logical * 0.84],
                     size: [cell_w_logical, 0.8],
                     color,
+                    clip: crate::NO_CLIP,
                 });
             }
             if cell.flags.strike() {
@@ -377,6 +399,7 @@ pub fn populate_panel(
                     pos: [pos_x_logical, pos_y_logical + cell_h_logical * 0.42],
                     size: [cell_w_logical, 1.0],
                     color,
+                    clip: crate::NO_CLIP,
                 });
             }
         }
@@ -441,6 +464,7 @@ pub fn build_cursor_rect(
         pos: [pos_phys[0] / sf, pos_phys[1] / sf],
         size: [size_phys[0] / sf, size_phys[1] / sf],
         color: CURSOR_COLOR,
+        clip: crate::NO_CLIP,
     })
 }
 
@@ -455,17 +479,32 @@ pub fn build_cursor_rect(
 /// (tinted to fg), and matches Warp (whose configured font merely happens to
 /// cover U+23FA). Only the glyph lookup is remapped; the cell keeps the original
 /// char, so selection / copy are unaffected.
+///
+/// The same problem hits Claude Code's other media-status glyphs (stop /
+/// play-pause / rewind / fast-forward). Menlo covers NONE of the U+23xx media
+/// codepoints but DOES cover the geometric-shapes block (U+25xx), so each maps
+/// to its closest monochrome shape. These targets are outside the block-painter
+/// range (U+2580–259F), so they still shape through the font path and tint to fg
+/// — unlike the colour-emoji boxes they replace.
+///
+/// `⏸` (pause, U+23F8) is the exception: no single mono glyph gives its
+/// two-bar look, so it is NOT remapped here — it is painted natively as two
+/// rects in `paint_block_char`.
 fn mono_symbol_substitute(ch: char) -> char {
     match ch {
-        '\u{23FA}' => '\u{25CF}',
+        '\u{23FA}' => '\u{25CF}', // ⏺ record       → ● black circle
+        '\u{23F9}' => '\u{25A0}', // ⏹ stop         → ■ black square
+        '\u{23EF}' => '\u{25B6}', // ⏯ play/pause   → ▶ black right triangle
+        '\u{23EA}' => '\u{25C0}', // ⏪ rewind       → ◀ black left triangle
+        '\u{23E9}' => '\u{25B6}', // ⏩ fast-forward → ▶ black right triangle
         _ => ch,
     }
 }
 
-/// Paint a Unicode block / shade character (U+2580–U+259F) as
-/// one or more solid rects filling specific fractions of the
-/// cell. Returns `true` when `ch` was handled (caller must skip
-/// the shaped-glyph path); `false` otherwise.
+/// Paint a Unicode block / shade character (U+2580–U+259F), or the pause
+/// glyph U+23F8, as one or more solid rects filling specific fractions of
+/// the cell. Returns `true` when `ch` was handled (caller must skip the
+/// shaped-glyph path); `false` otherwise.
 ///
 /// The block char glyphs in monospace fonts are designed to span
 /// `[0, cell_size]` in their respective dimensions, but cosmic-text's
@@ -512,72 +551,90 @@ pub fn paint_block_char(
             pos: [x, y],
             size: [w, h],
             color: [color[0], color[1], color[2], color[3] * alpha],
+            clip: crate::NO_CLIP,
         });
         return true;
     }
 
     match ch {
+        // ⏸ PAUSE (U+23F8) — two vertical bars. No installed monospace font
+        // (Menlo) has this glyph, and no single substitute glyph gives the
+        // two-bar look (‖ / ∥ are absent too), so paint it natively as two
+        // rects. Warp doesn't render this natively (it just has the glyph in
+        // its font), so there's no Warp geometry to copy — instead we align
+        // the bars to the surrounding text: bottom on the baseline (~0.78h,
+        // where the underline sits) and top at the cap line (~0.20h), so the
+        // pair matches capital-letter height rather than the full cell.
+        '\u{23F8}' => {
+            let bar_w = w * 0.20;
+            let gap = w * 0.16;
+            let top = y + h * 0.20;
+            let bar_h = h * 0.58; // bottom ≈ 0.78h = text baseline
+            let left = x + (w - (bar_w * 2.0 + gap)) / 2.0;
+            rects.push(RectInstance { pos: [left, top], size: [bar_w, bar_h], color, clip: crate::NO_CLIP });
+            rects.push(RectInstance { pos: [left + bar_w + gap, top], size: [bar_w, bar_h], color, clip: crate::NO_CLIP });
+        }
         // ▀ Upper half (U+2580)
-        '\u{2580}' => rects.push(RectInstance { pos: [x, y], size: [w, h4], color }),
+        '\u{2580}' => rects.push(RectInstance { pos: [x, y], size: [w, h4], color, clip: crate::NO_CLIP }),
         // ▁ Lower 1/8 (U+2581)
-        '\u{2581}' => rects.push(RectInstance { pos: [x, y + h7], size: [w, h1], color }),
-        '\u{2582}' => rects.push(RectInstance { pos: [x, y + h6], size: [w, h2], color }),
-        '\u{2583}' => rects.push(RectInstance { pos: [x, y + h5], size: [w, h3], color }),
+        '\u{2581}' => rects.push(RectInstance { pos: [x, y + h7], size: [w, h1], color, clip: crate::NO_CLIP }),
+        '\u{2582}' => rects.push(RectInstance { pos: [x, y + h6], size: [w, h2], color, clip: crate::NO_CLIP }),
+        '\u{2583}' => rects.push(RectInstance { pos: [x, y + h5], size: [w, h3], color, clip: crate::NO_CLIP }),
         // ▄ Lower half (U+2584)
-        '\u{2584}' => rects.push(RectInstance { pos: [x, y + h4], size: [w, h4], color }),
-        '\u{2585}' => rects.push(RectInstance { pos: [x, y + h3], size: [w, h5], color }),
-        '\u{2586}' => rects.push(RectInstance { pos: [x, y + h2], size: [w, h6], color }),
-        '\u{2587}' => rects.push(RectInstance { pos: [x, y + h1], size: [w, h7], color }),
+        '\u{2584}' => rects.push(RectInstance { pos: [x, y + h4], size: [w, h4], color, clip: crate::NO_CLIP }),
+        '\u{2585}' => rects.push(RectInstance { pos: [x, y + h3], size: [w, h5], color, clip: crate::NO_CLIP }),
+        '\u{2586}' => rects.push(RectInstance { pos: [x, y + h2], size: [w, h6], color, clip: crate::NO_CLIP }),
+        '\u{2587}' => rects.push(RectInstance { pos: [x, y + h1], size: [w, h7], color, clip: crate::NO_CLIP }),
         // █ Full block (U+2588)
-        '\u{2588}' => rects.push(RectInstance { pos: [x, y], size: [w, h], color }),
-        '\u{2589}' => rects.push(RectInstance { pos: [x, y], size: [w7, h], color }),
-        '\u{258A}' => rects.push(RectInstance { pos: [x, y], size: [w6, h], color }),
-        '\u{258B}' => rects.push(RectInstance { pos: [x, y], size: [w5, h], color }),
+        '\u{2588}' => rects.push(RectInstance { pos: [x, y], size: [w, h], color, clip: crate::NO_CLIP }),
+        '\u{2589}' => rects.push(RectInstance { pos: [x, y], size: [w7, h], color, clip: crate::NO_CLIP }),
+        '\u{258A}' => rects.push(RectInstance { pos: [x, y], size: [w6, h], color, clip: crate::NO_CLIP }),
+        '\u{258B}' => rects.push(RectInstance { pos: [x, y], size: [w5, h], color, clip: crate::NO_CLIP }),
         // ▌ Left half (U+258C)
-        '\u{258C}' => rects.push(RectInstance { pos: [x, y], size: [w4, h], color }),
-        '\u{258D}' => rects.push(RectInstance { pos: [x, y], size: [w3, h], color }),
-        '\u{258E}' => rects.push(RectInstance { pos: [x, y], size: [w2, h], color }),
-        '\u{258F}' => rects.push(RectInstance { pos: [x, y], size: [w1, h], color }),
+        '\u{258C}' => rects.push(RectInstance { pos: [x, y], size: [w4, h], color, clip: crate::NO_CLIP }),
+        '\u{258D}' => rects.push(RectInstance { pos: [x, y], size: [w3, h], color, clip: crate::NO_CLIP }),
+        '\u{258E}' => rects.push(RectInstance { pos: [x, y], size: [w2, h], color, clip: crate::NO_CLIP }),
+        '\u{258F}' => rects.push(RectInstance { pos: [x, y], size: [w1, h], color, clip: crate::NO_CLIP }),
         // ▐ Right half (U+2590)
-        '\u{2590}' => rects.push(RectInstance { pos: [x + w4, y], size: [w4, h], color }),
+        '\u{2590}' => rects.push(RectInstance { pos: [x + w4, y], size: [w4, h], color, clip: crate::NO_CLIP }),
         // ▔ Upper 1/8 (U+2594)
-        '\u{2594}' => rects.push(RectInstance { pos: [x, y], size: [w, h1], color }),
+        '\u{2594}' => rects.push(RectInstance { pos: [x, y], size: [w, h1], color, clip: crate::NO_CLIP }),
         // ▕ Right 1/8 (U+2595)
-        '\u{2595}' => rects.push(RectInstance { pos: [x + w7, y], size: [w1, h], color }),
+        '\u{2595}' => rects.push(RectInstance { pos: [x + w7, y], size: [w1, h], color, clip: crate::NO_CLIP }),
         // Quadrant blocks (U+2596–U+259F)
-        '\u{2596}' => rects.push(RectInstance { pos: [x, y + h4], size: [w4, h4], color }), // ▖
-        '\u{2597}' => rects.push(RectInstance { pos: [x + w4, y + h4], size: [w4, h4], color }), // ▗
-        '\u{2598}' => rects.push(RectInstance { pos: [x, y], size: [w4, h4], color }), // ▘
+        '\u{2596}' => rects.push(RectInstance { pos: [x, y + h4], size: [w4, h4], color, clip: crate::NO_CLIP }), // ▖
+        '\u{2597}' => rects.push(RectInstance { pos: [x + w4, y + h4], size: [w4, h4], color, clip: crate::NO_CLIP }), // ▗
+        '\u{2598}' => rects.push(RectInstance { pos: [x, y], size: [w4, h4], color, clip: crate::NO_CLIP }), // ▘
         '\u{2599}' => {
             // ▙ Left half + lower-right quadrant
-            rects.push(RectInstance { pos: [x, y], size: [w4, h], color });
-            rects.push(RectInstance { pos: [x + w4, y + h4], size: [w4, h4], color });
+            rects.push(RectInstance { pos: [x, y], size: [w4, h], color, clip: crate::NO_CLIP });
+            rects.push(RectInstance { pos: [x + w4, y + h4], size: [w4, h4], color, clip: crate::NO_CLIP });
         }
         '\u{259A}' => {
             // ▚ Upper-left + lower-right (anti-diagonal pair)
-            rects.push(RectInstance { pos: [x, y], size: [w4, h4], color });
-            rects.push(RectInstance { pos: [x + w4, y + h4], size: [w4, h4], color });
+            rects.push(RectInstance { pos: [x, y], size: [w4, h4], color, clip: crate::NO_CLIP });
+            rects.push(RectInstance { pos: [x + w4, y + h4], size: [w4, h4], color, clip: crate::NO_CLIP });
         }
         '\u{259B}' => {
             // ▛ Upper half + lower-left quadrant
-            rects.push(RectInstance { pos: [x, y], size: [w, h4], color });
-            rects.push(RectInstance { pos: [x, y + h4], size: [w4, h4], color });
+            rects.push(RectInstance { pos: [x, y], size: [w, h4], color, clip: crate::NO_CLIP });
+            rects.push(RectInstance { pos: [x, y + h4], size: [w4, h4], color, clip: crate::NO_CLIP });
         }
         '\u{259C}' => {
             // ▜ Upper half + lower-right quadrant
-            rects.push(RectInstance { pos: [x, y], size: [w, h4], color });
-            rects.push(RectInstance { pos: [x + w4, y + h4], size: [w4, h4], color });
+            rects.push(RectInstance { pos: [x, y], size: [w, h4], color, clip: crate::NO_CLIP });
+            rects.push(RectInstance { pos: [x + w4, y + h4], size: [w4, h4], color, clip: crate::NO_CLIP });
         }
-        '\u{259D}' => rects.push(RectInstance { pos: [x + w4, y], size: [w4, h4], color }), // ▝
+        '\u{259D}' => rects.push(RectInstance { pos: [x + w4, y], size: [w4, h4], color, clip: crate::NO_CLIP }), // ▝
         '\u{259E}' => {
             // ▞ Upper-right + lower-left
-            rects.push(RectInstance { pos: [x + w4, y], size: [w4, h4], color });
-            rects.push(RectInstance { pos: [x, y + h4], size: [w4, h4], color });
+            rects.push(RectInstance { pos: [x + w4, y], size: [w4, h4], color, clip: crate::NO_CLIP });
+            rects.push(RectInstance { pos: [x, y + h4], size: [w4, h4], color, clip: crate::NO_CLIP });
         }
         '\u{259F}' => {
             // ▟ Right half + lower-left quadrant
-            rects.push(RectInstance { pos: [x + w4, y], size: [w4, h], color });
-            rects.push(RectInstance { pos: [x, y + h4], size: [w4, h4], color });
+            rects.push(RectInstance { pos: [x + w4, y], size: [w4, h], color, clip: crate::NO_CLIP });
+            rects.push(RectInstance { pos: [x, y + h4], size: [w4, h4], color, clip: crate::NO_CLIP });
         }
         _ => return false,
     }

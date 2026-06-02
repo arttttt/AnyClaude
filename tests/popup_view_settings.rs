@@ -11,7 +11,9 @@ use anyclaude::ui::popup_view::{popup_view, POPUP_MIN_WIDTH};
 use anyclaude::ui::settings::SettingsDialogState;
 use glam::Vec2;
 use term_gpu::{FontFamily, FontSystem, TextShapeCache};
-use term_ui::{build_root, measure, place_centered, NodeId, NodeKind, RetainedTree, SizeConstraint};
+use term_ui::{
+    build_root, measure, place_centered, Mod, NodeId, NodeKind, RetainedTree, SizeConstraint,
+};
 
 const VIEWPORT: Vec2 = Vec2::new(1000.0, 800.0);
 
@@ -67,7 +69,7 @@ fn row_text(tree: &RetainedTree, node: NodeId) -> String {
     let n = tree.node(node);
     match &n.kind {
         NodeKind::Text(style) => style.text.clone(),
-        NodeKind::Block(_) => {
+        NodeKind::Modified(_) => {
             let inner = n.children[0];
             match &tree.node(inner).kind {
                 NodeKind::Text(style) => style.text.clone(),
@@ -95,7 +97,7 @@ fn focused_row_is_the_highlight_block() {
     let (tree, root) = laid_out(&state);
     let rows = list_rows(&tree, root);
     assert!(matches!(tree.node(rows[0]).kind, NodeKind::Text(_)), "unfocused row 0 is plain text");
-    assert!(matches!(tree.node(rows[1]).kind, NodeKind::Block(_)), "focused row 1 is highlighted");
+    assert!(matches!(tree.node(rows[1]).kind, NodeKind::Modified(_)), "focused row 1 is highlighted");
     assert!(matches!(tree.node(rows[2]).kind, NodeKind::Text(_)), "unfocused row 2 is plain text");
 }
 
@@ -156,7 +158,10 @@ fn box_is_min_width_floored_and_has_shadow() {
     let (tree, root) = laid_out(&state);
     assert!(tree.node(root).measured.x >= POPUP_MIN_WIDTH - 0.5, "min-width floored");
     match &tree.node(root).kind {
-        NodeKind::Block(style) => assert!(style.shadow.is_some(), "popup box has a drop shadow"),
+        NodeKind::Modified(m) => assert!(
+            m.ops.iter().any(|o| matches!(o, Mod::Shadow(_))),
+            "popup box has a drop shadow"
+        ),
         other => panic!("root is the popup box Block, got {other:?}"),
     }
 }

@@ -12,7 +12,7 @@
 //! `term_ui::place_centered`, so the per-popup width + centring math the old
 //! code did by hand falls out of the layout pass instead.
 
-use term_ui::{Block, BlockShadow, BlockStyle, BoxView, CrossAxis, Insets, Sizing, Stack, Text};
+use term_ui::{BlockShadow, BoxView, CrossAxis, Insets, Modified, Modifier, Modify, Sizing, Stack, Text};
 use uikit::{fixed_row_window, popup_list, Segment};
 
 use crate::config::SettingsFieldSnapshot;
@@ -56,7 +56,7 @@ const WEIGHT_BOLD: u16 = 700;
 /// doesn't carry (the backend list + active/override ids), so the coordinator
 /// builds it via [`backend_view`] directly; the two feed the same second-tree
 /// plumbing. Popups are mutually exclusive, so at most one is ever open.
-pub fn popup_view(state: &AppState) -> Option<Block> {
+pub fn popup_view(state: &AppState) -> Option<Modified> {
     if let crate::ui::history::HistoryDialogState::Visible { entries, scroll_offset } =
         &state.history
     {
@@ -70,21 +70,19 @@ pub fn popup_view(state: &AppState) -> Option<Block> {
 
 /// Wrap a popup `body` in the standard box: opaque bg, 1px border, drop shadow,
 /// and uniform padding. This `Block` is the popup tree's root (centred as one).
-fn popup_box(body: Stack) -> Block {
-    Block::new(
-        BlockStyle {
-            background: POPUP_BG_COLOR,
-            border_color: POPUP_BORDER_COLOR,
-            border_width: 1.0,
-            padding: Insets::all(POPUP_PADDING),
-            shadow: Some(BlockShadow {
+fn popup_box(body: Stack) -> Modified {
+    body.modify(
+        Modifier::new()
+            .corner_radius(POPUP_CORNER_RADIUS)
+            .shadow(BlockShadow {
                 blur_radius: POPUP_SHADOW_BLUR,
                 corner_radius: POPUP_CORNER_RADIUS,
                 offset: [0.0, POPUP_SHADOW_OFFSET_Y],
                 color: POPUP_SHADOW_COLOR,
-            }),
-        },
-        body,
+            })
+            .background(POPUP_BG_COLOR)
+            .border(1.0, POPUP_BORDER_COLOR)
+            .padding(Insets::all(POPUP_PADDING)),
     )
 }
 
@@ -98,7 +96,7 @@ fn title_row(title: &str, color: [f32; 4]) -> Text {
 /// to `MAX_VISIBLE_ROWS` rows driven by `scroll_offset` (R11 virtualization —
 /// the legacy immediate path drew every row and overflowed a tall history off
 /// the window). Row strings + colours match the old popup verbatim.
-fn history_view(entries: &[HistoryEntry], scroll_offset: usize) -> Block {
+fn history_view(entries: &[HistoryEntry], scroll_offset: usize) -> Modified {
     let items: Vec<String> = entries
         .iter()
         .rev()
@@ -156,7 +154,7 @@ fn history_view(entries: &[HistoryEntry], scroll_offset: usize) -> Block {
 /// `confirm_discard` is armed (a first Esc / click-outside on unsaved changes),
 /// an amber prompt row asks the user to confirm before discarding. Settings
 /// lists are short, so there is no virtualization (YAGNI).
-fn settings_view(fields: &[SettingsFieldSnapshot], focused: usize, confirm_discard: bool) -> Block {
+fn settings_view(fields: &[SettingsFieldSnapshot], focused: usize, confirm_discard: bool) -> Modified {
     let rows: Vec<Segment> = fields
         .iter()
         .enumerate()
@@ -192,17 +190,6 @@ fn text(s: impl Into<String>, color: [f32; 4]) -> Text {
     Text::new(s, POPUP_FONT_SIZE, color)
 }
 
-/// The borderless, shadowless highlight Block behind a selected backend row.
-fn row_highlight_style() -> BlockStyle {
-    BlockStyle {
-        background: POPUP_HIGHLIGHT_COLOR,
-        border_color: [0.0; 4],
-        border_width: 0.0,
-        padding: Insets::default(),
-        shadow: None,
-    }
-}
-
 /// The numbered row prefix: `"  → {n}. "` when selected, `"    {n}. "` otherwise.
 fn numbered_prefix(n: usize, selected: bool) -> String {
     if selected {
@@ -229,7 +216,7 @@ fn backend_row(prefix: &str, name: &str, status: Option<&str>, selected: bool) -
             .child(text("]", row_color));
     }
     if selected {
-        Box::new(Block::new(row_highlight_style(), row))
+        Box::new(row.modify(Modifier::new().background(POPUP_HIGHLIGHT_COLOR)))
     } else {
         Box::new(row)
     }
@@ -296,7 +283,7 @@ pub fn backend_view(
     active_backend: &str,
     current_subagent: Option<&str>,
     current_teammate: Option<&str>,
-) -> Block {
+) -> Modified {
     let (active_section, backend_sel, subagent_sel, teammate_sel) = match state {
         BackendSwitchState::Visible {
             section,

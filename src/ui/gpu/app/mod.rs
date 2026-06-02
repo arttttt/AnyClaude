@@ -17,9 +17,10 @@
 //!   - [`session_ops`] — drain the PTY / restart the session
 
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use term_clipboard::Clipboard;
-use term_gpu::GpuRenderer;
+use term_gpu::{GlyphInstance, GpuRenderer, RectInstance, Selection};
+use term_ui::{Animation, Bounds, Interpolator, Spring};
 use uuid::Uuid;
 use winit::event_loop::EventLoopProxy;
 use winit::window::Window;
@@ -28,6 +29,8 @@ use crate::backend::{AgentBackendState, BackendState};
 use crate::config::ClaudeSettingsManager;
 use crate::metrics::ObservabilityHub;
 use crate::ui::app_state::AppState;
+use crate::ui::child_session::ChildSessionManager;
+use crate::ui::gpu::panes::Panes;
 
 use super::backends::Backends;
 use super::overlay::OverlayRenderer;
@@ -62,16 +65,98 @@ const MULTI_CLICK_THRESHOLD_MS: u128 = 400;
 /// Popup open/close fade duration (seconds).
 const POPUP_FADE_SECS: f32 = 0.12;
 
-/// User event delivered to the winit loop. Drives redraws in response
-/// to PTY output and scroll momentum without polling.
+/// Panel overlay collapse/expand width-slide duration (seconds).
+const PANEL_ANIM_SECS: f32 = 0.14;
+
+/// Initial grid a teammate pane spawns at, before the first render resizes it to
+/// its page rect. Small — it only matters for the first frame.
+const INITIAL_PANE_GRID: (usize, usize) = (40, 12);
+
+/// Inner padding (logical px) of a teammate pane's grid inside its page, so text
+/// never touches the frame. The LEFT inset is a bit wider so the grid clears the
+/// collapse pill centred on the divider (and never draws over it).
+const PANE_PAD: f32 = 4.0;
+const PANE_PAD_LEFT: f32 = 12.0;
+
+/// The teammates overlay can be dragged no wider than this fraction of the
+/// window (the absolute `Policy::max_width` is the upper sanity cap). Dynamic so
+/// it tracks window resizes rather than a fixed pixel ceiling.
+const MAX_OVERLAY_WIDTH_FRACTION: f32 = 0.75;
+
+/// Pager page-settle spring constants (page units). `DAMPING ≈ 2·√STIFFNESS` is
+/// critical — snappy, no overshoot.
+const PAGE_SPRING_STIFFNESS: f32 = 700.0;
+const PAGE_SPRING_DAMPING: f32 = 53.0;
+/// Max `|dx|` (logical px) of a `Started` event that counts as a fresh
+/// finger-down. A real touch begins from REST (its first event is tiny — a few
+/// px); macOS momentum BEGINS at the release velocity (winit reports its start as
+/// a large-`dx` `Started`). So a small-velocity `Started` is a genuine new swipe
+/// — even one interrupting the previous flick's momentum — and a large one is
+/// just inertia, ignored. (Logged touches start ~2-8 px, momentum ~54-94 px.)
+const PAGE_SWIPE_START_VELOCITY: f32 = 30.0;
+/// Release speed (pages/sec) above which a swipe is a FLING — it advances one
+/// page in its direction even if dragged under halfway (Flutter's ±0.5 nudge);
+/// below it the page snaps to whichever side it was dragged past.
+const PAGE_SWIPE_FLING_VELOCITY: f32 = 1.5;
+
+/// State of the pager's horizontal two-finger swipe (a trackpad gesture, NOT a
+/// mouse-button drag — that would fight text selection inside a page). While
+/// `active`, the page tracks the finger from `start_scroll` by `accum_px` of
+/// travel; `velocity` (pages/sec) drives the release snap.
 #[derive(Debug, Clone, Copy)]
+struct PageSwipe {
+    active: bool,
+    start_scroll: f32,
+    accum_px: f32,
+    velocity: f32,
+    last_t: Instant,
+}
+
+/// Cached terminal base layer (grid backgrounds + glyphs + selection + cursor)
+/// and the key identifying the inputs that produced it. The base layer is reused
+/// across frames whose inputs are unchanged — overlay-only animation frames, idle
+/// redraws — so the O(visible) grid emit is skipped (Stage 3, Warp's "rebuild
+/// only on change"). See [`GridCacheKey`] for the invalidation inputs.
+struct GridBaseCache {
+    key: GridCacheKey,
+    rects: Vec<RectInstance>,
+    glyphs: Vec<GlyphInstance>,
+}
+
+/// The inputs that fully determine the terminal base layer: equal key ⇒
+/// byte-identical emitted geometry, so [`GridBaseCache`] may be reused.
+/// `content_seq` covers every grid / cursor mutation; `atlas_evict_gen` guards
+/// the cached glyph UVs against atlas eviction (reuse only while no placed glyph
+/// could have moved); the rest are the app-side view parameters, compared
+/// bit-exactly (`f32::to_bits`, no NaN on these paths).
+#[derive(Clone, Copy, PartialEq)]
+struct GridCacheKey {
+    content_seq: u64,
+    atlas_evict_gen: u64,
+    scroll_bits: u32,
+    panel_bits: [u32; 4],
+    scale_bits: u32,
+    selection: Option<Selection>,
+}
+
+/// User event delivered to the winit loop. Drives redraws in response
+/// to PTY output and scroll momentum without polling. NOT `Copy`/`Clone` — the
+/// `ControlPlane` variant carries a one-shot reply channel that must move.
+#[derive(Debug)]
 pub(super) enum UserEvent {
     PtyBytesArrived,
+    /// A teammate pane's PTY reader queued new bytes (the per-pane analogue of
+    /// `PtyBytesArrived`); the coordinator drains that pane's surface.
+    PtyBytes(crate::ui::child_session::PaneId),
     GestureEnded,
     MomentumTick,
     /// 1Hz heartbeat that keeps Uptime / Reqs / sub / team chrome
     /// fresh even when the PTY is silent.
     TickRedraw,
+    /// A teammate lifecycle request from the proxy's tmux control plane
+    /// (tokio side). The coordinator applies it and answers its reply channel
+    /// with the resulting `PaneId` (the tmux `%N`).
+    ControlPlane(crate::ui::control_plane::ControlRequest),
 }
 
 pub(super) struct GpuApp {
@@ -93,6 +178,16 @@ pub(super) struct GpuApp {
     /// Lazily populated in `resumed`. See [`Session`].
     session: Session,
 
+    /// Registry + lifecycle for teammate child sessions (bucket 3 — identity).
+    /// Reacts to `ChildSessionEvent`s by orchestrating `state.right`. See
+    /// [`ChildSessionManager`].
+    child_sessions: ChildSessionManager,
+
+    /// Teammate pane resources (bucket 3-T): the live `TerminalSurface`s keyed by
+    /// `PaneId`. Spawned on `Register`, dropped on `Unregister`, drained on
+    /// `PtyBytes`. See [`Panes`].
+    panes: Panes,
+
     /// The single bucket-1 source of UI-decision truth — grid size, scroll +
     /// momentum, selection / input, session header, and the popup overlays.
     /// See [`AppState`]. (Resources, the emulator, and timer handles stay out
@@ -108,7 +203,38 @@ pub(super) struct GpuApp {
     /// without recomputing the layout. (Derived / materialized — bucket 2.)
     session_click_zone: Option<(f32, f32)>,
 
+    /// Right teammates overlay hit-zones (logical px), materialized each redraw
+    /// so the mouse handler can hit-test without re-laying-out the tree. The
+    /// whole overlay rect (clicks inside are swallowed from the terminal) and
+    /// the toggle/indicator button bounds (click → collapse/expand). `None` when
+    /// the overlay isn't rendered. (Derived — bucket 2.)
+    panel_overlay_rect: Option<Bounds>,
+    panel_toggle_zone: Option<Bounds>,
+
+    /// Right overlay width tween (bucket 3-S): the collapse/expand slide AND the
+    /// live drag width, as one `Animation`. The rendered width is `value(now)` —
+    /// derived each frame, never stored (R12). `retarget` drives the button
+    /// slide; `snap` tracks a hand-drag.
+    panel_width: Animation<f32>,
+
+    /// Right overlay pager position (bucket 3-S): the continuous page index, in
+    /// page units, as a [`Spring`]. Its target chases the focused panel's index
+    /// each frame, so paging (hotkey / click / two-finger swipe) slides.
+    page_scroll: Spring,
+    /// Horizontal two-finger swipe accumulator (bucket 2) that pages the overlay.
+    page_swipe: PageSwipe,
+
+    /// The mouse cursor icon currently set on the window — cached so a hover move
+    /// only calls `set_cursor` on a CHANGE (a resize cursor over a panel edge, a
+    /// pointer over the toggle pill, else the default).
+    current_cursor: winit::window::CursorIcon,
+
     clipboard: Box<dyn Clipboard>,
+
+    /// Cached terminal base layer reused across frames whose grid inputs are
+    /// unchanged (Stage 3). `None` until the first frame builds it. See
+    /// [`GridBaseCache`].
+    grid_base: Option<GridBaseCache>,
 
     /// Proxy + config handles — backend state, subagent / teammate overrides,
     /// observability, settings manager. See [`Backends`].
@@ -127,22 +253,54 @@ impl GpuApp {
         observability: ObservabilityHub,
         settings_manager: ClaudeSettingsManager,
     ) -> Self {
+        let state = AppState::new(
+            Uuid::new_v4().to_string(),
+            Instant::now(),
+            (INITIAL_GRID_COLS, INITIAL_GRID_ROWS),
+        );
+        // The right overlay starts collapsed at its bare strip width; the first
+        // redraw retargets it to the live state (a no-op while collapsed).
+        let panel_width = Animation::settled(
+            state.right.policy().collapsed_width,
+            Instant::now(),
+            Duration::from_secs_f32(PANEL_ANIM_SECS),
+            Interpolator::EaseInOut,
+        );
+        // The pager starts on the first page; its spring target chases the
+        // focused index (paging) or is driven by a swipe.
+        let page_scroll = Spring::new(
+            0.0,
+            PAGE_SPRING_STIFFNESS,
+            PAGE_SPRING_DAMPING,
+            Instant::now(),
+        );
         Self {
             proxy,
             window: None,
             renderer: None,
             scale_factor: 1.0,
             text: TextResources::new(),
-            overlay: OverlayRenderer::new(),
+            overlay: OverlayRenderer::new(Duration::from_secs_f32(POPUP_FADE_SECS)),
             session: Session::new(spawn_command, spawn_args, spawn_env),
-            state: AppState::new(
-                Uuid::new_v4().to_string(),
-                Instant::now(),
-                (INITIAL_GRID_COLS, INITIAL_GRID_ROWS),
-            ),
+            child_sessions: ChildSessionManager::new(),
+            panes: Panes::new(SCROLLBACK_LINES),
+            state,
             timers: Timers::new(),
             session_click_zone: None,
+            panel_overlay_rect: None,
+            panel_toggle_zone: None,
+            panel_width,
+            page_scroll,
+            page_swipe: PageSwipe {
+                active: false,
+                start_scroll: 0.0,
+                accum_px: 0.0,
+                velocity: 0.0,
+                last_t: Instant::now(),
+            },
+            current_cursor: winit::window::CursorIcon::Default,
             clipboard: make_clipboard(),
+            grid_base: None,
             backends: Backends {
                 backend_state,
                 subagent_backend,

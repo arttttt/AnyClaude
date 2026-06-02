@@ -13,7 +13,7 @@ use anyclaude::ui::popup_view::{popup_view, POPUP_MIN_WIDTH};
 use glam::Vec2;
 use term_gpu::{FontFamily, FontSystem, TextShapeCache};
 use term_ui::{
-    build_root, measure, place_centered, NodeId, NodeKind, RetainedTree, SizeConstraint,
+    build_root, measure, place_centered, Mod, NodeId, NodeKind, RetainedTree, SizeConstraint,
 };
 
 const VIEWPORT: Vec2 = Vec2::new(1000.0, 800.0);
@@ -53,7 +53,7 @@ fn laid_out(state: &AppState) -> (RetainedTree, NodeId) {
 
 /// root Block → body Stack → [title Text, spacer, list-or-placeholder].
 fn body_children(tree: &RetainedTree, root: NodeId) -> Vec<NodeId> {
-    assert!(matches!(tree.node(root).kind, NodeKind::Block(_)), "root is the popup box Block");
+    assert!(matches!(tree.node(root).kind, NodeKind::Modified(_)), "root is the popup box Block");
     let body = tree.node(root).children[0];
     assert!(matches!(tree.node(body).kind, NodeKind::Stack(_)), "box wraps a body stack");
     tree.node(body).children.clone()
@@ -95,10 +95,13 @@ fn box_is_min_width_floored_and_centered() {
 fn box_carries_a_drop_shadow() {
     let state = app_with_history(3, 0);
     let (tree, root) = laid_out(&state);
-    if let NodeKind::Block(style) = &tree.node(root).kind {
-        assert!(style.shadow.is_some(), "popup box must carry a drop shadow");
+    if let NodeKind::Modified(m) = &tree.node(root).kind {
+        assert!(
+            m.ops.iter().any(|o| matches!(o, Mod::Shadow(_))),
+            "popup box must carry a drop shadow"
+        );
     } else {
-        panic!("root is not a Block");
+        panic!("root is not the popup box");
     }
 }
 
@@ -114,7 +117,7 @@ fn highlight_lands_on_the_top_visible_row() {
         let list = body_children(&tree, root)[2];
         let rows = tree.node(list).children.clone();
         assert!(
-            matches!(tree.node(rows[0]).kind, NodeKind::Block(_)),
+            matches!(tree.node(rows[0]).kind, NodeKind::Modified(_)),
             "offset {offset}: top visible row is the highlight"
         );
         for &r in &rows[1..] {

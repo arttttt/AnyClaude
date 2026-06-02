@@ -23,6 +23,19 @@ fn clipboard_is_on_cmd_not_ctrl() {
 }
 
 #[test]
+fn only_popup_toggles_resolve_over_an_open_popup() {
+    // The popup hotkeys toggle (so a second press closes / a sibling switches).
+    assert!(AppShortcut::ToggleBackendPopup.toggles_popup());
+    assert!(AppShortcut::ToggleHistoryPopup.toggles_popup());
+    assert!(AppShortcut::ToggleSettingsPopup.toggles_popup());
+    // Everything else stays modal while a popup is open.
+    assert!(!AppShortcut::Quit.toggles_popup());
+    assert!(!AppShortcut::CopySelection.toggles_popup());
+    assert!(!AppShortcut::Paste.toggles_popup());
+    assert!(!AppShortcut::RestartPty.toggles_popup());
+}
+
+#[test]
 fn features_are_on_ctrl() {
     assert_eq!(app_shortcut(KeyCode::KeyT, CTRL), Some(AppShortcut::ToggleBackendPopup));
     assert_eq!(app_shortcut(KeyCode::KeyH, CTRL), Some(AppShortcut::ToggleHistoryPopup));
@@ -45,9 +58,9 @@ fn ctrl_b_and_ctrl_d_pass_through_to_the_terminal() {
 
 #[cfg(debug_assertions)]
 #[test]
-fn diagnostic_on_ctrl_g_debug_only() {
-    // The diagnostic dump is a debug-build-only dev aid.
-    assert_eq!(app_shortcut(KeyCode::KeyG, CTRL), Some(AppShortcut::DumpDiagnostic));
+fn ctrl_p_toggles_the_overlay_debug_only() {
+    // The one remaining debug keybinding: show / hide the teammates overlay.
+    assert_eq!(app_shortcut(KeyCode::KeyP, CTRL), Some(AppShortcut::DebugTogglePanels));
 }
 
 #[test]

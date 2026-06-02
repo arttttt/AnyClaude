@@ -1,0 +1,515 @@
+# Multi-Instance Panels (`PanelManager`) — Design Doc (DRAFT 2026-05-31)
+
+> Status: **M1 + M1.5 + M2 + M3 IMPLEMENTED (2026-06-02)** on `feat/multi-instance-panels`
+> (user-verified): the right overlay UI + pill, the **horizontal pager** (§11.1 resolved),
+> **M2** live per-panel terminals + keyboard routing, and now **M3 — the `/api/tmux`
+> control plane is LIVE end-to-end**: real Claude Code teammates spawn as live panels.
+> The bash shim forwards every tmux verb to `POST /api/tmux`; the `TmuxAdapter` turns
+> them into pane lifecycle events. KEY UNLOCK: seed `$TMUX`/`$TMUX_PANE` for the main CC
+> so CC 2.1.159's BackendRegistry picks the tmux backend (it otherwise forces in-process
+> and never invokes the shim). Deferred: a glyph-render bug (`⏸`/U+23FA class), atlas
+> garbage under multi-pane load, per-pane accent colours. The left sidebar (M4) not started.
+> Architecture below was agreed in conversation 2026-05-31.
+> This doc works out the *architecture* of showing multiple Claude instances inside
+> anyclaude's GPU terminal — the long-term home for both the "teammates on the right"
+> view and the "CLAUDES sidebar on the left" view from the product mockup.
+>
+> It assumes the term_ui stack as shipped: one `AppState`, the unified
+> `Msg`/`apply`/`Effect` loop (E.8), retained term_ui chrome/popup trees, and the
+> terminal grid drawn by direct `populate_panel` (R5). Invariant references (R1, R5,
+> R10, R12, …) are to [`term-ui-design.md`](term-ui-design.md). Teammate routing /
+> tmux background is in [`agent-teams-integration.md`](agent-teams-integration.md) and
+> [`agent-team-routing.md`](agent-team-routing.md).
+>
+> **All Rust below is illustrative sketch only** — it shows shape and intent, not final
+> API. Field names, signatures, and module layout are decided at implementation time.
+
+---
+
+## 0. Motivation & current state
+
+Today the live `GpuApp` is **single-panel**: it spawns the main `claude` in one
+`ChildPty` (`gpu/session.rs`) and renders that one VT emulator into the whole terminal
+rect. Claude Code's *agent teams* feature drives teammate spawns through the `tmux`
+binary, which a PATH shim (`src/shim/tmux.rs`) intercepts: the shim rewrites the
+teammate's `ANTHROPIC_BASE_URL` for per-teammate backend routing and **forwards every
+other tmux command to a real tmux server**. So teammate panes are created and drawn by
+a real, separate tmux server — **not** by anyclaude's GPU terminal, and not visible as
+native panels.
+
+The target end-state (product mockup) is two distinct UI regions:
+
+- a **left sidebar** listing top-level Claude sessions ("CLAUDES": `cw-main`,
+  `ac-test`, …), which **displaces** the main content; and
+- a **right overlay** holding the running teammates (child `claude` processes), which
+  **floats over** the content, is **fully hideable**, has **resizable width**, and a
+  **vertically-centered toggle/indicator button**.
+
+This doc defines the architecture that serves both, starting from the right overlay.
+
+---
+
+## 1. Foundational principle — MODEL ≠ VIEW
+
+The single most important decision. Two things are easy to conflate:
+
+- **Instance model** — *which* `claude` processes exist, their identity, backend
+  routing, lifecycle. Driven by Claude Code (via tmux commands) and by the user
+  (the "new claude" action).
+- **View / layout** — *how* we present them: tmux-style tiling (teammates on the
+  right) **or** the sidebar switcher (CLAUDES list on the left).
+
+These are different UX over the **same** model. Claude Code asks for tmux tiling; the
+mockup wants a sidebar. If layout is baked into the model, switching views means
+rewriting the model. Therefore: **one instance model, several views; the view is
+anyclaude's product decision, not Claude Code's.**
+
+### 1.1 Two-level instance model (north star)
+
+```
+anyclaude window
+├── Session "cw-main"   ← top-level claude   (a LEFT-sidebar entry)
+│   ├── pane %0  (main CC)                ┐
+│   ├── pane %1  (teammate module-mapper) │ shown in the RIGHT overlay
+│   └── pane %2  (teammate flow-tracer)   ┘
+├── Session "ac-test"   ← another top-level claude
+└── Session "rs-review"
+        ▲
+        └── switching sessions = the LEFT sidebar
+```
+
+- The **left sidebar** switches **Sessions** (top level — the mockup's CLAUDES list).
+- The **right overlay** shows the **panes/teammates of the active Session** (what
+  Claude Code spawns via tmux).
+- Teammates are **owned by their Session** (model). The right `PanelManager` is the UI
+  controller that renders/manages the *active session's* teammates; switching sessions
+  re-points it at that session's teammate set.
+
+Milestone 1 builds only the right-overlay machinery for a single session. Sessions and
+the left sidebar come later but the model is shaped so they layer on without rework.
+
+---
+
+## 2. `PanelManager` — ONE class, TWO instances
+
+The core reusable component. **It is a single concrete type with a single `impl`,
+instantiated twice** — once per on-screen panel region. Not two types, not a trait with
+two implementors, not a payload-generic specialization. Everything that differs between
+the left and right panel is **data in the instance's `Policy`**, never the type.
+
+```rust
+// ILLUSTRATIVE — one type, one impl.
+struct PanelManager {
+    policy: Policy,            // all left/right differences live here (static)
+    panels: Vec<Panel>,        // ordered; order = sort order
+    focus:  Option<PanelId>,   // which panel this manager considers focused
+    visible: bool,             // expanded vs collapsed
+    width:  f32,               // current (arbitrary) width; remembered across collapse
+    next_seq: u64,             // issues PanelId
+}
+
+impl PanelManager {
+    fn create(&mut self, panel: Panel) -> PanelId { /* … */ }
+    fn remove(&mut self, id: PanelId) { /* … */ }
+    fn reorder(&mut self, /* sort key / explicit order */) { /* … */ }
+    fn set_focus(&mut self, id: PanelId) { /* … */ }
+    fn set_visible(&mut self, v: bool) { /* … */ }   // animates width 0↔width
+    fn toggle(&mut self) { self.set_visible(!self.visible) }
+    fn any_active(&self) -> bool { /* any panel with a running child */ }
+    fn list(&self) -> &[Panel] { &self.panels }
+}
+```
+
+The lifecycle/ordering logic (`create`/`remove`/`reorder`/`set_focus`/visibility/
+`any_active`) is written **once** and branches only on `self.policy`.
+
+### 2.1 `Panel` — one type for both managers
+
+```rust
+// ILLUSTRATIVE — a Panel is a Panel whether it wraps a Session or a teammate;
+// the distinction is data, not a separate type.
+struct Panel {
+    id: PanelId,
+    kind: PanelKind,                 // Main | Teammate | Session (data, not a type)
+    title: String,                   // agent / session name
+    accent: Color,                   // agent color
+    agent: Option<AgentMeta>,        // agent-id / team — populated later from send-keys
+    surface: Option<TerminalSurface>,// emulator + scroll + selection — None for placeholders
+    running: bool,                   // is the child process alive — feeds any_active()
+}
+```
+
+`surface`, `agent`, and child processes are **deferred** (see §8/§9). A Milestone-1
+placeholder panel has `surface: None` and no process.
+
+### 2.2 `Policy` — the only thing that differs
+
+```rust
+// ILLUSTRATIVE — static per instance, set at construction.
+struct Policy {
+    side: Side,                  // Left | Right
+    placement: Placement,        // Displace | Overlay
+    render: RenderMode,          // Switcher (one active) | Stack (all)
+    resizable: bool,
+    edge_toggle: bool,           // hosts the centered toggle/indicator button
+    has_indicator: bool,
+    min_width: f32,
+    max_width: f32,
+}
+
+let left  = PanelManager::new(Policy { side: Left,  placement: Displace, render: Switcher,
+                                       resizable: /*later*/ false, edge_toggle: false,
+                                       has_indicator: false, .. });
+let right = PanelManager::new(Policy { side: Right, placement: Overlay,  render: Stack,
+                                       resizable: true, edge_toggle: true,
+                                       has_indicator: true, .. });
+```
+
+| Aspect | **Left** (Sessions) | **Right** (Teammates) |
+|---|---|---|
+| Content | top-level claude sessions (CLAUDES list) | child-claude teammates |
+| Placement | **Displace** — pushes content right | **Overlay** — floats over content |
+| Simultaneously visible | **Switcher** — one active rendered | **Stack** — all rendered |
+| Side / width | left, (later resizable) | right, **resizable (arbitrary)** |
+| Hiding | collapses (later) | **fully hideable**, edge toggle button |
+| Indicator | — | lit when `any_active()` |
+| Timeline | later | near-term target |
+
+Forward-building the left instance before it is fully used is intentional and allowed
+(YAGNI removed for forward-built UI scaffolding — see `feedback_solid_dry_kiss_yagni`).
+
+---
+
+## 3. The right overlay in detail
+
+Two of the right instance's fields are **dynamic state**, not policy:
+
+- **`width`** — arbitrary, dragged via the overlay's inner edge (a divider-style
+  handle), clamped to `policy.[min_width, max_width]` (the BSP clamp lesson: never let
+  a panel degenerate to 0 or eat the whole window).
+- **`visible`** — expanded (renders at `width`) vs collapsed (renders at 0, **`width`
+  remembered**).
+
+The **toggle/indicator button** sits at the vertical center of the overlay's inner
+edge. Click → collapse/expand **to the current `width`**. It doubles as the activity
+indicator: lit when `any_active()` (a live child-claude exists).
+
+### 3.1 Geometry (expanded / collapsed)
+
+```
+EXPANDED (visible):
+  content_rect = [window.left .. window.right − width]
+  overlay      = [window.right − width .. window.right]
+
+  ┌─ content ───────────────┬◉─ overlay (teammates, stacked) ─┐
+  │   main grid %0           ││  teammate 1                    │
+  │                          ││  teammate 2                    │
+  └──────────────────────────┴────────────────────────────────┘
+                              ▲
+                ◉ = toggle/indicator button + drag handle,
+                    vertically centered, on the edge x = window.right − width
+
+COLLAPSED (!visible):  overlay width renders as 0, content full width,
+  the button is pinned to the window's right edge (still clickable, still indicating):
+
+  ┌─ content (full width) ──────────────────────────────────◉┐
+```
+
+"Fully hidden" means the panels/content are hidden but the **button persists** (a thin
+edge handle) so the overlay can be re-expanded and the indicator stays visible. This is
+the pill toggle from the mockup.
+
+### 3.2 The inner edge is one interactive zone
+
+The overlay's inner edge hosts **both** affordances: the vertical center is the toggle
+button (+ indicator); the rest of the edge height is the resize drag handle. Hit-zones
+for both are recomputed each frame from geometry (the same pattern as today's
+`session_click_zone`).
+
+### 3.3 Collapse/expand animation
+
+`set_visible` animates `width` between `0` and the remembered `width` (and slides the
+button to the edge), through the same `term_ui::anim` epoch mechanism used for popup
+open/close fade (E.7). This is **not** YAGNI — a resizable toggle feels broken without
+it; it is part of the UX (R11: animations are a designed-now capability).
+
+---
+
+## 4. Geometry & render pipeline
+
+Layout authority is **the two `PanelManager`s + the content rect** — there is no BSP
+tree (see §7). Per frame:
+
+```
+content_rect = window
+  − left.occupied_width()    // Displace: reduces content from the left
+  // Overlay (right) does NOT reduce content_rect — it floats over the right edge
+
+BASE layer (R5 — grids drawn directly, never a retained view):
+  populate_panel(content_rect, active_session.main_emulator, …)        // the main CC
+  if right.visible {
+    for (panel, rect) in right.stack_rects() {
+      populate_panel(rect, panel.surface.emulator, panel.scroll, …)    // teammates (later)
+    }
+  }
+
+OVERLAY layer (retained term_ui trees — reuses the E.6/E.7 machinery):
+  panel_manager_view(&left)     // sidebar switcher: list + titles
+  panel_manager_view(&right)    // overlay stack: frame + titles + edge button + indicator
+  chrome_view(&AppState)        // unchanged
+  popup_view(&AppState)         // unchanged
+```
+
+**Principle: grids are direct `populate_panel` (R5); frames/lists/indicator/buttons are
+a view.** `panel_manager_view(&PanelManager)` is written **once** and branches on
+`self.policy` to render either the sidebar switcher or the overlay stack. This is what
+makes the mockup's sidebar nearly free later — the sidebar **is** `panel_manager_view`
+of the left instance.
+
+---
+
+## 5. State & the unified loop (R10 holds)
+
+```rust
+// ILLUSTRATIVE
+struct AppState {
+    left:  PanelManager,    // policy = sidebar (Displace/Switcher)
+    right: PanelManager,    // policy = overlay (Overlay/Stack)
+    focus: FocusId,         // THE single focus (see §6)
+    // unchanged globals: modifiers, input, popups(3), chrome/session …
+}
+```
+
+The reuse rules hold: this is **one `AppState`** (R10) — the two managers are nested
+collections of UI-decision truth, exactly like today's single-terminal scroll/selection
+are AppState truth. Heavy resources (emulator/PTY handles) stay in the coordinator keyed
+by `PanelId` (bucket 3-S/3-T), mirroring how the single `Session` holds them today.
+
+New messages/effects extend the existing Elm loop (E.8); they do not replace it:
+
+```rust
+// ILLUSTRATIVE additions
+enum Msg {
+    // … existing …
+    CreatePanel  { mgr: ManagerId, /* spec */ },
+    RemovePanel  { mgr: ManagerId, id: PanelId },
+    ReorderPanel { mgr: ManagerId, /* key */ },
+    FocusPanel   { mgr: ManagerId, id: PanelId },
+    ToggleManager{ mgr: ManagerId },               // collapse/expand
+    EdgeDrag     { mgr: ManagerId, x: f32 },        // resize width (clamped)
+    SwitchSession{ id: PanelId },                   // later (left sidebar)
+}
+enum Effect {
+    // … existing …
+    SpawnChild { panel: PanelId, /* cmd */ },       // later
+    KillChild  { panel: PanelId },                  // later
+    WriteToPty { panel: PanelId, bytes: Vec<u8> },  // panel-addressed (was unaddressed)
+    ResizePty  { panel: PanelId, cols: u16, rows: u16 },
+}
+```
+
+`ManagerId = Left | Right` addresses which instance a message targets; the generic
+`create`/`remove`/`reorder`/`toggle` run in `apply` against the addressed manager. PTY-
+addressed effects gain a `PanelId`; `Redraw` stays global.
+
+---
+
+## 6. Focus — a single field, everything derived
+
+There is exactly **one** focus. Everything follows from it; there is no separate
+"active session" vs "keyboard focus".
+
+- **Keyboard → the focused terminal.** Whatever is focused (main CC or a teammate)
+  receives keystrokes. Teammates are therefore **not** read-only — focusing one routes
+  the keyboard to it.
+- **"Active session" is derived from focus** (the session owning the focused panel),
+  never stored separately (R12).
+- Focus changes by clicking a panel (later, also a cycle hotkey).
+- **Mouse scroll/selection target the panel under the cursor** via hit-test (as in the
+  `term_grid` example) — this is a mouse concern, orthogonal to keyboard focus, and is
+  resolved per-event, not stored. (If we later want scroll to follow focus strictly,
+  that is a small change; default is cursor-targeted.)
+
+This collapses a whole class of state: no `active_session`, no `keyboard_focus` — just
+`focus`, with the rest derived.
+
+---
+
+## 7. What we do NOT use, and what we reuse
+
+- **No BSP `term_layout::PanelTree` as layout authority.** An earlier draft proposed it;
+  the two-`PanelManager` model replaces it. Layout is the managers' simple
+  displace/overlay + list/stack geometry, not a binary-split tree. (`term_layout` stays
+  example-only; it can be repurposed *inside* a manager if nested teammate tiling is
+  ever needed — see the parked question §11.)
+- **Reuse the per-panel terminal mechanics from `term_grid.rs`** (the proven multi-panel
+  example): one `portable-pty` child per panel, a reader thread per panel signalling
+  `EventLoopProxy::…(PanelId)`, per-panel emulator + scroll + selection, and
+  `sync_panels_to_tree`-style deferred resize (destructive column shrink → resize on
+  gesture release). This is the **lower** layer and is independent of BSP; we adopt it
+  for §9, dropping only the BSP layout part.
+
+---
+
+## 8. Lifecycle & control plane — events-first, registry at the centre
+
+How a teammate child session becomes a panel. The organising principle (agreed in
+conversation): anyclaude is a **passive host that reflects REGISTERED child sessions as
+panels** — it doesn't spawn them imperatively. A registry-owning lifecycle authority
+reacts to typed events; the tmux shim is just one *producer* of those events.
+
+**Four layers, one responsibility each** (SRP — no god object):
+
+```
+tmux-shim (bash/curl, blocking)
+  │  POST /api/tmux/{split-window,send-keys,kill-pane,…}
+  ▼
+TmuxAdapter            (transport/protocol, tokio side)
+  • parses a tmux verb → a typed, tmux-AGNOSTIC ChildSessionEvent
+  • carries a oneshot reply for sync verbs (split-window must return %N)
+  │  ChildSessionEvent  (+ EventLoopProxy wake across tokio↔winit)
+  ▼
+ChildSessionManager    (identity/lifecycle, winit coordinator)   ← Step A, DONE
+  • owns the registry: PaneId(%N) ↔ PanelId bimap + ChildSession{ meta, surface }
+  • apply(event, &mut PanelManager): Register → panels.create (+ spawn); Unregister →
+    panels.remove (+ close overlay when empty); Input/Resize/SetTitle → route by pane
+  │  on Register delegates the process to
+  ▼
+ChildPtySpawner        (process, separate object)               ← Step B (= M2)
+  • ChildSpec → TerminalSurface (VT emulator + ChildPty)
+```
+
+- **`ChildSessionManager` is tmux-agnostic** — it reacts to domain `ChildSessionEvent`s
+  (`Register`/`Unregister`, later `Input`/`Resize`/`SetTitle`), never raw verbs. Swap or
+  add a registration channel and the manager is unchanged. It is a thin orchestrator
+  (delegates UI to `PanelManager`, the process to `ChildPtySpawner`); it is NOT the panel
+  manager and NOT the spawner. **MODEL≠VIEW**: the registry/identity lives here (a
+  coordinator collaborator); the `PanelManager` it drives stays UI truth in `AppState`.
+- **`TmuxAdapter` is the anti-corruption layer** — it knows tmux, the manager doesn't. It
+  emulates the ~12 verbs Claude Code issues (captured in a tmux-shim log): `split-window
+  -P` → `Register`, **reply its `%N`**; `kill-pane` → `Unregister`; `send-keys … claude …`
+  → spawn that command into the pane's PTY (`Register` with the cmd; the shim already
+  parses/rewrites URL/headers/agent-id); `select-pane -T/-P` → `SetTitle`/accent;
+  `list-panes`/`display-message` → query the registry; `resize-pane`/`select-layout` →
+  geometry hints (anyclaude is the layout authority, not followed verbatim); `show -gv …`
+  → success. An **unknown verb is an explicit error + log** (no silent forwarding).
+
+**Threading boundary** (the one non-obvious bit): `TmuxAdapter` lives in tokio (the
+proxy); `ChildSessionManager` lives in the winit loop. A `ChildSessionEvent` crosses via
+the `EventLoopProxy` (the existing `BytesArrived`-wake pattern) + a `oneshot` reply for
+the synchronous verbs:
+
+```
+shim → POST /api/tmux/split-window {…}        (axum handler, tokio)
+         TmuxAdapter: push (ChildSessionEvent::Register{spec, reply: oneshot}) + wake winit
+         reply_rx.await  →  HTTP body "%N"
+winit user_event:
+         drain → child_sessions.apply(event, &mut state.right) → PaneId
+         → format "%N", send into the oneshot
+```
+`UserEvent` becomes non-`Copy` (it carries the reply channel).
+
+**Build order A → B → C** (each layers on without rework):
+- **A — registry + lifecycle, DONE.** `ChildSessionManager` + `ChildSessionEvent` +
+  `PaneId↔PanelId` registry, reacting against placeholder panels; debug emitter (Ctrl+P =
+  register 6 mocks, Ctrl+K = unregister focused). Code: `src/ui/child_session.rs`.
+- **B (= M2) — `ChildPtySpawner` + surfaces, DONE.** `Register` spawns a real
+  `TerminalSurface` (`src/ui/gpu/{surface,spawn,panes}.rs`); the page renders a live grid
+  (clipped to the page viewport via the M1.5-deferred `RectInstance` clip). B2 routes the
+  keyboard to the focused terminal — `AppState.input_focus` (+ derived `input_on_teammates`
+  / `normalize_input_focus`), `Effect::WriteToFocused` → focused pane PTY, ⌥↑ / click focus
+  toggle with a blue focus-ring, collapse / unregister returns focus to main — and re-fits
+  a pane only when the overlay width settles (no destructive reflow mid-animation).
+- **C (= M3) — `TmuxAdapter`, DONE.** Single `POST /api/tmux {"args":[…]}` → pure
+  `tmux_adapter::parse` → `TmuxAction` → `ControlPlaneHandle` → winit
+  `UserEvent::ControlPlane(oneshot %N)`. The shim (clean cutover, no real tmux) forwards
+  every verb. CRITICAL: the main CC is seeded `$TMUX`/`$TMUX_PANE` so CC's BackendRegistry
+  picks the tmux backend (else it forces in-process and never calls the shim). The adapter
+  strips global flags (`-S <socket>`…), answers `display-message #{window_id}`→`@0`, reserves
+  `%0` for the main pane, and acks geometry/session verbs.
+
+**Open:** whether Claude Code needs `$TMUX` / `$TMUX_PANE` seeded for the main CC beyond
+`--teammate-mode tmux` (the captured log shows it querying `%0`, so `%0` came from
+somewhere). Resolved by experiment when C is built.
+
+---
+
+## 9. Per-panel resources (LATER)
+
+Resources (bucket 3) live in the coordinator. A `Panes`/`Panels` collaborator replaces
+the single `Session`:
+
+```rust
+// ILLUSTRATIVE
+struct PanelResources {
+    surfaces: HashMap<PanelId, PaneSurface>, // emulator + ChildPty + grid_size cache
+    // spawn params (main + per-teammate)
+}
+// reader thread per panel → UserEvent::PtyBytes(PanelId) → drain → emulator
+// sync_to_layout(): resize each emulator+PTY to its rect, debounced by grid_size,
+//                   destructive shrink deferred to gesture release (term_grid lesson)
+```
+
+A direct port of the `term_grid` model into the coordinator. In Milestone 1 only the
+main panel has a surface; placeholders have none.
+
+---
+
+## 10. Milestones
+
+| # | Scope |
+|---|---|
+| **M1 — UI only** | The right `PanelManager` instance + `panel_manager_view`, rendering **placeholder** panels in a resizable overlay with the centered toggle/indicator button and collapse/expand animation. Manual (debug-only) controls to create/remove/reorder placeholders, resize, and toggle. The main CC grid renders in `content_rect`. **No `/api/tmux/*`, no child processes, no per-panel emulator.** The left instance is scaffolded (same class) but empty. |
+| **M2 — Resources ✅** | Per-panel `TerminalSurface` (emulator + PTY) via the `term_grid` port; teammate grids render live; the keyboard routes to the focused terminal (⌥↑ / click toggles main ↔ overlay, collapse / unregister returns to main); panes re-fit only when the overlay width settles. (Per-pane mouse scroll / in-pane selection deferred to when teammates need them.) |
+| **M3 — Control plane ✅** | `POST /api/tmux` + the shim clean cutover (no real tmux); `split-window`/`send-keys`/`kill-pane`/`select-pane -T` drive real teammate panels. Unlock: seed `$TMUX` so CC picks the tmux backend. (Deferred: accent colours from `select-pane -P fg=…`, a glyph-render bug, atlas garbage under load.) |
+| M4 — Sessions / left sidebar | The left instance goes live: top-level sessions, switcher, displace; `SwitchSession` re-points the right manager at the active session's teammates. |
+
+### 10.1 Milestone 1 as an honest subset
+
+| Layer | Full architecture | M1 |
+|---|---|---|
+| `PanelManager` class | left + right instances | **right** instance live; left empty scaffold |
+| `Panel.surface` | emulator + PTY | `None` (placeholders) |
+| Render | grids + 2 views | content grid as today + `panel_manager_view(right)` |
+| Overlay | resizable + toggle + indicator + anim | **all of it** (UI is the point of M1) |
+| Indicator | derived from running children | derived from placeholder count |
+| Focus | single `focus`, keyboard-routed | single `focus`, visual highlight only |
+| Control plane / child / API | §8 / §9 | — |
+
+Nothing in M1 is rebuilt later — only extended (add `surface`, child, API).
+
+---
+
+## 11. Open questions (TBD)
+
+1. **Internal layout of the right overlay** — ~~stack vs nested tiling?~~ **RESOLVED
+   (2026-06-01): a horizontal PAGER**, implemented in M1.5 (`uikit::pager`). The
+   overlay is a narrow vertical strip and each page is a full child terminal that
+   scrolls itself, so a co-scrolling stack gives ambiguous nested scroll and doesn't
+   fit; tiling makes panes uselessly thin. A pager shows one page at a time and pages
+   horizontally, keeping the gesture axes orthogonal (vertical wheel scrolls the
+   teammate, horizontal switches). Built as the web-carousel "translate the track"
+   model (continuous `scroll` float = truth, index derived, `current±1` window,
+   neighbours clipped to the viewport via the new `Mod::Clip`). No BSP / `term_layout`
+   anywhere. Nav: ⌥←/⌥→, clicks on the ‹/›/dots strip, and a two-finger trackpad
+   swipe (continuous-progress: the page follows the finger and snaps on release by
+   `round(pos ± 0.5)` with a velocity nudge, one page per gesture).
+2. **`$TMUX` / `$TMUX_PANE` seeding** for the main CC (see §8) — resolve by experiment
+   at M3.
+3. **Scroll/selection targeting** — cursor-under (default, §6) vs follow-focus. Default
+   stands unless revisited.
+
+---
+
+## 12. Invariant alignment
+
+- **R1 (no MVI):** unaffected — this builds on the plain `AppState` + `apply` loop.
+- **R5 (grid stays direct):** preserved — panel grids are `populate_panel` loops;
+  frames/lists/indicator are views.
+- **R10 (GpuApp = resources + one AppState + views + pure apply/effects):** preserved —
+  two managers are nested AppState truth; resources stay in the coordinator; the loop is
+  extended, not replaced.
+- **R12 (derived, not stored):** the indicator (`any_active`) and "active session" are
+  derived; only `panels`/`focus`/`visible`/`width` are stored.
+- **R11 (capabilities designed now):** the overlay animation uses the existing
+  `term_ui::anim` epoch — a designed-now capability, not a deferral.

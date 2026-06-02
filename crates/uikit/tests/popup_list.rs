@@ -6,7 +6,7 @@
 
 use glam::Vec2;
 use term_gpu::{FontFamily, FontSystem, TextShapeCache};
-use term_ui::{build_root, measure, place, NodeKind, RetainedTree, SizeConstraint};
+use term_ui::{build_root, measure, place, Mod, NodeKind, RetainedTree, SizeConstraint};
 use uikit::{fixed_row_window, popup_list, Segment};
 
 const DIM: [f32; 4] = [0.55, 0.55, 0.55, 1.0];
@@ -29,12 +29,12 @@ fn selected_row_is_a_highlight_block_others_are_text() {
     let kids = tree.node(root).children.clone();
     assert_eq!(kids.len(), 3, "one child per row");
     assert!(matches!(tree.node(kids[0]).kind, NodeKind::Text(_)), "row 0 is plain text");
-    assert!(matches!(tree.node(kids[1]).kind, NodeKind::Block(_)), "row 1 is a highlight block");
+    assert!(matches!(tree.node(kids[1]).kind, NodeKind::Modified(_)), "row 1 is a highlight box");
     assert!(matches!(tree.node(kids[2]).kind, NodeKind::Text(_)), "row 2 is plain text");
-    if let NodeKind::Block(style) = &tree.node(kids[1]).kind {
-        assert_eq!(style.background, HL, "highlight bar uses hl_bg");
+    if let NodeKind::Modified(modifier) = &tree.node(kids[1]).kind {
+        assert!(modifier.ops.contains(&Mod::Background(HL)), "highlight bar uses hl_bg");
     }
-    // The highlight block wraps exactly the row's text.
+    // The highlight box wraps exactly the row's text.
     let inner = tree.node(kids[1]).children.clone();
     assert_eq!(inner.len(), 1);
     assert!(matches!(tree.node(inner[0]).kind, NodeKind::Text(_)));

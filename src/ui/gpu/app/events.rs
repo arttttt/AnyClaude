@@ -22,7 +22,6 @@ use winit::event_loop::ActiveEventLoop;
 use winit::window::{WindowAttributes, WindowId};
 
 use crate::ui::app_state::{ApplyCtx, Effect, Msg};
-use crate::ui::gpu::diagnostic;
 use crate::ui::gpu::pty::ChildPty;
 
 use super::{UserEvent, INITIAL_H, INITIAL_W, MULTI_CLICK_THRESHOLD_MS, SCROLLBACK_LINES};
@@ -31,15 +30,15 @@ impl super::GpuApp {
     /// Translate a `Msg` to its state transition and perform the resulting
     /// effects: build the read-only `ApplyCtx`, call `AppState::apply`, then run
     /// each `Effect`. This is the single coordinator-side entry for the event
-    /// loop — every winit / user event funnels through here. `snapshot` is `None`
+    /// loop — every winit / user event funnels through here. `view` is `None`
     /// because only selection word/line-expansion needs the grid content; the
-    /// mouse-press path builds its own ctx that carries the snapshot (the
-    /// two-entry seam — see `on_mouse_press`), so the common path avoids cloning
-    /// it per keystroke / tick.
+    /// mouse-press path builds its own ctx that carries a borrowed view (the
+    /// two-entry seam — see `on_mouse_press`), so the common path carries
+    /// nothing per keystroke / tick.
     pub(super) fn dispatch(&mut self, msg: Msg) -> bool {
         let ctx = ApplyCtx {
             now: Instant::now(),
-            snapshot: None,
+            view: None,
             multi_click_threshold_ms: MULTI_CLICK_THRESHOLD_MS,
         };
         let effects = self.state.apply(msg, &ctx);
@@ -72,13 +71,8 @@ impl super::GpuApp {
                         pty.resize(cols as u16, rows as u16);
                     }
                 }
-                Effect::WriteToPty(bytes) => {
-                    if let Some(pty) = self.session.pty.as_mut() {
-                        if let Err(e) = pty.write(&bytes) {
-                            eprintln!("anyclaude: PTY write failed: {e}");
-                        }
-                    }
-                }
+                Effect::WriteToPty(bytes) => self.write_to_main(&bytes),
+                Effect::WriteToFocused(bytes) => self.write_to_focused(&bytes),
                 Effect::ToggleBackendPopup => self.toggle_backend_switch_popup(),
                 Effect::ToggleHistoryPopup => self.toggle_history_popup(),
                 Effect::ToggleSettingsPopup => self.toggle_settings_popup(),
@@ -89,7 +83,7 @@ impl super::GpuApp {
                 Effect::CopySessionId => self.copy_session_id(),
                 Effect::Paste => self.paste_into_pty(),
                 Effect::RestartPty => self.restart_pty(),
-                Effect::DumpDiagnostic => self.dump_diagnostic(),
+                Effect::DebugTogglePanels => self.debug_toggle_panels(),
                 Effect::Quit => exit = true,
                 Effect::Drain => {
                     if self.drain_pty() {
@@ -101,16 +95,107 @@ impl super::GpuApp {
         exit
     }
 
-    /// Dump a diagnostic snapshot (grid + scroll + emulator) to stderr.
-    fn dump_diagnostic(&self) {
-        let snap = self.session.emulator.as_ref().map(|e| e.snapshot());
-        diagnostic::dump_snapshot(
-            self.state.grid_size,
-            self.state.scroll.offset_y,
-            self.state.scroll.max_offset(),
-            snap.as_ref(),
-        );
+    /// React to one teammate-session lifecycle event: the [`ChildSessionManager`]
+    /// updates identity + `state.right` (UI), and the coordinator orchestrates the
+    /// matching resources — spawn a [`TerminalSurface`] into `panes` on `Register`,
+    /// drop it on `Unregister`. The single coordinator entry point for
+    /// `ChildSessionEvent`s (debug emitter today, `TmuxAdapter` later).
+    fn apply_child_session_event(
+        &mut self,
+        event: crate::ui::child_session::ChildSessionEvent,
+    ) -> Option<crate::ui::child_session::PaneId> {
+        use crate::ui::child_session::ChildSessionEvent;
+        // Pull out what the resource side needs before the event is consumed.
+        let spec = match &event {
+            ChildSessionEvent::Register(s) => Some(s.clone()),
+            _ => None,
+        };
+        let closing = match &event {
+            ChildSessionEvent::Unregister(p) => Some(*p),
+            _ => None,
+        };
+        let input = match &event {
+            ChildSessionEvent::Input { pane, data } => Some((*pane, data.clone())),
+            _ => None,
+        };
+
+        let new_pane = self.child_sessions.apply(event, &mut self.state.right);
+
+        if let (Some(spec), Some(pane)) = (spec, new_pane) {
+            let (cols, rows) = super::INITIAL_PANE_GRID;
+            let proxy = self.proxy.clone();
+            let on_data = move || {
+                let _ = proxy.send_event(UserEvent::PtyBytes(pane));
+            };
+            if let Err(e) = self.panes.spawn(pane, &spec, cols, rows, on_data) {
+                eprintln!("anyclaude: teammate pane spawn failed: {e}");
+            }
+        }
+        if let Some(pane) = closing {
+            self.panes.remove(pane);
+        }
+        // send-keys: type the bytes into the pane's PTY (its shell runs the
+        // teammate command). A pure resource op — the registry stayed out of it.
+        if let Some((pane, data)) = input {
+            if let Some(surface) = self.panes.get_mut(pane) {
+                if let Err(e) = surface.write(&data) {
+                    eprintln!("anyclaude: teammate input write failed: {e}");
+                }
+            }
+        }
+        // Unregistering the last teammate hides the overlay → drop keyboard focus
+        // back to the main session.
+        self.state.normalize_input_focus();
+        self.request_redraw();
+        new_pane
     }
+
+    /// Debug-only (Ctrl+P): show / hide the right teammates overlay. Real
+    /// teammates register through the control plane (`/api/tmux`) and auto-show
+    /// the overlay; this is just a dev convenience to toggle it by keyboard.
+    fn debug_toggle_panels(&mut self) {
+        self.state.right.toggle();
+        // Collapsing the overlay drops keyboard focus back to the main session.
+        self.state.normalize_input_focus();
+        self.request_redraw();
+    }
+
+    /// The pane behind the focused teammate panel, if any — the keyboard target
+    /// when input is routed to the overlay. `pub(super)` so the paste path
+    /// (clipboard module) resolves the same target.
+    pub(super) fn focused_pane(&self) -> Option<crate::ui::child_session::PaneId> {
+        let panel = self.state.right.focus()?;
+        self.child_sessions.pane_for(panel)
+    }
+
+    /// Write `bytes` to whichever terminal holds keyboard focus: the focused
+    /// teammate pane when input is routed to the overlay (`input_on_teammates`),
+    /// otherwise the main session. Falls back to the main session if the focused
+    /// pane has vanished (so a keystroke is never silently dropped).
+    pub(super) fn write_to_focused(&mut self, bytes: &[u8]) {
+        if self.state.input_on_teammates() {
+            if let Some(pane) = self.focused_pane() {
+                if let Some(surface) = self.panes.get_mut(pane) {
+                    if let Err(e) = surface.write(bytes) {
+                        eprintln!("anyclaude: teammate PTY write failed: {e}");
+                    }
+                    return;
+                }
+            }
+        }
+        self.write_to_main(bytes);
+    }
+
+    /// Write `bytes` to the main session's PTY — the default keyboard target and
+    /// the sink for mouse reports (always the main grid under the cursor).
+    pub(super) fn write_to_main(&mut self, bytes: &[u8]) {
+        if let Some(pty) = self.session.pty.as_mut() {
+            if let Err(e) = pty.write(bytes) {
+                eprintln!("anyclaude: PTY write failed: {e}");
+            }
+        }
+    }
+
 }
 
 impl ApplicationHandler<UserEvent> for super::GpuApp {
@@ -166,6 +251,18 @@ impl ApplicationHandler<UserEvent> for super::GpuApp {
             UserEvent::PtyBytesArrived => {
                 self.dispatch(Msg::PtyBytes);
             }
+            UserEvent::PtyBytes(pane) => {
+                if self.panes.drain(pane) {
+                    self.request_redraw();
+                }
+            }
+            UserEvent::ControlPlane(req) => {
+                // The tmux adapter (tokio) asked the coordinator to apply a
+                // teammate lifecycle event; answer its reply channel with the
+                // minted PaneId (the `%N` the shim expects back).
+                let pane = self.apply_child_session_event(req.event);
+                let _ = req.reply.send(pane);
+            }
             UserEvent::GestureEnded => {
                 self.dispatch(Msg::GestureEnd);
             }
@@ -208,10 +305,27 @@ impl ApplicationHandler<UserEvent> for super::GpuApp {
                 self.dispatch(Msg::ModifiersChanged(mods.state()));
             }
             WindowEvent::MouseWheel { delta, phase, .. } => {
-                let (precise, dy) = match delta {
-                    MouseScrollDelta::PixelDelta(p) => (true, p.y as f32),
-                    MouseScrollDelta::LineDelta(_, v) => (false, v * NUM_PIXELS_PER_LINE),
+                let (precise, dx, dy) = match delta {
+                    MouseScrollDelta::PixelDelta(p) => (true, p.x as f32, p.y as f32),
+                    MouseScrollDelta::LineDelta(h, v) => {
+                        (false, h * NUM_PIXELS_PER_LINE, v * NUM_PIXELS_PER_LINE)
+                    }
                 };
+                // Over the teammates overlay the wheel never reaches the terminal
+                // underneath: a horizontal two-finger swipe PAGES the overlay,
+                // while a vertical wheel SCROLLS the focused teammate's grid.
+                // Once a swipe is in flight, keep ALL its events (incl. the
+                // dx≈dy≈0 `Ended`) going to it so it still snaps on release —
+                // routing that `Ended` to the scroll branch would strand the page
+                // mid-swipe (no `release_swipe`).
+                if self.cursor_over_overlay() {
+                    if self.page_swipe.active || dx.abs() > dy.abs() {
+                        self.page_swipe(dx, dy, phase);
+                    } else if self.scroll_focused_pane(dy) {
+                        self.request_redraw();
+                    }
+                    return;
+                }
                 // A mouse-reporting app gets the wheel as button 64 / 65 instead
                 // of scrolling our scrollback (§6).
                 let wheel = if dy > 0.0 { MouseButton::WheelUp } else { MouseButton::WheelDown };
@@ -225,6 +339,20 @@ impl ApplicationHandler<UserEvent> for super::GpuApp {
                 let PhysicalPosition { x, y } = position;
                 let sf = self.scale_factor.max(0.0001);
                 let (lx, ly) = (x as f32 / sf, y as f32 / sf);
+                // Hover cursor: resize over a panel edge, pointer over the pill.
+                self.update_hover_cursor(lx, ly);
+                // A panel-edge drag owns cursor motion: the overlay hugs the
+                // window's right edge, so the dragged width is `right - cursor_x`.
+                if let Some(mgr) = self.state.panel_edge_drag {
+                    let win_w = self.window.as_ref().map(|w| w.inner_size().width as f32 / sf);
+                    if let Some(win_w) = win_w {
+                        // Cap the overlay at a fraction of the window width.
+                        let width =
+                            (win_w - lx).min(win_w * super::MAX_OVERLAY_WIDTH_FRACTION);
+                        self.dispatch(Msg::PanelResize { mgr, width });
+                    }
+                    return;
+                }
                 // Resolve the cell when a selection drag is in flight OR a
                 // mouse-reporting app wants motion (both read the emulator
                 // snapshot — skip the cost otherwise).
@@ -284,12 +412,20 @@ impl ApplicationHandler<UserEvent> for super::GpuApp {
                 // since the event loop is the coordinator's to drive. Resolve the
                 // resource-backed inputs the encoder needs here: the DECCKM state
                 // (SS3 vs CSI arrows) and the un-composed base key (Meta form).
-                let app_cursor = self
-                    .session
-                    .emulator
-                    .as_ref()
-                    .map(|e| e.cursor_keys_app())
-                    .unwrap_or(false);
+                // The DECCKM is read from the FOCUSED terminal — a focused
+                // teammate's arrows encode against its own mode, not the main's.
+                let app_cursor = if self.state.input_on_teammates() {
+                    self.focused_pane()
+                        .and_then(|pane| self.panes.get(pane))
+                        .map(|s| s.app_cursor())
+                        .unwrap_or(false)
+                } else {
+                    self.session
+                        .emulator
+                        .as_ref()
+                        .map(|e| e.cursor_keys_app())
+                        .unwrap_or(false)
+                };
                 let logical_unmod = key_without_modifiers(&event);
                 if self.dispatch(Msg::Key {
                     logical: event.logical_key,

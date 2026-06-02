@@ -22,7 +22,7 @@ pub mod parser;
 
 pub use attrs::CellFlags;
 pub use color::{AnsiPalette, TermColor};
-pub use emulator::{CursorState, RenderSnapshot, TerminalEmulator, VtEmulator};
+pub use emulator::{CursorState, RenderSnapshot, RenderView, TerminalEmulator, VtEmulator};
 pub use grid::{
     Cell, CellExtra, CursorStyle, Grid, MouseEncoding, MouseProtocol, MouseTracking, PromptMarker,
     Row,

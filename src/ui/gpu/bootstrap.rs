@@ -77,6 +77,20 @@ pub fn run(
     let debug_logger = Arc::new(DebugLogger::new(debug_config));
     init_global_logger(debug_logger.clone());
 
+    // --- Winit event loop + control-plane bridge --------------------
+    // Built BEFORE the proxy so the proxy can hold a handle that wakes the
+    // coordinator: the tmux control plane crosses tokio→winit through it.
+    let event_loop = EventLoop::<UserEvent>::with_user_event()
+        .build()
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
+    let proxy = event_loop.create_proxy();
+    let control_plane = crate::ui::control_plane::ControlPlaneHandle::new({
+        let proxy = proxy.clone();
+        move |req| {
+            let _ = proxy.send_event(UserEvent::ControlPlane(req));
+        }
+    });
+
     // --- Proxy server + bind ----------------------------------------
     let mut proxy_server = ProxyServer::new(
         config_store.clone(),
@@ -84,6 +98,7 @@ pub fn run(
         Some(session_token.clone()),
     )
     .map_err(|e| std::io::Error::other(e.to_string()))?;
+    proxy_server.set_control_plane(control_plane);
     let (actual_addr, actual_base_url) = async_runtime
         .block_on(async { proxy_server.try_bind(&config_store).await })
         .map_err(|e| std::io::Error::other(e.to_string()))?;
@@ -122,14 +137,19 @@ pub fn run(
         .args
         .extend(ArgAssembler::new().with_subagent_hooks(actual_addr.port()).build());
 
-    // --- Inject shim PATH into spawn.env ----------------------------
+    // --- Inject shim PATH + fake $TMUX into spawn.env ---------------
     if let Some(ref shim) = teammate_shim {
         let (key, value) = shim.path_env();
-        if let Some(existing) = spawn.env.iter_mut().find(|(k, _)| k == &key) {
-            existing.1 = value;
-        } else {
-            spawn.env.push((key, value));
-        }
+        set_env(&mut spawn.env, &key, value);
+        // Make Claude Code believe it runs INSIDE a tmux session so its
+        // BackendRegistry picks the tmux pane backend (which drives our
+        // /api/tmux shim) instead of spawning teammates in-process. CC checks
+        // `!!process.env.TMUX` (truthiness) and parses it as `socket,pid,session`
+        // — the socket is only used as `tmux -S <socket>`, which our shim
+        // ignores. `$TMUX_PANE = %0` marks the main CC pane.
+        let tmux_socket = format!("/tmp/anyclaude-tmux-{session_id}.sock");
+        set_env(&mut spawn.env, "TMUX", format!("{tmux_socket},{},0", std::process::id()));
+        set_env(&mut spawn.env, "TMUX_PANE", "%0".to_string());
     }
 
     // --- Capture proxy state and run proxy as a tokio task ----------
@@ -145,10 +165,6 @@ pub fn run(
 
     // --- Hand off to the winit event loop ---------------------------
     let _ = scrollback_lines; // Reserved for future grid configuration.
-    let event_loop = EventLoop::<UserEvent>::with_user_event()
-        .build()
-        .map_err(|e| std::io::Error::other(e.to_string()))?;
-    let proxy = event_loop.create_proxy();
     let mut app = GpuApp::new(
         proxy,
         spawn.command,
@@ -169,4 +185,14 @@ pub fn run(
     drop(teammate_shim);
     drop(async_runtime);
     Ok(())
+}
+
+/// Set `key=value` in a spawn-env list, overriding any existing entry (so an
+/// inherited `$TMUX`/`PATH` from the parent is replaced, not duplicated).
+fn set_env(env: &mut Vec<(String, String)>, key: &str, value: String) {
+    if let Some(existing) = env.iter_mut().find(|(k, _)| k == key) {
+        existing.1 = value;
+    } else {
+        env.push((key.to_string(), value));
+    }
 }

@@ -74,19 +74,20 @@ pub fn measure(
     let size = match kind {
         NodeKind::Text(style) => constraint.apply(measure_text(fonts, shape, &style, scale_factor)),
         NodeKind::Spacer(sizing) => measure_spacer(sizing, constraint),
-        NodeKind::Block(style) => {
-            // Block wraps one child; size = child + padding, clamped.
-            let pad = style.padding.total();
+        NodeKind::Modified(modifier) => {
+            // size = child + the modifier's total box insets (padding + margin +
+            // border), clamped. Order-independent for measure (the insets are
+            // additive); the paint fold honours order.
+            let insets = modifier.box_insets();
+            let pad = Vec2::new(insets.horizontal(), insets.vertical());
             let inner_max = (constraint.max - pad).max(Vec2::ZERO);
-            let child_constraint = SizeConstraint::loose(inner_max);
             let children = tree.take_children(id);
             let mut inner = Vec2::ZERO;
             if let Some(&child) = children.first() {
-                inner = measure(tree, child, child_constraint, fonts, shape, scale_factor);
+                inner = measure(tree, child, SizeConstraint::loose(inner_max), fonts, shape, scale_factor);
             }
             tree.restore_children(id, children);
-            let border = style.border_width * 2.0;
-            constraint.apply(inner + pad + Vec2::splat(border))
+            constraint.apply(inner + pad)
         }
         NodeKind::Stack(stack) => measure_stack(
             tree, id, &stack, constraint, fonts, shape, scale_factor,
@@ -228,21 +229,19 @@ pub fn place(tree: &mut RetainedTree, id: NodeId, origin: Vec2) {
     let kind = tree.node(id).kind.clone();
     match kind {
         NodeKind::Text(_) | NodeKind::Spacer(_) => {}
-        NodeKind::Block(style) => {
-            // A Block stretches its single child to its inner content box. When
-            // a parent sized the Block larger than its child (a Fixed/Stretch
-            // slot — e.g. a full-width chrome bar wrapping a left-aligned row),
-            // the child fills the whole area, so a child stack's own
-            // CrossAxis::Stretch reaches the Block's edges. When the Block is
-            // sized to its child (the default), `inner` equals the child's own
-            // measured size, so this is a no-op.
-            let inner = (measured - style.padding.total() - Vec2::splat(style.border_width * 2.0))
-                .max(Vec2::ZERO);
+        NodeKind::Modified(modifier) => {
+            // `Offset` shifts this node (and its subtree) without changing size,
+            // so a box can straddle/overhang its slot; re-stamp the bounds with
+            // the shifted origin. Then stretch the single child to the inner box
+            // (measured minus the box insets) at the leading-inset offset.
+            let origin = origin + modifier.total_offset();
+            tree.node_mut(id).bounds = Bounds::new(origin, measured);
+            let insets = modifier.box_insets();
+            let inner =
+                (measured - Vec2::new(insets.horizontal(), insets.vertical())).max(Vec2::ZERO);
             let children = tree.take_children(id);
             if let Some(&child) = children.first() {
-                let inner_origin = origin
-                    + style.padding.top_left()
-                    + Vec2::splat(style.border_width);
+                let inner_origin = origin + Vec2::new(insets.left, insets.top);
                 tree.node_mut(child).measured = inner;
                 place(tree, child, inner_origin);
             }

@@ -38,9 +38,24 @@ impl Cell {
         }
     }
 
-    /// Reset to a blank, default-attributes cell.
-    pub fn reset(&mut self) {
-        *self = Cell::space();
+    /// A blank cell carrying `bg` as its background — the unit of
+    /// background-color-erase (bce). Erases and scroll-exposed cells use
+    /// this so that "set bg → erase" fills the region with the current
+    /// background instead of the default (xterm bce behaviour).
+    pub const fn blank(bg: TermColor) -> Self {
+        Self {
+            c: ' ',
+            fg: TermColor::Default,
+            bg,
+            flags: CellFlags::empty(),
+            extra: None,
+        }
+    }
+
+    /// Reset to a blank cell, filling the background with `bg` (bce). Pass
+    /// `TermColor::Default` for a plain blank.
+    pub fn reset(&mut self, bg: TermColor) {
+        *self = Cell::blank(bg);
     }
 
     /// Append a zero-width / combining codepoint to this cell.
@@ -202,16 +217,27 @@ impl Row {
         }
     }
 
+    /// A row of blank cells whose background is `bg` (bce). Used for rows
+    /// newly exposed by scrolling / IL / DL while a non-default background
+    /// is set.
+    pub fn blank(cols: usize, bg: TermColor) -> Self {
+        Self {
+            cells: vec![Cell::blank(bg); cols],
+        }
+    }
+
     pub fn resize(&mut self, cols: usize) {
         self.cells.resize(cols, Cell::space());
     }
 
-    /// Clear cells in `range` (in-place reset to blank).
-    pub fn clear_range(&mut self, range: std::ops::Range<usize>) {
+    /// Clear cells in `range`, filling each with a blank carrying `bg`
+    /// (background-color-erase). Pass `TermColor::Default` for a plain
+    /// clear.
+    pub fn clear_range(&mut self, range: std::ops::Range<usize>, bg: TermColor) {
         let end = range.end.min(self.cells.len());
         let start = range.start.min(end);
         for cell in &mut self.cells[start..end] {
-            cell.reset();
+            cell.reset(bg);
         }
     }
 }
@@ -378,12 +404,32 @@ impl Grid {
         self.rows.iter()
     }
 
+    /// The whole buffer (scrollback first, then visible) as a slice — the
+    /// zero-copy backing for [`RenderView`](crate::RenderView). Pairs with
+    /// [`visible_rows`](Self::visible_rows) to locate the visible region.
+    pub fn all_rows(&self) -> &[Row] {
+        &self.rows
+    }
+
     // ─── Printing ──────────────────────────────────────────────────────────
 
-    /// Print one grapheme base character at the cursor; advances the cursor
-    /// by 1 (callers handle wide-char spacing separately).
+    /// Print one character at the cursor. East-Asian Wide / Fullwidth
+    /// characters (`UnicodeWidthChar::width` == 2) occupy two cells: the
+    /// base cell carries `WIDE_CHAR` and the following cell is a blank
+    /// `WIDE_CHAR_SPACER`. All other printables advance the cursor by one.
+    /// Width comes from `unicode-width` (same source as Warp), so the
+    /// column accounting matches what the application expects.
     pub fn print(&mut self, c: char) {
-        if self.auto_wrap && self.cursor_col >= self.cols {
+        use unicode_width::UnicodeWidthChar;
+        // Treat width-0 (combining/zero-width) and unknown as 1 cell here:
+        // the parser only forwards printables, and zero-width composition is
+        // a separate concern (push_zerowidth). Clamp to the row width.
+        let width = UnicodeWidthChar::width(c).unwrap_or(1).max(1).min(self.cols.max(1));
+
+        // Wrap if the glyph doesn't fit on the current row. A wide char that
+        // would straddle the right edge wraps wholesale to the next row,
+        // leaving the last column blank (matches xterm / Warp).
+        if self.auto_wrap && self.cursor_col + width > self.cols {
             let cols = self.cols;
             if cols > 0 {
                 self.row_mut(self.cursor_row).cells[cols - 1]
@@ -394,7 +440,11 @@ impl Grid {
             self.linefeed();
         }
         let col = self.cursor_col.min(self.cols.saturating_sub(1));
-        let (fg, bg, flags) = (self.current_fg, self.current_bg, self.current_flags);
+        let (fg, bg) = (self.current_fg, self.current_bg);
+        let mut flags = self.current_flags;
+        if width == 2 {
+            flags.set(CellFlags::WIDE_CHAR);
+        }
 
         // Attach OSC 8 hyperlink (sticky) and OSC 133 prompt marker
         // (one-shot — taken here, not on subsequent prints).
@@ -417,7 +467,24 @@ impl Grid {
             flags,
             extra,
         };
-        self.cursor_col = col + 1;
+
+        // Wide char: write the trailing spacer cell. It has no glyph of its
+        // own (renderers skip it) but carries the same bg so bce/selection
+        // stay consistent across the pair.
+        if width == 2 && col + 1 < self.cols {
+            let mut spacer_flags = self.current_flags;
+            spacer_flags.set(CellFlags::WIDE_CHAR_SPACER);
+            let spacer = &mut self.row_mut(self.cursor_row).cells[col + 1];
+            *spacer = Cell {
+                c: ' ',
+                fg,
+                bg,
+                flags: spacer_flags,
+                extra: None,
+            };
+        }
+
+        self.cursor_col = (col + width).min(self.cols);
         self.last_printed = Some(c);
     }
 
@@ -504,13 +571,15 @@ impl Grid {
     pub fn erase_chars(&mut self, n: usize) {
         let start = self.cursor_col;
         let end = (start + n).min(self.cols);
-        self.row_mut(self.cursor_row).clear_range(start..end);
+        let bg = self.current_bg;
+        self.row_mut(self.cursor_row).clear_range(start..end, bg);
     }
 
     /// **ICH** — insert N blank cells at the cursor.
     pub fn insert_chars(&mut self, n: usize) {
         let cols = self.cols;
         let col = self.cursor_col.min(cols);
+        let bg = self.current_bg;
         let row = self.row_mut(self.cursor_row);
         let count = n.min(cols - col);
         if count == 0 {
@@ -518,7 +587,7 @@ impl Grid {
         }
         row.cells[col..].rotate_right(count);
         for cell in &mut row.cells[col..col + count] {
-            cell.reset();
+            cell.reset(bg);
         }
     }
 
@@ -526,6 +595,7 @@ impl Grid {
     pub fn delete_chars(&mut self, n: usize) {
         let cols = self.cols;
         let col = self.cursor_col.min(cols);
+        let bg = self.current_bg;
         let row = self.row_mut(self.cursor_row);
         let count = n.min(cols - col);
         if count == 0 {
@@ -533,7 +603,7 @@ impl Grid {
         }
         row.cells[col..].rotate_left(count);
         for cell in &mut row.cells[cols - count..] {
-            cell.reset();
+            cell.reset(bg);
         }
     }
 
@@ -543,6 +613,7 @@ impl Grid {
             return;
         }
         let cols = self.cols;
+        let bg = self.current_bg;
         let n = n.min(self.scroll_bottom - self.cursor_row + 1);
         for _ in 0..n {
             let remove_idx = self.visible_start() + self.scroll_bottom;
@@ -550,7 +621,7 @@ impl Grid {
                 self.rows.remove(remove_idx);
             }
             let insert_idx = self.visible_start() + self.cursor_row;
-            self.rows.insert(insert_idx, Row::new(cols));
+            self.rows.insert(insert_idx, Row::blank(cols, bg));
         }
     }
 
@@ -560,6 +631,7 @@ impl Grid {
             return;
         }
         let cols = self.cols;
+        let bg = self.current_bg;
         let n = n.min(self.scroll_bottom - self.cursor_row + 1);
         for _ in 0..n {
             let remove_idx = self.visible_start() + self.cursor_row;
@@ -567,7 +639,7 @@ impl Grid {
                 self.rows.remove(remove_idx);
             }
             let insert_idx = self.visible_start() + self.scroll_bottom;
-            self.rows.insert(insert_idx, Row::new(cols));
+            self.rows.insert(insert_idx, Row::blank(cols, bg));
         }
     }
 
@@ -597,6 +669,7 @@ impl Grid {
     /// into scrollback when `scroll_top == 0`.
     pub fn scroll_up(&mut self, n: usize) {
         let cols = self.cols;
+        let bg = self.current_bg;
         for _ in 0..n {
             if self.scroll_top == 0 {
                 if self.scrollback_len() >= self.max_scrollback {
@@ -605,25 +678,26 @@ impl Grid {
                 }
                 let insert_idx = self.visible_start() + self.scroll_bottom + 1;
                 let insert_idx = insert_idx.min(self.rows.len());
-                self.rows.insert(insert_idx, Row::new(cols));
+                self.rows.insert(insert_idx, Row::blank(cols, bg));
             } else {
                 let remove_idx = self.visible_start() + self.scroll_top;
                 self.rows.remove(remove_idx);
                 let insert_idx = self.visible_start() + self.scroll_bottom;
-                self.rows.insert(insert_idx, Row::new(cols));
+                self.rows.insert(insert_idx, Row::blank(cols, bg));
             }
         }
     }
 
     pub fn scroll_down(&mut self, n: usize) {
         let cols = self.cols;
+        let bg = self.current_bg;
         for _ in 0..n {
             let remove_idx = self.visible_start() + self.scroll_bottom;
             if remove_idx < self.rows.len() {
                 self.rows.remove(remove_idx);
             }
             let insert_idx = self.visible_start() + self.scroll_top;
-            self.rows.insert(insert_idx, Row::new(cols));
+            self.rows.insert(insert_idx, Row::blank(cols, bg));
         }
     }
 
@@ -647,27 +721,33 @@ impl Grid {
     pub fn erase_display(&mut self, mode: super::parser::EraseMode) {
         use super::parser::EraseMode;
         let cols = self.cols;
+        let bg = self.current_bg;
         match mode {
             EraseMode::ToEnd => {
                 self.erase_line(EraseMode::ToEnd);
                 for r in (self.cursor_row + 1)..self.visible_rows {
-                    self.row_mut(r).clear_range(0..cols);
+                    self.row_mut(r).clear_range(0..cols, bg);
                 }
             }
             EraseMode::ToStart => {
                 for r in 0..self.cursor_row {
-                    self.row_mut(r).clear_range(0..cols);
+                    self.row_mut(r).clear_range(0..cols, bg);
                 }
                 self.erase_line(EraseMode::ToStart);
             }
             EraseMode::All => {
                 for r in 0..self.visible_rows {
-                    self.row_mut(r).clear_range(0..cols);
+                    self.row_mut(r).clear_range(0..cols, bg);
                 }
             }
             EraseMode::Scrollback => {
+                // ED 3 — clear scrollback. The viewport anchor counts every
+                // line that leaves the top of the buffer, so a drained
+                // scrollback must advance lines_evicted too; otherwise a
+                // scrolled-up viewport loses its anchor and jumps.
                 let start = self.visible_start();
                 self.rows.drain(0..start);
+                self.lines_evicted += start as u64;
             }
         }
     }
@@ -676,11 +756,12 @@ impl Grid {
         use super::parser::EraseMode;
         let cols = self.cols;
         let col = self.cursor_col;
+        let bg = self.current_bg;
         let row = self.row_mut(self.cursor_row);
         match mode {
-            EraseMode::All => row.clear_range(0..cols),
-            EraseMode::ToEnd => row.clear_range(col..cols),
-            EraseMode::ToStart => row.clear_range(0..(col + 1).min(cols)),
+            EraseMode::All => row.clear_range(0..cols, bg),
+            EraseMode::ToEnd => row.clear_range(col..cols, bg),
+            EraseMode::ToStart => row.clear_range(0..(col + 1).min(cols), bg),
             EraseMode::Scrollback => {}
         }
     }
@@ -867,7 +948,7 @@ impl Grid {
         self.last_printed = None;
         for r in 0..self.visible_rows {
             let cols = self.cols;
-            self.row_mut(r).clear_range(0..cols);
+            self.row_mut(r).clear_range(0..cols, TermColor::Default);
         }
     }
 }
@@ -952,7 +1033,18 @@ fn rewrap(logical: &[LogicalLine], new_cols: usize) -> Vec<Row> {
         }
         let mut start = 0;
         while start < cells.len() {
-            let end = (start + new_cols).min(cells.len());
+            let mut end = (start + new_cols).min(cells.len());
+            // Don't split a wide-char pair across the boundary: if the chunk
+            // would end on a WIDE_CHAR (leaving its WIDE_CHAR_SPACER for the
+            // next row), pull the boundary back so the pair stays together.
+            // Skip when the wide char is the chunk's only cell (new_cols == 1)
+            // — pulling back would yield an empty row and loop forever.
+            if end < cells.len()
+                && end - 1 > start
+                && cells[end - 1].flags.contains(CellFlags::WIDE_CHAR)
+            {
+                end -= 1;
+            }
             let mut row = Row::new(new_cols);
             for (i, cell) in cells[start..end].iter().enumerate() {
                 row.cells[i] = cell.clone();

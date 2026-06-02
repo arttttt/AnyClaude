@@ -21,16 +21,32 @@ pub enum AppShortcut {
     ToggleHistoryPopup,
     ToggleSettingsPopup,
     RestartPty,
-    DumpDiagnostic,
+    /// Debug-only (Ctrl+P): show / hide the right teammates overlay. The only
+    /// remaining debug keybinding (`cfg(debug_assertions)`-gated); real teammates
+    /// also auto-show the overlay on register and the pill toggles it.
+    DebugTogglePanels,
     Quit,
+}
+
+impl AppShortcut {
+    /// Whether this shortcut opens / closes a popup. These resolve even while a
+    /// popup is already open — so the same hotkey toggles it shut and a sibling
+    /// hotkey switches popups — whereas every other shortcut is swallowed by the
+    /// open popup's Esc / nav / Enter handler.
+    pub fn toggles_popup(self) -> bool {
+        matches!(
+            self,
+            AppShortcut::ToggleBackendPopup
+                | AppShortcut::ToggleHistoryPopup
+                | AppShortcut::ToggleSettingsPopup
+        )
+    }
 }
 
 /// Map a modifier combo to its app shortcut. Clipboard is **Cmd+C / Cmd+V**;
 /// app features are a single **Ctrl** chord. `Ctrl+B` (Claude Code) and `Ctrl+D`
-/// (EOF) are deliberately left for the terminal — backend takes `Ctrl+T`,
-/// diagnostic `Ctrl+G`. Diagnostic is a debug-build-only dev aid, so in a
-/// release build `Ctrl+G` falls through to the terminal too. `None` when no
-/// combo matches.
+/// (EOF) are deliberately left for the terminal — backend takes `Ctrl+T`. `None`
+/// when no combo matches.
 pub fn app_shortcut(code: KeyCode, modifiers: ModifiersState) -> Option<AppShortcut> {
     // macOS clipboard — Cmd, not Ctrl (Ctrl+C/V are interrupt / literal-next).
     if modifiers.super_key() {
@@ -48,8 +64,9 @@ pub fn app_shortcut(code: KeyCode, modifiers: ModifiersState) -> Option<AppShort
             KeyCode::KeyE => AppShortcut::ToggleSettingsPopup,
             KeyCode::KeyR => AppShortcut::RestartPty,
             KeyCode::KeyQ => AppShortcut::Quit,
+            // The only remaining debug keybinding: show / hide the overlay.
             #[cfg(debug_assertions)]
-            KeyCode::KeyG => AppShortcut::DumpDiagnostic,
+            KeyCode::KeyP => AppShortcut::DebugTogglePanels,
             _ => return None,
         });
     }

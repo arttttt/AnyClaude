@@ -19,6 +19,7 @@ use glam::Vec2;
 
 use crate::geometry::{Bounds, CrossAxis, Insets, MainAxis, Sizing};
 use crate::id::{NodeId, WidgetId};
+use crate::modifier::Modifier;
 
 /// What a node *is* — its paintable/laid-out content and style. This is the
 /// declarative payload that a `View` writes into the slot; it is pure data
@@ -28,9 +29,10 @@ use crate::id::{NodeId, WidgetId};
 pub enum NodeKind {
     /// A horizontal or vertical stack with Flex-lite layout config.
     Stack(StackStyle),
-    /// A styled container (background + optional border) that wraps a single
-    /// child with padding.
-    Block(BlockStyle),
+    /// A modifier-decorated single-child wrapper (background / border / corner /
+    /// shadow / padding / margin), the Compose-style styling node. Folds its
+    /// `Modifier` chain in measure/place/paint.
+    Modified(Modifier),
     /// A single line of variable-width text.
     Text(TextStyle),
     /// Empty space; sized by its `Sizing` in the parent (a flexible spacer)
@@ -59,17 +61,6 @@ pub struct BlockShadow {
     pub corner_radius: f32,
     pub offset: [f32; 2],
     pub color: [f32; 4],
-}
-
-/// Block (container) style: background fill + optional border + padding, plus an
-/// optional drop `shadow` (popups; `None` for plain containers).
-#[derive(Clone, PartialEq, Debug)]
-pub struct BlockStyle {
-    pub background: [f32; 4],
-    pub border_color: [f32; 4],
-    pub border_width: f32,
-    pub padding: Insets,
-    pub shadow: Option<BlockShadow>,
 }
 
 /// Text content + shaping style.

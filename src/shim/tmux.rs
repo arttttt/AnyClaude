@@ -1,55 +1,42 @@
 //! tmux PATH shim.
 //!
-//! Intercepts all tmux calls from Claude Code. For `send-keys` commands
-//! that spawn a teammate process, injects `ANTHROPIC_BASE_URL` pointing
-//! to `/teammate/{agent_id}` on our proxy so the routing layer can
-//! identify the teammate and direct traffic to the correct backend.
+//! Intercepts every tmux call from Claude Code and forwards it to the proxy's
+//! `/api/tmux` control plane — anyclaude IS the tmux, there is no real tmux
+//! server. The `TmuxAdapter` behind that endpoint turns each verb into a
+//! teammate-pane lifecycle event (`split-window` → a pane, `kill-pane` →
+//! removal, `send-keys` → typing into the pane's PTY, …) and replies the pane
+//! `%N` for synchronous verbs, which the shim prints to stdout like real tmux.
 //!
-//! The agent_id is embedded in the URL path (not a header) because
-//! URL is the most reliable transport — headers can be stripped by
-//! proxies, CDNs, or CC itself.
+//! `send-keys` additionally gets the teammate routing rewrite: the spawned
+//! teammate's `ANTHROPIC_BASE_URL` is repointed at `/teammate/{agent_id}` on our
+//! proxy (and `/api/teammate-start` records the agent → backend mapping) so its
+//! API traffic is identified and routed to the right backend. The agent_id is
+//! embedded in the URL path (not a header) because the URL is the most reliable
+//! transport — headers can be stripped by proxies, CDNs, or CC itself.
 //!
-//! Detection relies on `--agent-id` flag (part of agent teams protocol),
-//! not on the binary path — works across all Claude Code installation
-//! methods (Homebrew, install.sh, npm, etc.).
-//!
-//! All other tmux commands are forwarded unchanged to the real binary,
-//! but always with `-L anyclaude-<session_id> -f <shim_dir>/tmux.conf`
-//! so teammate sessions run on their own tmux server with mouse scroll
-//! enabled, independent of the user's existing tmux server and config.
+//! Detection of a teammate spawn relies on the `--agent-id` flag (agent teams
+//! protocol), not the binary path — so it works across all Claude Code
+//! installation methods (Homebrew, install.sh, npm, …).
 
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 
 use super::write_executable;
 
 /// Log file name inside the shim directory.
 pub const LOG_FILENAME: &str = "tmux_shim.log";
 
-/// Tmux config file name inside the shim directory.
-/// Loaded via `-f` on an isolated `-L anyclaude-<session_id>` server so
-/// mouse/scroll work in teammate sessions regardless of whether the user
-/// already has a tmux server running or has a custom `~/.tmux.conf`.
-const CONF_FILENAME: &str = "tmux.conf";
-
-const CONF_CONTENT: &str = "\
-set -g mouse on
-set -g history-limit 100000
-";
-
 const TEMPLATE: &str = r#"#!/bin/bash
-# AnyClaude tmux shim — intercepts send-keys to inject teammate routing.
-#
-# Detects teammate spawns by --agent-id flag (agent teams protocol), then
-# registers the teammate via /api/teammate-start and replaces
-# ANTHROPIC_BASE_URL to route through /teammate/{agent_id} proxy path.
-# Agent ID is embedded in the URL (most reliable transport).
+# AnyClaude tmux shim — forwards every tmux verb to the proxy's /api/tmux control
+# plane (there is no real tmux; anyclaude renders the panes itself). send-keys
+# additionally gets the teammate ANTHROPIC_BASE_URL / header rewrite so the
+# teammate's API traffic routes through our proxy by agent_id.
 
 SHIM_DIR="$(cd "$(dirname "$0")" && pwd)"
 LOG_ENABLED=__LOG_ENABLED__
 LOG="$SHIM_DIR/tmux_shim.log"
-# Persistent log survives TempDir cleanup
+# Persistent log survives TempDir cleanup.
 PLOG="$HOME/.config/anyclaude/logs/tmux_shim.__SESSION_ID__.log"
 mkdir -p "$(dirname "$PLOG")" 2>/dev/null
 
@@ -58,28 +45,37 @@ slog() {
   echo "[$(date '+%H:%M:%S.%N')] $1" | tee -a "$LOG" >> "$PLOG"
 }
 
-# Find real tmux, skipping our shim directory.
-find_real_tmux() {
-  local IFS=':'
-  for d in $PATH; do
-    [ "$d" = "$SHIM_DIR" ] && continue
-    [ -x "$d/tmux" ] && echo "$d/tmux" && return
-  done
-}
-
 # Extract agent_id value from a string containing "--agent-id <value>".
 extract_agent_id() {
   printf '%s' "$1" | grep -oE '\-\-agent-id [^ ]+' | head -1 | cut -d' ' -f2
 }
 
-REAL_TMUX="$(find_real_tmux)"
-if [ -z "$REAL_TMUX" ]; then
-  slog "ERROR: real tmux not found"
-  echo "tmux: command not found (anyclaude shim)" >&2
-  exit 127
-fi
+# JSON-escape a string for embedding in a JSON string literal.
+json_escape() {
+  local s=$1
+  s=${s//\\/\\\\}
+  s=${s//\"/\\\"}
+  s=${s//$'\t'/\\t}
+  s=${s//$'\r'/\\r}
+  s=${s//$'\n'/\\n}
+  printf '%s' "$s"
+}
 
-# Teammate env vars to inject.
+# Capability probe: Claude Code runs `tmux -V` and gates tmux-teammate mode on
+# its EXIT CODE (non-zero → "tmux is not installed" → silent in-process
+# fallback). Answer it locally and statically so CC commits to tmux mode and
+# starts driving the control plane. Version string kept recent for any minimum
+# check downstream.
+case "$1" in
+  -V|--version)
+    slog "probe: tmux -V -> tmux 3.4"
+    echo "tmux 3.4"
+    exit 0
+    ;;
+esac
+
+# Rewrite a send-keys teammate spawn: register the agent and inject the
+# teammate-routed ANTHROPIC_BASE_URL + session-token header into the keystrokes.
 # Uses sed with | delimiter to avoid conflicts with / and : in URLs.
 args=()
 has_send_keys=false
@@ -91,88 +87,97 @@ for arg in "$@"; do
     continue
   fi
 
-  if $has_send_keys && ! $injected; then
-    # Detect teammate spawn by --agent-id flag (part of agent teams protocol,
-    # stable across Claude Code versions and installation methods).
-    if [[ "$arg" == *"--agent-id "* ]]; then
-      slog "BEFORE inject: $(printf '%q' "$arg")"
+  if $has_send_keys && ! $injected && [[ "$arg" == *"--agent-id "* ]]; then
+    slog "BEFORE inject: $(printf '%q' "$arg")"
 
-      # Extract agent_id for URL embedding.
-      agent_id=$(extract_agent_id "$arg")
-      slog "Extracted agent_id: $agent_id"
+    agent_id=$(extract_agent_id "$arg")
+    slog "Extracted agent_id: $agent_id"
 
-      # Register teammate in proxy registry (fire-and-forget, 5s timeout).
-      if [ -n "$agent_id" ]; then
-        curl -s -m 5 -X POST "http://127.0.0.1:__PORT__/api/teammate-start" \
-          -H 'Content-Type: application/json' \
-          -d "{\"agent_id\":\"$agent_id\"}" >/dev/null 2>&1
-        slog "Registered teammate '$agent_id' via /api/teammate-start"
-      fi
-
-      # Agent ID embedded in URL path — most reliable transport.
-      INJECT_URL="ANTHROPIC_BASE_URL=http://127.0.0.1:__PORT__/teammate/${agent_id}"
-      # Session token header for auth.
-      INJECT_HEADERS="ANTHROPIC_CUSTOM_HEADERS=x-session-token:__SESSION_TOKEN__"
-
-      # Strip existing ANTHROPIC_CUSTOM_HEADERS if present (shim re-entry)
-      if [[ "$arg" == *ANTHROPIC_CUSTOM_HEADERS=* ]]; then
-        arg=$(printf '%s' "$arg" | sed "s|ANTHROPIC_CUSTOM_HEADERS=[^ ]*||")
-      fi
-
-      # Replace ANTHROPIC_BASE_URL with teammate URL + inject headers.
-      # Anchored on the variable name, not on command structure.
-      if [[ "$arg" == *ANTHROPIC_BASE_URL=* ]]; then
-        arg=$(printf '%s' "$arg" | sed "s|ANTHROPIC_BASE_URL=[^ ]*|$INJECT_URL $INJECT_HEADERS|")
-      else
-        # Fallback: no URL in command — inject before --agent-id
-        arg=$(printf '%s' "$arg" | sed "s|--agent-id|$INJECT_URL $INJECT_HEADERS --agent-id|")
-      fi
-
-      slog "AFTER  inject: $(printf '%q' "$arg")"
-      args+=("$arg")
-      injected=true
-      slog "INJECT teammate route (agent-id detected)"
-      continue
+    # Register teammate in the proxy registry (fire-and-forget, 5s timeout).
+    if [ -n "$agent_id" ]; then
+      curl -s -m 5 -X POST "http://127.0.0.1:__PORT__/api/teammate-start" \
+        -H 'Content-Type: application/json' \
+        -d "{\"agent_id\":\"$agent_id\"}" >/dev/null 2>&1
+      slog "Registered teammate '$agent_id' via /api/teammate-start"
     fi
+
+    # Agent ID embedded in the URL path — most reliable transport.
+    INJECT_URL="ANTHROPIC_BASE_URL=http://127.0.0.1:__PORT__/teammate/${agent_id}"
+    INJECT_HEADERS="ANTHROPIC_CUSTOM_HEADERS=x-session-token:__SESSION_TOKEN__"
+
+    # Strip any existing ANTHROPIC_CUSTOM_HEADERS (shim re-entry).
+    if [[ "$arg" == *ANTHROPIC_CUSTOM_HEADERS=* ]]; then
+      arg=$(printf '%s' "$arg" | sed "s|ANTHROPIC_CUSTOM_HEADERS=[^ ]*||")
+    fi
+
+    # Replace ANTHROPIC_BASE_URL with the teammate URL + inject headers,
+    # anchored on the variable name, not on command structure.
+    if [[ "$arg" == *ANTHROPIC_BASE_URL=* ]]; then
+      arg=$(printf '%s' "$arg" | sed "s|ANTHROPIC_BASE_URL=[^ ]*|$INJECT_URL $INJECT_HEADERS|")
+    else
+      arg=$(printf '%s' "$arg" | sed "s|--agent-id|$INJECT_URL $INJECT_HEADERS --agent-id|")
+    fi
+
+    slog "AFTER  inject: $(printf '%q' "$arg")"
+    args+=("$arg")
+    injected=true
+    continue
   fi
 
   args+=("$arg")
 done
 
-# Pin every tmux call to an isolated server with our config preloaded.
-# -L gives this anyclaude session its own socket so we always start the
-# server ourselves; otherwise CC would attach to the user's existing
-# tmux server and our -f (a start-only flag) would be silently ignored.
-# Both flags are server-side and must precede any subcommand.
-CONF_FLAGS=(-L "anyclaude-__SESSION_ID__" -f "$SHIM_DIR/tmux.conf")
+# Build {"args":[...]} from the (rewritten) argv and POST to the control plane.
+body='{"args":['
+first=true
+for a in "${args[@]}"; do
+  $first || body+=','
+  first=false
+  body+="\"$(json_escape "$a")\""
+done
+body+=']}'
 
-if $injected; then
-  slog "EXEC: $(printf '%q ' "${args[@]}")"
-  exec "$REAL_TMUX" "${CONF_FLAGS[@]}" "${args[@]}"
-else
-  slog "tmux $*"
-  exec "$REAL_TMUX" "${CONF_FLAGS[@]}" "$@"
-fi
+slog "POST /api/tmux: ${args[*]}"
+
+resp=$(curl -s -m 10 -w $'\n%{http_code}' \
+  -X POST "http://127.0.0.1:__PORT__/api/tmux" \
+  -H 'Content-Type: application/json' \
+  -d "$body" 2>/dev/null)
+code=${resp##*$'\n'}
+out=${resp%$'\n'*}
+
+slog "<- HTTP $code: $out"
+
+# Print the response body (split-window -P returns "%N" on stdout, like tmux).
+[ -n "$out" ] && printf '%s\n' "$out"
+
+# Map the HTTP status to an exit code (tmux returns 0 on success).
+case "$code" in
+  2*) exit 0 ;;
+  *)
+    echo "anyclaude tmux: '$*' failed (HTTP ${code:-000})" >&2
+    exit 1
+    ;;
+esac
 "#;
 
-/// Install the tmux shim script and its config into `dir`.
+/// Install the tmux shim script into `dir`.
 ///
-/// Writes two files:
-/// - `tmux` — the executable bash shim that intercepts CC's tmux calls
-///   and pins every call to `-L anyclaude-<session_id>` so teammate
-///   sessions run on a dedicated tmux server we always start ourselves.
-/// - `tmux.conf` — loaded via `-f` from the shim; enables mouse mode and
-///   a larger scrollback so scroll works in teammate sessions.
-pub fn install(dir: &Path, proxy_port: u16, session_token: &str, session_id: &str, log_enabled: bool) -> Result<()> {
+/// Writes one file — `tmux`, the executable bash shim that forwards every tmux
+/// call to the proxy's `/api/tmux` control plane (no real tmux server, no
+/// `tmux.conf`: anyclaude renders the panes itself).
+pub fn install(
+    dir: &Path,
+    proxy_port: u16,
+    session_token: &str,
+    session_id: &str,
+    log_enabled: bool,
+) -> Result<()> {
     let script = TEMPLATE
         .replace("__PORT__", &proxy_port.to_string())
         .replace("__SESSION_TOKEN__", session_token)
         .replace("__SESSION_ID__", session_id)
         .replace("__LOG_ENABLED__", if log_enabled { "true" } else { "false" });
     write_executable(dir, "tmux", &script)?;
-
-    let conf_path = dir.join(CONF_FILENAME);
-    std::fs::write(&conf_path, CONF_CONTENT)
-        .with_context(|| format!("failed to write tmux config to {}", conf_path.display()))?;
     Ok(())
 }

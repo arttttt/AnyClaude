@@ -22,6 +22,7 @@ pub mod arena;
 pub mod geometry;
 pub mod id;
 pub mod layout;
+pub mod modifier;
 pub mod paint;
 pub mod splice;
 pub mod text_helpers;
@@ -29,21 +30,21 @@ pub mod view;
 
 // ── public surface (kept reachable so new types don't trip dead_code) ──
 
-pub use anim::{apply_overlay_alpha, ease_in_out, ease_out, lerp, linear};
-pub use arena::{
-    BlockShadow, BlockStyle, Node, NodeKind, RetainedTree, StackStyle, TextStyle,
+pub use anim::{
+    apply_overlay_alpha, ease_in_out, ease_out, lerp, linear, Animatable, Animation, Interpolator,
+    Spring,
 };
+pub use arena::{BlockShadow, Node, NodeKind, RetainedTree, StackStyle, TextStyle};
 pub use geometry::{
     Axis, Bounds, CrossAxis, Insets, MainAxis, SizeConstraint, Sizing,
 };
 pub use id::{NodeId, WidgetId};
 pub use layout::{line_height, measure, measure_text, place, place_centered};
-pub use paint::{
-    block_shadow, paint, paint_cpu, CpuPaint, GlyphRecord, PaintOutput, RectRecord,
-};
+pub use modifier::{Mod, Modifier};
+pub use paint::{paint, paint_cpu, CpuPaint, GlyphRecord, PaintOutput, RectRecord};
 pub use splice::reconcile_children;
 pub use text_helpers::{byte_at_x, caret_x};
 pub use view::{
-    build_root, collect_focus_order, free_subtree, reconcile_root, Block, BoxView, Element,
-    Spacer, Stack, Text,
+    build_root, collect_focus_order, free_subtree, reconcile_root, BoxView, Element, Modified,
+    Modify, Spacer, Stack, Text,
 };

@@ -4,16 +4,29 @@
 
 use std::time::Instant;
 
+use glam::Vec2;
 use term_gpu::{
     encode_motion_report, encode_mouse_report, measure_cell_metrics, CellMetrics, CellPoint,
     MouseButton, MouseEventKind, PanelRect,
 };
 
-use crate::ui::app_state::{ApplyCtx, Msg};
+use winit::event::TouchPhase;
+use winit::window::CursorIcon;
+
+use crate::ui::app_state::{ApplyCtx, InputFocus, Msg};
 use crate::ui::gpu::chrome::{CHROME_H_PAD, FOOTER_HEIGHT_LOGICAL, HEADER_HEIGHT_LOGICAL};
-use crate::ui::term_geometry;
+use crate::ui::panel_manager::ManagerId;
+use crate::ui::{panels_view, term_geometry};
+use uikit::{pager_dot_id, pager_next_id, pager_prev_id};
 
 use super::{FONT_SIZE, MULTI_CLICK_THRESHOLD_MS};
+
+/// A click on the teammates pager's bottom strip → a focus change.
+enum PagerStripHit {
+    Prev,
+    Next,
+    Dot(usize),
+}
 
 impl super::GpuApp {
     pub(super) fn cell_metrics(&mut self) -> CellMetrics {
@@ -86,9 +99,9 @@ impl super::GpuApp {
         };
         let sf = self.scale_factor.max(0.0001);
         let cell_h_logical = metrics.height_physical / sf;
-        let snap = emu.snapshot();
+        let view = emu.view();
         let visible_h_logical = window.inner_size().height as f32 / sf;
-        self.state.scroll.total_size_px = snap.rows.len() as f32 * cell_h_logical;
+        self.state.scroll.total_size_px = view.rows.len() as f32 * cell_h_logical;
         self.state.scroll.visible_px = visible_h_logical;
         let max = self.state.scroll.max_offset();
         if self.state.scroll.offset_y > max {
@@ -104,10 +117,10 @@ impl super::GpuApp {
         let metrics = self.cell_metrics();
         let panel = self.terminal_panel_rect();
         let emu = self.session.emulator.as_ref()?;
-        let snap = emu.snapshot();
-        let total_rows = snap.rows.len();
-        let visible_rows = snap.visible_rows;
-        let cols = snap.rows.first().map(|r| r.cells.len()).unwrap_or(0);
+        let view = emu.view();
+        let total_rows = view.rows.len();
+        let visible_rows = view.visible_rows;
+        let cols = view.rows.first().map(|r| r.cells.len()).unwrap_or(0);
         term_geometry::cell_at(
             x,
             y,
@@ -127,8 +140,112 @@ impl super::GpuApp {
     /// mouse-reporting mode, and the cell under the cursor — and hands the
     /// emulator snapshot in the ctx so `apply` can word/line-expand a
     /// multi-click selection. The press decision itself lives in `apply`.
+    /// The cursor icon to show for the mouse at `(x, y)`: a horizontal-resize
+    /// cursor over a resizable panel's inner edge (or while dragging it), a
+    /// pointer over the toggle pill, else the default. Reuses the materialized
+    /// overlay hit-zones so it costs no extra layout.
+    pub(super) fn panel_hover_cursor(&self, x: f32, y: f32) -> CursorIcon {
+        if self.state.panel_edge_drag.is_some() {
+            return CursorIcon::EwResize;
+        }
+        let p = Vec2::new(x, y);
+        // The pill straddles the divider (partly outside the overlay rect), so
+        // check it first.
+        if self.panel_toggle_zone.is_some_and(|b| b.contains(p)) {
+            return CursorIcon::Pointer;
+        }
+        let Some(rect) = self.panel_overlay_rect else {
+            return CursorIcon::Default;
+        };
+        if !rect.contains(p) {
+            return CursorIcon::Default;
+        }
+        if self.state.right.policy().resizable
+            && x <= rect.origin.x + self.state.right.policy().collapsed_width
+        {
+            return CursorIcon::EwResize;
+        }
+        CursorIcon::Default
+    }
+
+    /// Set the window cursor for a hover at `(x, y)`, only calling `set_cursor`
+    /// when the icon actually changes (cached in `current_cursor`).
+    pub(super) fn update_hover_cursor(&mut self, x: f32, y: f32) {
+        let desired = self.panel_hover_cursor(x, y);
+        if desired != self.current_cursor {
+            if let Some(w) = self.window.as_ref() {
+                w.set_cursor(desired);
+            }
+            self.current_cursor = desired;
+        }
+    }
+
+    /// Hit-test the pager's bottom strip (prev/next arrow, page dots) at `p`,
+    /// resolved from the laid-out panels tree. `None` when the click misses it /
+    /// the overlay isn't rendered.
+    fn pager_strip_action(&self, p: Vec2) -> Option<PagerStripHit> {
+        let base = panels_view::pager_base_id();
+        let hit = |wid| self.overlay.resolve_panel_widget(wid).is_some_and(|b| b.contains(p));
+        if hit(pager_prev_id(base)) {
+            return Some(PagerStripHit::Prev);
+        }
+        if hit(pager_next_id(base)) {
+            return Some(PagerStripHit::Next);
+        }
+        (0..self.state.right.len())
+            .find(|&i| hit(pager_dot_id(base, i)))
+            .map(PagerStripHit::Dot)
+    }
+
     pub(super) fn on_mouse_press(&mut self) {
         let Some((x, y)) = self.state.cursor_pos else { return };
+        let p = Vec2::new(x, y);
+        // The toggle pill straddles the divider (partly outside the overlay
+        // rect), so a click on it collapses/expands FIRST, independent of the
+        // overlay rect.
+        if self.panel_toggle_zone.is_some_and(|b| b.contains(p)) {
+            self.dispatch(Msg::PanelToggle(ManagerId::Right));
+            return;
+        }
+        // A click on the pager strip pages the overlay (the focus change drives
+        // the slide on the next redraw) and routes the keyboard into it.
+        if let Some(hit) = self.pager_strip_action(p) {
+            match hit {
+                PagerStripHit::Prev => self.state.right.focus_prev(),
+                PagerStripHit::Next => self.state.right.focus_next(),
+                PagerStripHit::Dot(i) => {
+                    if let Some(id) = self.state.right.panels().get(i).map(|panel| panel.id) {
+                        self.state.right.set_focus(id);
+                    }
+                }
+            }
+            self.route_input(InputFocus::Teammates);
+            self.request_redraw();
+            return;
+        }
+        // The right overlay floats over the terminal, so it takes the press
+        // next: an inner-edge click begins a width drag (available collapsed OR
+        // expanded), and every other in-overlay click is swallowed so it doesn't
+        // start a terminal selection underneath.
+        if let Some(rect) = self.panel_overlay_rect {
+            if rect.contains(p) {
+                let on_edge = x <= rect.origin.x + self.state.right.policy().collapsed_width;
+                if self.state.right.policy().resizable && on_edge {
+                    self.dispatch(Msg::PanelEdgeDragStart(ManagerId::Right));
+                } else {
+                    // A click on the page body routes the keyboard INTO the
+                    // overlay (the teammate under it receives keystrokes). The
+                    // press is still swallowed — no terminal selection underneath;
+                    // paging is via the strip / hotkeys / a two-finger swipe, never
+                    // a button drag (it would fight a future in-page selection).
+                    self.route_input(InputFocus::Teammates);
+                }
+                return;
+            }
+        }
+        // A click that reaches the main app (header or terminal body) routes the
+        // keyboard back to the main session.
+        self.route_input(InputFocus::Terminal);
         let in_header = y < HEADER_HEIGHT_LOGICAL;
         let in_session_zone = self
             .session_click_zone
@@ -145,10 +262,10 @@ impl super::GpuApp {
                 p.row as u16 + 1,
             )
         });
-        let snapshot = self.session.emulator.as_ref().map(|e| e.snapshot());
+        let view = self.session.emulator.as_ref().map(|e| e.view());
         let ctx = ApplyCtx {
             now: Instant::now(),
-            snapshot: snapshot.as_ref(),
+            view,
             multi_click_threshold_ms: MULTI_CLICK_THRESHOLD_MS,
         };
         let fx = self.state.apply(
@@ -156,6 +273,152 @@ impl super::GpuApp {
             &ctx,
         );
         let _ = self.perform_effects(fx);
+    }
+
+    /// Point the keyboard at `target` (the main terminal vs the teammates
+    /// overlay) and redraw when it actually changes — so the focus ring follows
+    /// mouse clicks, not just the ⌥↑ toggle. The effective routing is still
+    /// masked by `input_on_teammates` if the overlay isn't live.
+    fn route_input(&mut self, target: InputFocus) {
+        if self.state.input_focus != target {
+            self.state.input_focus = target;
+            self.request_redraw();
+        }
+    }
+
+    /// Scroll the focused teammate pane by `dy` logical px (a vertical wheel over
+    /// the overlay). Bounds come from the last render (`set_scroll_viewport`), so
+    /// this is cheap. Returns whether a pane took the scroll.
+    pub(super) fn scroll_focused_pane(&mut self, dy: f32) -> bool {
+        let Some(pane) = self.focused_pane() else { return false };
+        match self.panes.get_mut(pane) {
+            Some(surface) => {
+                surface.scroll_by(dy);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Whether the mouse is currently over the teammates overlay rect.
+    pub(super) fn cursor_over_overlay(&self) -> bool {
+        matches!(
+            (self.panel_overlay_rect, self.state.cursor_pos),
+            (Some(rect), Some((x, y))) if rect.contains(Vec2::new(x, y))
+        )
+    }
+
+    /// The pager's page viewport width (overlay minus the 1px column border each
+    /// side); clamped ≥ 1 so it never divides by zero. Matches `redraw`'s `page_w`.
+    fn page_viewport_width(&self) -> f32 {
+        self.panel_overlay_rect.map(|r| (r.size.x - 2.0).max(1.0)).unwrap_or(1.0)
+    }
+
+    /// Route a two-finger scroll over the overlay to the pager (the
+    /// continuous-progress + velocity-snap model, à la Compose/Flutter, adapted
+    /// to winit which can't tell active scroll from inertial momentum).
+    ///
+    /// - a `Started` whose `|dx|` is small is a real finger-down (a touch begins
+    ///   from REST); a large-velocity `Started` is macOS momentum BEGINNING at the
+    ///   release speed — ignored, so inertia never starts a phantom gesture (even
+    ///   one interrupting a prior flick's momentum is caught, since the finger
+    ///   still starts from rest);
+    /// - while active, the page FOLLOWS the finger 1:1 (`drive_swipe`);
+    /// - the first `Ended` is the lift → snap (`release_swipe`); subsequent
+    ///   momentum events arrive while inactive and are dropped.
+    pub(super) fn page_swipe(&mut self, dx: f32, dy: f32, phase: TouchPhase) {
+        if self.state.right.len() < 2 {
+            return;
+        }
+        let now = Instant::now();
+        match phase {
+            TouchPhase::Started => {
+                if dx.abs() < super::PAGE_SWIPE_START_VELOCITY {
+                    self.page_swipe.active = true;
+                    self.page_swipe.start_scroll = self.page_scroll.value(now);
+                    self.page_swipe.accum_px = 0.0;
+                    self.page_swipe.velocity = 0.0;
+                    self.page_swipe.last_t = now;
+                    self.drive_swipe(dx, dy, now);
+                }
+            }
+            TouchPhase::Moved => {
+                if self.page_swipe.active {
+                    self.drive_swipe(dx, dy, now);
+                }
+            }
+            TouchPhase::Ended | TouchPhase::Cancelled => {
+                if self.page_swipe.active {
+                    self.release_swipe(now);
+                }
+            }
+        }
+    }
+
+    /// Advance an active swipe by one event: accumulate horizontal travel, update
+    /// the velocity estimate (pages/sec, EMA), and snap `page_scroll` to the
+    /// dragged position so the page tracks the finger — clamped to ONE page of
+    /// travel (the one-page-per-gesture guarantee) and to the valid page range.
+    fn drive_swipe(&mut self, dx: f32, dy: f32, now: Instant) {
+        // Axis-lock: a vertical-dominant event isn't a page gesture. Return
+        // BEFORE touching last_t — otherwise a vertical jitter event would
+        // advance the timestamp, inflating the next event's dt and skewing
+        // the EMA velocity downward (a fling could then fail to register).
+        if dx.abs() < dy.abs() {
+            return;
+        }
+        let dt = now.saturating_duration_since(self.page_swipe.last_t).as_secs_f32();
+        self.page_swipe.last_t = now;
+        let page_w = self.page_viewport_width();
+        self.page_swipe.accum_px += dx;
+        // page_scroll rises toward the next page; a leftward swipe (dx < 0) goes
+        // there, so velocity in pages/sec is `-dx/page_w/dt`. Skip the seed event
+        // (dt ≈ 0). EMA-smooth so the release reads a stable fling speed.
+        if dt > 1e-3 {
+            let inst_v = -(dx / page_w) / dt;
+            self.page_swipe.velocity = 0.6 * inst_v + 0.4 * self.page_swipe.velocity;
+        }
+        let max = (self.state.right.len() - 1) as f32;
+        let start = self.page_swipe.start_scroll;
+        let pos = (start - self.page_swipe.accum_px / page_w)
+            .clamp(start - 1.0, start + 1.0)
+            .clamp(0.0, max);
+        self.page_scroll.snap(pos);
+        self.request_redraw();
+    }
+
+    /// End an active swipe: pick the snap target from the dragged position plus a
+    /// velocity nudge — Flutter's `round(pos ± 0.5)`, so past halfway OR a fling
+    /// advances one page, else it settles back — focus it, and spring
+    /// `page_scroll` there carrying the release velocity.
+    fn release_swipe(&mut self, now: Instant) {
+        self.page_swipe.active = false;
+        let max = (self.state.right.len() - 1) as f32;
+        let start = self.page_swipe.start_scroll;
+        let pos = self.page_scroll.value(now);
+        let v = self.page_swipe.velocity;
+        let nudged = if v > super::PAGE_SWIPE_FLING_VELOCITY {
+            pos + 0.5
+        } else if v < -super::PAGE_SWIPE_FLING_VELOCITY {
+            pos - 0.5
+        } else {
+            pos
+        };
+        // Snap to at most one page from where the gesture started: `pos` is
+        // already clamped to `start ± 1` in drive_swipe, but the fling nudge
+        // (±0.5) plus round() could push a full-page swipe to `start ± 2`,
+        // breaking the one-page-per-gesture guarantee. Clamp the rounded
+        // target back to `start ± 1` before leaving the page range.
+        let target = nudged
+            .round()
+            .clamp(start - 1.0, start + 1.0)
+            .clamp(0.0, max) as usize;
+        if let Some(id) = self.state.right.panels().get(target).map(|panel| panel.id) {
+            self.state.right.set_focus(id);
+        }
+        self.page_scroll.set_target(target as f32);
+        self.page_scroll.kick(v);
+        self.request_redraw();
     }
 
     /// Encode a mouse event for the PTY when an app has reporting on (§6), or

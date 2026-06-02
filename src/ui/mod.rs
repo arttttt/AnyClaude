@@ -1,10 +1,13 @@
 pub mod app_state;
 pub mod backend_switch;
+pub mod child_session;
 pub mod chrome_labels;
+pub mod control_plane;
 pub mod gpu;
 pub mod history;
 pub mod input;
-pub mod popup_anim;
+pub mod panel_manager;
+pub mod panels_view;
 pub mod popup_view;
 pub mod settings;
 pub mod term_geometry;

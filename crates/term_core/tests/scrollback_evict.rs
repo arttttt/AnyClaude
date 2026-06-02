@@ -28,3 +28,28 @@ fn no_eviction_under_capacity() {
     em.process(b"a\r\nb\r\nc\r\n");
     assert_eq!(em.lines_evicted(), 0);
 }
+
+#[test]
+fn ed3_clear_scrollback_advances_evicted_anchor() {
+    // ED 3 (CSI 3 J) drains scrollback. Those lines leave the top of the
+    // buffer, so lines_evicted must advance by the drained count — else a
+    // scrolled-up viewport loses its anchor.
+    let mut em = VtEmulator::new(10, 2, 50);
+    for i in 0..6 {
+        em.process(format!("L{i}\r\n").as_bytes());
+    }
+    // Six newlines from a 2-row viewport push ~5 rows into scrollback.
+    let scrollback_before = em.snapshot().rows.len() - 2;
+    assert!(scrollback_before > 0, "expected non-empty scrollback");
+    let evicted_before = em.lines_evicted();
+
+    em.process(b"\x1b[3J"); // ED 3 — clear scrollback
+
+    assert_eq!(
+        em.lines_evicted(),
+        evicted_before + scrollback_before as u64,
+        "ED 3 should advance lines_evicted by the drained scrollback count"
+    );
+    // Scrollback is gone; only the visible region remains.
+    assert_eq!(em.snapshot().rows.len(), 2);
+}

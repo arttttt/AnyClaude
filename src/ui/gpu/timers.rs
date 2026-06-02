@@ -40,6 +40,13 @@ impl Timers {
         }
     }
 
+    /// Abort the periodic heartbeat.
+    pub(super) fn cancel_periodic(&mut self) {
+        if let Some(a) = self.periodic.take() {
+            a.abort();
+        }
+    }
+
     /// Start (or restart) the momentum-tick loop firing `MomentumTick` every
     /// `interval`.
     pub(super) fn schedule_momentum(
@@ -47,7 +54,11 @@ impl Timers {
         proxy: &EventLoopProxy<UserEvent>,
         interval: Duration,
     ) {
-        self.momentum = Some(schedule_loop(proxy.clone(), interval, UserEvent::MomentumTick));
+        // Abort any prior handle first: dropping an AbortHandle does NOT abort
+        // its future, so a bare reassignment would leak the old timer thread
+        // and run two momentum loops at once (double decay + double redraw).
+        self.cancel_momentum();
+        self.momentum = Some(schedule_loop(proxy.clone(), interval, || UserEvent::MomentumTick));
     }
 
     /// Arm the silence-timeout fallback that fires `GestureEnded` once after
@@ -57,14 +68,16 @@ impl Timers {
         proxy: &EventLoopProxy<UserEvent>,
         delay: Duration,
     ) {
+        self.cancel_gesture_end();
         self.gesture_end = Some(schedule_once(proxy.clone(), delay, UserEvent::GestureEnded));
     }
 
     /// Start the 1 Hz `TickRedraw` heartbeat that keeps the chrome (Uptime /
     /// Reqs / sub / team) fresh while the PTY is idle.
     pub(super) fn start_periodic(&mut self, proxy: &EventLoopProxy<UserEvent>) {
+        self.cancel_periodic();
         self.periodic =
-            Some(schedule_loop(proxy.clone(), Duration::from_secs(1), UserEvent::TickRedraw));
+            Some(schedule_loop(proxy.clone(), Duration::from_secs(1), || UserEvent::TickRedraw));
     }
 }
 
@@ -80,14 +93,19 @@ fn schedule_once(proxy: EventLoopProxy<UserEvent>, delay: Duration, event: UserE
     abort
 }
 
-/// Spawn a detached thread that fires `event` every `interval` until aborted or
-/// the receiver is gone (abortable). Backs both the momentum loop and the
-/// periodic heartbeat — they differ only in interval + event.
-fn schedule_loop(proxy: EventLoopProxy<UserEvent>, interval: Duration, event: UserEvent) -> AbortHandle {
+/// Spawn a detached thread that fires a fresh `make_event()` every `interval`
+/// until aborted or the receiver is gone (abortable). Backs both the momentum
+/// loop and the periodic heartbeat — they differ only in interval + event. The
+/// event is built per tick via the closure since `UserEvent` is no longer `Copy`.
+fn schedule_loop(
+    proxy: EventLoopProxy<UserEvent>,
+    interval: Duration,
+    make_event: impl Fn() -> UserEvent + Send + 'static,
+) -> AbortHandle {
     let (fut, abort) = abortable(async move {
         loop {
             Delay::new(interval).await;
-            if proxy.send_event(event).is_err() {
+            if proxy.send_event(make_event()).is_err() {
                 break;
             }
         }

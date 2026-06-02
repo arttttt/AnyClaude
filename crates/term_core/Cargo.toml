@@ -2,14 +2,21 @@
 name = "term_core"
 version = "0.1.0"
 edition = "2021"
-description = "Minimal VT/ANSI parser and fixed-cell terminal grid for AnyClaude's GPU terminal. Zero external dependencies — only std. See docs/gpu-terminal-spec.md §4."
+description = "Minimal VT/ANSI parser and fixed-cell terminal grid for AnyClaude's GPU terminal. See docs/gpu-terminal-spec.md §4."
 
 [lints]
 workspace = true
 
-# No dependencies. Intentional — the parser is hand-rolled (Paul Williams
-# state machine) and the grid is plain Vec<Cell>. See
-# docs/analysis/warp-vt-parser-research.md §5 for the locked-in decision.
+# Near-zero dependencies. The parser is hand-rolled (Paul Williams state
+# machine) and the grid is plain Vec<Cell> — see
+# docs/analysis/warp-vt-parser-research.md §5. The sole exception is
+# `unicode-width`: East-Asian / emoji cell width is a Unicode-data problem,
+# not a hand-rollable one (the table is large and revised every Unicode
+# release). Warp uses the same crate (`UnicodeWidthChar::width`), so we
+# match it rather than ship a drifting hand-made table. This deliberately
+# retires the prior zero-dependency stance for correctness.
+[dependencies]
+unicode-width = "0.2"
 
 [[example]]
 name = "dump"

@@ -6,11 +6,11 @@
 //!  /scrolled on the screen, and cleared if the user clicks off."
 //!
 //! Coordinates are absolute-row form: `row` indexes into
-//! `RenderSnapshot::rows` (scrollback first, then visible) so the
+//! `RenderView::rows` (scrollback first, then visible) so the
 //! selection stays anchored to its content as the viewport scrolls.
 //! `col` is in cells `[0, cols)`.
 
-use term_core::{CellFlags, RenderSnapshot};
+use term_core::{CellFlags, RenderView};
 
 use crate::{panel_render::PanelRect, CellMetrics, RectInstance};
 
@@ -47,7 +47,7 @@ impl Ord for CellPoint {
 }
 
 /// Linear text selection inside a single grid.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Selection {
     /// Where the mouse first pressed down.
     pub anchor: CellPoint,
@@ -84,8 +84,8 @@ impl Selection {
 /// (`app/src/terminal/model/selection.rs:507-509`). Returns
 /// `(start, end)` with `end.col` one past the last selected cell so it
 /// matches the half-open range convention used in `push_selection_rects`.
-pub fn expand_word(point: CellPoint, snapshot: &RenderSnapshot) -> (CellPoint, CellPoint) {
-    let Some(row) = snapshot.rows.get(point.row) else {
+pub fn expand_word(point: CellPoint, view: RenderView) -> (CellPoint, CellPoint) {
+    let Some(row) = view.rows.get(point.row) else {
         return (point, point);
     };
     let cells = &row.cells;
@@ -116,8 +116,8 @@ pub fn expand_word(point: CellPoint, snapshot: &RenderSnapshot) -> (CellPoint, C
 }
 
 /// Expand a click point to its entire physical row.
-pub fn expand_line(point: CellPoint, snapshot: &RenderSnapshot) -> (CellPoint, CellPoint) {
-    let cols = snapshot
+pub fn expand_line(point: CellPoint, view: RenderView) -> (CellPoint, CellPoint) {
+    let cols = view
         .rows
         .get(point.row)
         .map(|r| r.cells.len())
@@ -139,11 +139,11 @@ pub fn expand_line(point: CellPoint, snapshot: &RenderSnapshot) -> (CellPoint, C
 /// per-row trim of trailing blank cells, no newline between soft-wrapped
 /// rows (continuation rows belong to the same logical line), newline
 /// between hard-broken rows.
-pub fn selection_to_text(sel: &Selection, snapshot: &RenderSnapshot) -> String {
+pub fn selection_to_text(sel: &Selection, view: RenderView) -> String {
     let (start, end) = sel.range();
     let mut out = String::new();
     for row_idx in start.row..=end.row {
-        let Some(row) = snapshot.rows.get(row_idx) else { break };
+        let Some(row) = view.rows.get(row_idx) else { break };
         let col_start = if row_idx == start.row {
             start.col
         } else {
@@ -196,7 +196,7 @@ pub fn selection_to_text(sel: &Selection, snapshot: &RenderSnapshot) -> String {
 /// below the noise floor.
 pub fn push_selection_rects(
     sel: &Selection,
-    snapshot: &RenderSnapshot,
+    view: RenderView,
     panel_rect: PanelRect,
     scale_factor: f32,
     metrics: CellMetrics,
@@ -212,15 +212,15 @@ pub fn push_selection_rects(
     let panel_origin_x_physical = panel_rect.x * sf;
     let panel_origin_y_physical = panel_rect.y * sf;
     let scroll_offset_y_physical = scroll_offset_y_logical * sf;
-    let total_rows = snapshot.rows.len();
-    let visible_rows = snapshot.visible_rows;
+    let total_rows = view.rows.len();
+    let visible_rows = view.visible_rows;
     let baseline_offset_phys =
         total_rows.saturating_sub(visible_rows) as f32 * metrics.height_physical;
     let panel_max_x_phys = panel_rect.w * sf;
     let panel_max_y_phys = panel_rect.h * sf;
     let end_row = end.row.min(total_rows.saturating_sub(1));
     for row_idx in start.row..=end_row {
-        let Some(row) = snapshot.rows.get(row_idx) else {
+        let Some(row) = view.rows.get(row_idx) else {
             continue;
         };
         let row_y_phys = row_idx as f32 * metrics.height_physical - baseline_offset_phys
@@ -249,6 +249,7 @@ pub fn push_selection_rects(
             pos: [pos_x_logical, pos_y_logical],
             size: [span_w_phys / sf, cell_h_logical],
             color: SELECTION_COLOR,
+            clip: crate::NO_CLIP,
         });
     }
 }

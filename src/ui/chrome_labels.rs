@@ -11,7 +11,7 @@
 //! The immediate-mode `draw_header` / `draw_footer` are gone (Phase E.6), so the
 //! chrome words + palette live solely here.
 
-use term_ui::{Block, BlockStyle, CrossAxis, Insets, Sizing, Stack, WidgetId};
+use term_ui::{CrossAxis, Modifier, Modify, Sizing, Stack, WidgetId};
 use uikit::{footer_bar, header_bar, Segment};
 
 /// Dim grey for chrome labels and the inter-segment separator.
@@ -101,35 +101,27 @@ pub fn chrome_view(
     footer_h: f32,
     h_pad: f32,
 ) -> Stack {
-    let bar_bg = BlockStyle {
-        background: CHROME_BG,
-        border_color: [0.0; 4],
-        border_width: 0.0,
-        padding: Insets::default(),
-        shadow: None,
-    };
+    // Each bar gets an opaque background via a modifier, so it covers any
+    // terminal glyph that scrolls into the bar band.
+    let bar_bg = || Modifier::new().background(CHROME_BG);
     Stack::vstack()
         .cross(CrossAxis::Stretch)
         .child_sized(
-            Block::new(
-                bar_bg.clone(),
-                header_bar(
-                    header,
-                    HEADER_SEPARATOR,
-                    CHROME_TEXT_COLOR,
-                    font_size,
-                    h_pad,
-                    CHROME_SEPARATOR_COLOR,
-                ),
-            ),
+            header_bar(
+                header,
+                HEADER_SEPARATOR,
+                CHROME_TEXT_COLOR,
+                font_size,
+                h_pad,
+                CHROME_SEPARATOR_COLOR,
+            )
+            .modify(bar_bg()),
             Sizing::Fixed(header_h),
         )
         .spacer(Sizing::Fill)
         .child_sized(
-            Block::new(
-                bar_bg,
-                footer_bar(footer_left, footer_right, font_size, CHROME_SEPARATOR_COLOR),
-            ),
+            footer_bar(footer_left, footer_right, font_size, CHROME_SEPARATOR_COLOR)
+                .modify(bar_bg()),
             Sizing::Fixed(footer_h),
         )
 }

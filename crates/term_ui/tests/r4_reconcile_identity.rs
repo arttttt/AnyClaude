@@ -26,9 +26,9 @@
 use glam::Vec2;
 use term_gpu::{FontFamily, FontSystem, TextShapeCache};
 use term_ui::{
-    build_root, collect_focus_order, measure, paint_cpu, place, reconcile_root, Block, BlockStyle,
-    BoxView, CpuPaint, Element, Insets, NodeId, NodeKind, RetainedTree, SizeConstraint, Sizing,
-    Stack, Text, WidgetId,
+    build_root, collect_focus_order, measure, paint_cpu, place, reconcile_root, BoxView, CpuPaint,
+    Element, Insets, Modified, Modifier, Modify, NodeId, NodeKind, RetainedTree, SizeConstraint,
+    Sizing, Stack, Text, WidgetId,
 };
 
 const FS: f32 = 18.0;
@@ -127,16 +127,12 @@ fn assert_r4<E: Element>(prev: &E, next: &E) {
     );
 }
 
-fn block(child: impl Element) -> Block {
-    Block::new(
-        BlockStyle {
-            background: BLOCK_BG,
-            border_color: WHITE,
-            border_width: 1.0,
-            padding: Insets::all(4.0),
-            shadow: None,
-        },
-        child,
+fn block(child: impl Element) -> Modified {
+    child.modify(
+        Modifier::new()
+            .background(BLOCK_BG)
+            .border(1.0, WHITE)
+            .padding(Insets::all(4.0)),
     )
 }
 
@@ -226,16 +222,9 @@ fn r4_stack_to_block_swap() {
     // Root-level single child swaps Stack <-> Block (type change in a Block's
     // single-child splice slot).
     let prev = block(Stack::hstack().child(Text::new("x", FS, WHITE)));
-    let next = block(Block::new(
-        BlockStyle {
-            background: RED,
-            border_color: WHITE,
-            border_width: 0.0,
-            padding: Insets::all(2.0),
-            shadow: None,
-        },
-        Text::new("x", FS, WHITE),
-    ));
+    let next = block(
+        Text::new("x", FS, WHITE).modify(Modifier::new().background(RED).padding(Insets::all(2.0))),
+    );
     assert_r4(&prev, &next);
 }
 

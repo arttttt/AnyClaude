@@ -8,7 +8,9 @@ use anyclaude::ui::backend_switch::{BackendPopupSection, BackendSwitchState};
 use anyclaude::ui::popup_view::{backend_view, POPUP_MIN_WIDTH};
 use glam::Vec2;
 use term_gpu::{FontFamily, FontSystem, TextShapeCache};
-use term_ui::{build_root, measure, place_centered, NodeId, NodeKind, RetainedTree, SizeConstraint};
+use term_ui::{
+    build_root, measure, place_centered, Mod, NodeId, NodeKind, RetainedTree, SizeConstraint,
+};
 
 const VIEWPORT: Vec2 = Vec2::new(1200.0, 900.0);
 const GREEN: [f32; 4] = [0.4, 0.85, 0.4, 1.0];
@@ -71,8 +73,8 @@ fn all_texts(tree: &RetainedTree, root: NodeId) -> Vec<(String, [f32; 4])> {
 /// Count Block nodes whose background is the selection-highlight colour.
 fn highlight_count(tree: &RetainedTree, node: NodeId) -> usize {
     let mut n = 0;
-    if let NodeKind::Block(s) = &tree.node(node).kind {
-        if s.background == HIGHLIGHT {
+    if let NodeKind::Modified(m) = &tree.node(node).kind {
+        if m.ops.contains(&Mod::Background(HIGHLIGHT)) {
             n += 1;
         }
     }
@@ -111,7 +113,7 @@ fn highlight_is_in_the_active_section_at_the_selected_row() {
     // subagent_selection = 2 → the selected row is row2, at child index 2 + 2 = 4.
     let sub_kids = tree.node(subagent).children.clone();
     assert!(
-        matches!(tree.node(sub_kids[4]).kind, NodeKind::Block(_)),
+        matches!(tree.node(sub_kids[4]).kind, NodeKind::Modified(_)),
         "the highlight Block is on the selection=2 row, not a different row"
     );
 }
@@ -155,7 +157,10 @@ fn box_is_min_width_floored_centered_and_has_shadow() {
     assert!((bounds.origin.x - expected.x).abs() < 0.5, "centered x");
     assert!((bounds.origin.y - expected.y).abs() < 0.5, "centered y");
     match &tree.node(root).kind {
-        NodeKind::Block(style) => assert!(style.shadow.is_some(), "popup box has a drop shadow"),
+        NodeKind::Modified(m) => assert!(
+            m.ops.iter().any(|o| matches!(o, Mod::Shadow(_))),
+            "popup box has a drop shadow"
+        ),
         other => panic!("root is the popup box Block, got {other:?}"),
     }
 }

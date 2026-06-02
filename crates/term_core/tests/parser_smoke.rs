@@ -200,13 +200,38 @@ fn esc_simple_sequences() {
 }
 
 #[test]
-fn dcs_body_is_eaten() {
-    // ESC P ... ESC \  — DCS body must not produce printable Actions.
-    let actions = collect(b"\x1bPq#1234\x1b\\");
-    for a in &actions {
-        assert!(
-            !matches!(a, Action::Print(_)),
-            "DCS body emitted Print: {a:?}"
+fn dcs_body_is_eaten_and_st_returns_to_ground() {
+    // ESC P ... ESC \  — the DCS body must not produce printable Actions,
+    // AND the 7-bit ST (`ESC \`) must return the parser to Ground so that
+    // text after the sequence prints normally. Trailing `AB` proves the
+    // parser recovered (regression guard for the ESC-\ hang).
+    let actions = collect(b"\x1bPq#1234\x1b\\AB");
+    assert_eq!(
+        actions,
+        vec![Action::Print('A'), Action::Print('B')],
+        "DCS body must be eaten and ESC \\ must restore Ground; got {actions:?}"
+    );
+}
+
+#[test]
+fn sos_pm_apc_bodies_are_eaten_and_st_returns_to_ground() {
+    // SOS (ESC X), PM (ESC ^), APC (ESC _) — same contract as DCS: body
+    // eaten, `ESC \` restores Ground, following text prints.
+    for intro in [b"\x1bX", b"\x1b^", b"\x1b_"] {
+        let mut input = intro.to_vec();
+        input.extend_from_slice(b"payload;data\x1b\\Z");
+        let actions = collect(&input);
+        assert_eq!(
+            actions,
+            vec![Action::Print('Z')],
+            "string state {intro:?} must eat body and recover on ESC \\; got {actions:?}"
         );
     }
+}
+
+#[test]
+fn string_states_recover_on_8bit_st() {
+    // The 8-bit C1 ST (0x9C) terminator must still work for DCS.
+    let actions = collect(b"\x1bPq#1\x9cY");
+    assert_eq!(actions, vec![Action::Print('Y')]);
 }
