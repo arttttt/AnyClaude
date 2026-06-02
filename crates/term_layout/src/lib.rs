@@ -11,6 +11,17 @@
 pub const MIN_RATIO: f32 = 0.05;
 pub const MAX_RATIO: f32 = 0.95;
 
+/// Sanitize a requested split ratio: map non-finite values (NaN / ±inf)
+/// to the midpoint, then clamp into `[MIN_RATIO, MAX_RATIO]`. `f32::clamp`
+/// alone is not enough — it propagates NaN, which would flow into
+/// `split_bounds` and produce NaN-valued `Rect`s (garbage layout). A NaN
+/// ratio reaches here when a divider is dragged inside a zero-width bound
+/// (`delta / 0.0`).
+fn clamp_ratio(ratio: f32) -> f32 {
+    let r = if ratio.is_finite() { ratio } else { 0.5 };
+    r.clamp(MIN_RATIO, MAX_RATIO)
+}
+
 /// Stable handle for a panel. Issued by [`PanelTree`] when a panel is
 /// created (initial tree + every `split`) and never reused — closing a
 /// panel does not free its id for reissue.
@@ -135,7 +146,7 @@ impl PanelTree {
     /// "open a split and start typing into it" behaviour familiar from
     /// Warp / tmux.
     pub fn split(&mut self, target: PanelId, split: Split, ratio: f32) -> Option<PanelId> {
-        let ratio = ratio.clamp(MIN_RATIO, MAX_RATIO);
+        let ratio = clamp_ratio(ratio);
         let new_panel = PanelId(self.next_panel_id);
         let new_branch = BranchId(self.next_branch_id);
         let happened = match self.root.as_mut() {
@@ -193,7 +204,7 @@ impl PanelTree {
     /// `[MIN_RATIO, MAX_RATIO]`), then reflow the affected subtree.
     /// Returns `true` if the branch was found and updated.
     pub fn drag_divider(&mut self, id: BranchId, new_ratio: f32) -> bool {
-        let new_ratio = new_ratio.clamp(MIN_RATIO, MAX_RATIO);
+        let new_ratio = clamp_ratio(new_ratio);
         match self.root.as_mut() {
             Some(root) => set_branch_ratio(root, id, new_ratio),
             None => false,

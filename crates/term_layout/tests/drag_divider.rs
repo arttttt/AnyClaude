@@ -82,6 +82,33 @@ fn drag_unknown_branch_returns_false() {
 }
 
 #[test]
+fn drag_divider_rejects_non_finite_ratio() {
+    // A NaN or infinite ratio (e.g. delta / 0.0 when dragging inside a
+    // zero-width bound) must not propagate into the bounds. f32::clamp
+    // alone passes NaN through, so the layout would go NaN.
+    let mut tree = PanelTree::new(100.0, 100.0);
+    let root = tree.panels()[0].0;
+    let bottom = tree.split(root, Split::Horizontal, 0.5).unwrap();
+    let divider_id = tree.dividers()[0].id;
+
+    for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        tree.drag_divider(divider_id, bad);
+        let panels = tree.panels();
+        for (_, r) in &panels {
+            assert!(
+                r.x.is_finite() && r.y.is_finite() && r.w.is_finite() && r.h.is_finite(),
+                "non-finite ratio {bad} produced NaN/inf bounds: {r:?}"
+            );
+        }
+        // The midpoint fallback keeps both panels within the valid range.
+        let top = panels.iter().find(|(id, _)| *id == root).unwrap().1;
+        let bot = panels.iter().find(|(id, _)| *id == bottom).unwrap().1;
+        assert!(top.h >= 100.0 * MIN_RATIO - 1e-3 && top.h <= 100.0 * MAX_RATIO + 1e-3);
+        assert!(bot.h >= 100.0 * MIN_RATIO - 1e-3 && bot.h <= 100.0 * MAX_RATIO + 1e-3);
+    }
+}
+
+#[test]
 fn nested_dividers_have_distinct_ids() {
     let mut tree = PanelTree::new(100.0, 100.0);
     let root = tree.panels()[0].0;
