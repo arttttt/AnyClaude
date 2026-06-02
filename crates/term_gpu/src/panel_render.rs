@@ -137,7 +137,21 @@ pub fn populate_panel(
 
     let panel_max_x_phys = panel_rect.w * sf;
     let panel_max_y_phys = panel_rect.h * sf;
-    for (row_idx, row) in view.rows.iter().enumerate() {
+    // Iterate only the on-screen row window instead of the whole buffer. A row
+    // is visible iff `row_y + h > 0 && row_y < panel_max_y`, with
+    // `row_y = row_idx*h - shift` and `shift = baseline_offset - scroll`.
+    // Solving for `row_idx` gives the band below; a ±1-row margin keeps it a
+    // superset and the per-row cull below stays the exact gate, so the output is
+    // identical to the full walk — but the cost is O(visible), not O(scrollback)
+    // (the lag that grew with content). `as isize` float casts saturate, so
+    // degenerate metrics collapse the range to empty rather than misbehaving.
+    let row_h = metrics.height_physical;
+    let shift = baseline_offset_phys - scroll_offset_y_physical;
+    let first_row = ((shift / row_h).floor() as isize - 1).max(0) as usize;
+    let last_row = ((((shift + panel_max_y_phys) / row_h).ceil() as isize + 1).max(0) as usize)
+        .min(total_rows);
+    for row_idx in first_row..last_row {
+        let row = &view.rows[row_idx];
         // Y of this row's top edge relative to panel top, in physical px.
         // `+ scroll_offset` because scrolling UP visually moves rows DOWN.
         let row_y_phys = row_idx as f32 * metrics.height_physical - baseline_offset_phys
