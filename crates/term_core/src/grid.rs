@@ -38,9 +38,24 @@ impl Cell {
         }
     }
 
-    /// Reset to a blank, default-attributes cell.
-    pub fn reset(&mut self) {
-        *self = Cell::space();
+    /// A blank cell carrying `bg` as its background — the unit of
+    /// background-color-erase (bce). Erases and scroll-exposed cells use
+    /// this so that "set bg → erase" fills the region with the current
+    /// background instead of the default (xterm bce behaviour).
+    pub const fn blank(bg: TermColor) -> Self {
+        Self {
+            c: ' ',
+            fg: TermColor::Default,
+            bg,
+            flags: CellFlags::empty(),
+            extra: None,
+        }
+    }
+
+    /// Reset to a blank cell, filling the background with `bg` (bce). Pass
+    /// `TermColor::Default` for a plain blank.
+    pub fn reset(&mut self, bg: TermColor) {
+        *self = Cell::blank(bg);
     }
 
     /// Append a zero-width / combining codepoint to this cell.
@@ -202,16 +217,27 @@ impl Row {
         }
     }
 
+    /// A row of blank cells whose background is `bg` (bce). Used for rows
+    /// newly exposed by scrolling / IL / DL while a non-default background
+    /// is set.
+    pub fn blank(cols: usize, bg: TermColor) -> Self {
+        Self {
+            cells: vec![Cell::blank(bg); cols],
+        }
+    }
+
     pub fn resize(&mut self, cols: usize) {
         self.cells.resize(cols, Cell::space());
     }
 
-    /// Clear cells in `range` (in-place reset to blank).
-    pub fn clear_range(&mut self, range: std::ops::Range<usize>) {
+    /// Clear cells in `range`, filling each with a blank carrying `bg`
+    /// (background-color-erase). Pass `TermColor::Default` for a plain
+    /// clear.
+    pub fn clear_range(&mut self, range: std::ops::Range<usize>, bg: TermColor) {
         let end = range.end.min(self.cells.len());
         let start = range.start.min(end);
         for cell in &mut self.cells[start..end] {
-            cell.reset();
+            cell.reset(bg);
         }
     }
 }
@@ -504,13 +530,15 @@ impl Grid {
     pub fn erase_chars(&mut self, n: usize) {
         let start = self.cursor_col;
         let end = (start + n).min(self.cols);
-        self.row_mut(self.cursor_row).clear_range(start..end);
+        let bg = self.current_bg;
+        self.row_mut(self.cursor_row).clear_range(start..end, bg);
     }
 
     /// **ICH** — insert N blank cells at the cursor.
     pub fn insert_chars(&mut self, n: usize) {
         let cols = self.cols;
         let col = self.cursor_col.min(cols);
+        let bg = self.current_bg;
         let row = self.row_mut(self.cursor_row);
         let count = n.min(cols - col);
         if count == 0 {
@@ -518,7 +546,7 @@ impl Grid {
         }
         row.cells[col..].rotate_right(count);
         for cell in &mut row.cells[col..col + count] {
-            cell.reset();
+            cell.reset(bg);
         }
     }
 
@@ -526,6 +554,7 @@ impl Grid {
     pub fn delete_chars(&mut self, n: usize) {
         let cols = self.cols;
         let col = self.cursor_col.min(cols);
+        let bg = self.current_bg;
         let row = self.row_mut(self.cursor_row);
         let count = n.min(cols - col);
         if count == 0 {
@@ -533,7 +562,7 @@ impl Grid {
         }
         row.cells[col..].rotate_left(count);
         for cell in &mut row.cells[cols - count..] {
-            cell.reset();
+            cell.reset(bg);
         }
     }
 
@@ -543,6 +572,7 @@ impl Grid {
             return;
         }
         let cols = self.cols;
+        let bg = self.current_bg;
         let n = n.min(self.scroll_bottom - self.cursor_row + 1);
         for _ in 0..n {
             let remove_idx = self.visible_start() + self.scroll_bottom;
@@ -550,7 +580,7 @@ impl Grid {
                 self.rows.remove(remove_idx);
             }
             let insert_idx = self.visible_start() + self.cursor_row;
-            self.rows.insert(insert_idx, Row::new(cols));
+            self.rows.insert(insert_idx, Row::blank(cols, bg));
         }
     }
 
@@ -560,6 +590,7 @@ impl Grid {
             return;
         }
         let cols = self.cols;
+        let bg = self.current_bg;
         let n = n.min(self.scroll_bottom - self.cursor_row + 1);
         for _ in 0..n {
             let remove_idx = self.visible_start() + self.cursor_row;
@@ -567,7 +598,7 @@ impl Grid {
                 self.rows.remove(remove_idx);
             }
             let insert_idx = self.visible_start() + self.scroll_bottom;
-            self.rows.insert(insert_idx, Row::new(cols));
+            self.rows.insert(insert_idx, Row::blank(cols, bg));
         }
     }
 
@@ -597,6 +628,7 @@ impl Grid {
     /// into scrollback when `scroll_top == 0`.
     pub fn scroll_up(&mut self, n: usize) {
         let cols = self.cols;
+        let bg = self.current_bg;
         for _ in 0..n {
             if self.scroll_top == 0 {
                 if self.scrollback_len() >= self.max_scrollback {
@@ -605,25 +637,26 @@ impl Grid {
                 }
                 let insert_idx = self.visible_start() + self.scroll_bottom + 1;
                 let insert_idx = insert_idx.min(self.rows.len());
-                self.rows.insert(insert_idx, Row::new(cols));
+                self.rows.insert(insert_idx, Row::blank(cols, bg));
             } else {
                 let remove_idx = self.visible_start() + self.scroll_top;
                 self.rows.remove(remove_idx);
                 let insert_idx = self.visible_start() + self.scroll_bottom;
-                self.rows.insert(insert_idx, Row::new(cols));
+                self.rows.insert(insert_idx, Row::blank(cols, bg));
             }
         }
     }
 
     pub fn scroll_down(&mut self, n: usize) {
         let cols = self.cols;
+        let bg = self.current_bg;
         for _ in 0..n {
             let remove_idx = self.visible_start() + self.scroll_bottom;
             if remove_idx < self.rows.len() {
                 self.rows.remove(remove_idx);
             }
             let insert_idx = self.visible_start() + self.scroll_top;
-            self.rows.insert(insert_idx, Row::new(cols));
+            self.rows.insert(insert_idx, Row::blank(cols, bg));
         }
     }
 
@@ -647,22 +680,23 @@ impl Grid {
     pub fn erase_display(&mut self, mode: super::parser::EraseMode) {
         use super::parser::EraseMode;
         let cols = self.cols;
+        let bg = self.current_bg;
         match mode {
             EraseMode::ToEnd => {
                 self.erase_line(EraseMode::ToEnd);
                 for r in (self.cursor_row + 1)..self.visible_rows {
-                    self.row_mut(r).clear_range(0..cols);
+                    self.row_mut(r).clear_range(0..cols, bg);
                 }
             }
             EraseMode::ToStart => {
                 for r in 0..self.cursor_row {
-                    self.row_mut(r).clear_range(0..cols);
+                    self.row_mut(r).clear_range(0..cols, bg);
                 }
                 self.erase_line(EraseMode::ToStart);
             }
             EraseMode::All => {
                 for r in 0..self.visible_rows {
-                    self.row_mut(r).clear_range(0..cols);
+                    self.row_mut(r).clear_range(0..cols, bg);
                 }
             }
             EraseMode::Scrollback => {
@@ -676,11 +710,12 @@ impl Grid {
         use super::parser::EraseMode;
         let cols = self.cols;
         let col = self.cursor_col;
+        let bg = self.current_bg;
         let row = self.row_mut(self.cursor_row);
         match mode {
-            EraseMode::All => row.clear_range(0..cols),
-            EraseMode::ToEnd => row.clear_range(col..cols),
-            EraseMode::ToStart => row.clear_range(0..(col + 1).min(cols)),
+            EraseMode::All => row.clear_range(0..cols, bg),
+            EraseMode::ToEnd => row.clear_range(col..cols, bg),
+            EraseMode::ToStart => row.clear_range(0..(col + 1).min(cols), bg),
             EraseMode::Scrollback => {}
         }
     }
@@ -867,7 +902,7 @@ impl Grid {
         self.last_printed = None;
         for r in 0..self.visible_rows {
             let cols = self.cols;
-            self.row_mut(r).clear_range(0..cols);
+            self.row_mut(r).clear_range(0..cols, TermColor::Default);
         }
     }
 }

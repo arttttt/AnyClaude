@@ -270,3 +270,62 @@ fn resize_keeps_top_content_anchored_through_shrink_and_grow() {
         "expected first visible row to start with 'hello world', got {first_row:?}"
     );
 }
+
+#[test]
+fn bce_erase_line_fills_current_background() {
+    // Background-color-erase: set bg to red, then EL (erase line) must
+    // paint the erased cells with the current background, not Default.
+    let mut em = VtEmulator::new(10, 2, 0);
+    em.process(b"\x1b[41m"); // SGR 41 — bg = red (indexed 1)
+    em.process(b"\x1b[2K"); // EL mode 2 — erase whole line
+    let snap = em.snapshot();
+    for (i, cell) in snap.rows[0].cells.iter().enumerate() {
+        assert_eq!(
+            cell.bg,
+            TermColor::Indexed(1),
+            "erased cell {i} should carry the current bg (red)"
+        );
+    }
+}
+
+#[test]
+fn bce_erase_chars_fills_current_background() {
+    let mut em = VtEmulator::new(10, 1, 0);
+    em.process(b"abcde");
+    em.process(b"\x1b[1;1H"); // home
+    em.process(b"\x1b[44m"); // bg = blue (indexed 4)
+    em.process(b"\x1b[3X"); // ECH 3
+    let snap = em.snapshot();
+    for i in 0..3 {
+        assert_eq!(
+            snap.rows[0].cells[i].bg,
+            TermColor::Indexed(4),
+            "ECH cell {i} should carry the current bg (blue)"
+        );
+    }
+}
+
+#[test]
+fn bce_scroll_exposed_row_fills_current_background() {
+    // A row newly exposed by scrolling inherits the current background.
+    let mut em = VtEmulator::new(8, 3, 0);
+    em.process(b"\x1b[42m"); // bg = green (indexed 2)
+    em.process(b"\x1b[5S"); // SU 5 — scroll up past the viewport height
+    let snap = em.snapshot();
+    let last = snap.rows.len() - 1;
+    assert_eq!(
+        snap.rows[last].cells[0].bg,
+        TermColor::Indexed(2),
+        "scroll-exposed row should carry the current bg (green)"
+    );
+}
+
+#[test]
+fn bce_default_background_stays_default() {
+    // No SGR bg set: erase must remain Default (no spurious colour).
+    let mut em = VtEmulator::new(6, 1, 0);
+    em.process(b"xyz");
+    em.process(b"\x1b[2K");
+    let snap = em.snapshot();
+    assert_eq!(snap.rows[0].cells[0].bg, TermColor::Default);
+}
