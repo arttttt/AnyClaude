@@ -121,6 +121,11 @@ pub trait TerminalEmulator: Send {
     /// Monotonic count of scrollback lines evicted off the top (buffer full).
     /// Used to keep a scrolled-up viewport anchored as old lines erode.
     fn lines_evicted(&self) -> u64;
+
+    /// Monotonic counter bumped on each `process` / `resize` that may have
+    /// mutated the visible grid or cursor. The renderer diffs it across frames
+    /// to reuse an unchanged terminal base layer (equal value ⇒ identical grid).
+    fn content_seq(&self) -> u64;
 }
 
 pub struct VtEmulator {
@@ -135,6 +140,10 @@ pub struct VtEmulator {
     /// actions through a closure; collecting into a borrowed buffer sidesteps
     /// the `&mut parser` / `&mut self` split-borrow without per-read alloc.
     action_buf: Vec<Action>,
+    /// Monotonic counter bumped whenever `process` / `resize` may have mutated
+    /// the visible grid or cursor. The renderer diffs it across frames to reuse
+    /// an unchanged terminal base layer instead of rebuilding it.
+    content_seq: u64,
 }
 
 impl VtEmulator {
@@ -146,6 +155,7 @@ impl VtEmulator {
             cwd: None,
             response_buf: Vec::new(),
             action_buf: Vec::new(),
+            content_seq: 0,
         }
     }
 
@@ -411,6 +421,11 @@ impl TerminalEmulator for VtEmulator {
         let mut actions = std::mem::take(&mut self.action_buf);
         actions.clear();
         self.parser.advance(bytes, |a| actions.push(a));
+        if !actions.is_empty() {
+            // Any applied action may mutate the visible grid / cursor; bump the
+            // content sequence so the renderer's frame cache knows to rebuild.
+            self.content_seq = self.content_seq.wrapping_add(1);
+        }
         for action in actions.drain(..) {
             self.apply_action(action);
         }
@@ -419,6 +434,7 @@ impl TerminalEmulator for VtEmulator {
 
     fn resize(&mut self, cols: usize, rows: usize) {
         self.grid.resize(cols, rows);
+        self.content_seq = self.content_seq.wrapping_add(1);
     }
 
     fn snapshot(&self) -> RenderSnapshot {
@@ -460,5 +476,8 @@ impl TerminalEmulator for VtEmulator {
     }
     fn lines_evicted(&self) -> u64 {
         self.grid.lines_evicted()
+    }
+    fn content_seq(&self) -> u64 {
+        self.content_seq
     }
 }
