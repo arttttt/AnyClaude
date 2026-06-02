@@ -72,6 +72,12 @@ const PANEL_ANIM_SECS: f32 = 0.14;
 /// its page rect. Small — it only matters for the first frame.
 const INITIAL_PANE_GRID: (usize, usize) = (40, 12);
 
+/// Inner padding (logical px) of a teammate pane's grid inside its page, so text
+/// never touches the frame. The LEFT inset is wider so the grid clears the
+/// collapse pill centred on the divider (and never draws over it).
+const PANE_PAD: f32 = 8.0;
+const PANE_PAD_LEFT: f32 = 16.0;
+
 /// Pager page-settle spring constants (page units). `DAMPING ≈ 2·√STIFFNESS` is
 /// critical — snappy, no overshoot.
 const PAGE_SPRING_STIFFNESS: f32 = 700.0;

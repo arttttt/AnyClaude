@@ -382,11 +382,15 @@ impl ApplicationHandler<UserEvent> for super::GpuApp {
                         (false, h * NUM_PIXELS_PER_LINE, v * NUM_PIXELS_PER_LINE)
                     }
                 };
-                // Over the teammates overlay, a horizontal two-finger swipe pages
-                // it (page_swipe sorts horizontal from vertical and the gesture
-                // boundary); the wheel doesn't reach the terminal underneath.
+                // Over the teammates overlay the wheel never reaches the terminal
+                // underneath: a horizontal two-finger swipe PAGES the overlay,
+                // while a vertical wheel SCROLLS the focused teammate's grid.
                 if self.cursor_over_overlay() {
-                    self.page_swipe(dx, dy, phase);
+                    if dx.abs() > dy.abs() {
+                        self.page_swipe(dx, dy, phase);
+                    } else if self.scroll_focused_pane(dy) {
+                        self.request_redraw();
+                    }
                     return;
                 }
                 // A mouse-reporting app gets the wheel as button 64 / 65 instead

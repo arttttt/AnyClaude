@@ -6,6 +6,7 @@
 use std::io;
 
 use term_core::TerminalEmulator;
+use term_gpu::ScrollState;
 
 use crate::ui::gpu::pty::ChildPty;
 
@@ -15,6 +16,9 @@ pub(super) struct TerminalSurface {
     /// Last `(cols, rows)` the emulator + PTY were sized to — lets `resize` skip
     /// redundant work (the term_grid lesson).
     grid_size: (usize, usize),
+    /// Per-pane vertical scroll (its own scrollback position), independent of
+    /// the main session and the other panes.
+    scroll: ScrollState,
 }
 
 impl TerminalSurface {
@@ -23,7 +27,23 @@ impl TerminalSurface {
         pty: ChildPty,
         grid_size: (usize, usize),
     ) -> Self {
-        Self { emulator, pty, grid_size }
+        Self { emulator, pty, grid_size, scroll: ScrollState::default() }
+    }
+
+    /// This pane's current scroll offset (logical px from the bottom), passed to
+    /// `populate_panel` so the grid renders at the scrolled position.
+    pub(super) fn scroll_offset(&self) -> f32 {
+        self.scroll.offset_y
+    }
+
+    /// Scroll this pane by `dy` logical px, clamped to its content. `visible_px`
+    /// is the page's visible height and `cell_h_px` the line height — used to
+    /// recompute the scroll bounds from the live snapshot before clamping.
+    pub(super) fn scroll_by(&mut self, dy: f32, visible_px: f32, cell_h_px: f32) {
+        self.scroll.total_size_px = self.emulator.snapshot().rows.len() as f32 * cell_h_px;
+        self.scroll.visible_px = visible_px;
+        self.scroll.scroll_by(dy);
+        self.scroll.offset_y = self.scroll.offset_y.clamp(0.0, self.scroll.max_offset());
     }
 
     /// Drain queued PTY bytes into the emulator. Returns whether any arrived (the

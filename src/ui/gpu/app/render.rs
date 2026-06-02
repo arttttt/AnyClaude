@@ -253,16 +253,22 @@ impl super::GpuApp {
             let border = 1.0_f32;
             let content_origin = overlay_origin + Vec2::new(border, border);
             let page_h = (overlay_size.y - 2.0 * border - panels_view::STRIP_H).max(0.0);
-            let clip = [
+            // Backdrop spans the whole page; the grid is inset by padding so text
+            // never touches the frame, with a wider LEFT inset that clears the
+            // collapse pill (centred on the divider) — so the grid never draws
+            // over it (the pill's round-rect is painted onto the backdrop after).
+            let page_clip = [
                 content_origin.x,
                 content_origin.y,
                 content_origin.x + page_w,
                 content_origin.y + page_h,
             ];
+            let inner_w = (page_w - super::PANE_PAD_LEFT - super::PANE_PAD).max(1.0);
+            let inner_h = (page_h - 2.0 * super::PANE_PAD).max(1.0);
             let cell_w = (metrics.width_physical / sf).max(1.0);
             let cell_h = (metrics.height_physical / sf).max(1.0);
-            let cols = (page_w / cell_w) as usize;
-            let rows = (page_h / cell_h) as usize;
+            let cols = (inner_w / cell_w) as usize;
+            let rows = (inner_h / cell_h) as usize;
             let current = self.state.right.focus_index().unwrap_or(0);
             let n = self.state.right.len();
             let first = current.saturating_sub(1);
@@ -281,15 +287,22 @@ impl super::GpuApp {
                     surface.resize(cols, rows);
                 }
                 let page_x = content_origin.x + (i as f32 - page_scroll) * page_w;
-                // Opaque backdrop (the overlay floats over the terminal).
+                // Opaque backdrop spans the full page (the overlay floats over the
+                // terminal); clipped to the page, faded with the collapse.
                 overlay_rects.push(RectInstance {
                     pos: [page_x, content_origin.y],
                     size: [page_w, page_h],
                     color: with_panel_alpha(panels_view::OVERLAY_BG, fade),
-                    clip,
+                    clip: page_clip,
                 });
+                // The grid sits inside the padding; its own clip is the padded box
+                // so text never spills into the padding or over the pill.
+                let inner_x = page_x + super::PANE_PAD_LEFT;
+                let inner_y = content_origin.y + super::PANE_PAD;
+                let inner_clip = [inner_x, inner_y, inner_x + inner_w, inner_y + inner_h];
+                let scroll_off = surface.scroll_offset();
                 let snapshot = surface.emulator.snapshot();
-                let rect = term_gpu::PanelRect::new(page_x, content_origin.y, page_w, page_h);
+                let rect = term_gpu::PanelRect::new(inner_x, inner_y, inner_w, inner_h);
                 let r0 = overlay_rects.len();
                 let g0 = overlay_glyphs.len();
                 populate_panel(
@@ -303,17 +316,17 @@ impl super::GpuApp {
                     FONT_SIZE,
                     sf,
                     metrics,
-                    0.0,
+                    scroll_off,
                     &mut overlay_rects,
                     &mut overlay_glyphs,
                 );
-                // Clip the grid to the page viewport + fade with the collapse.
+                // Clip the grid to the padded inner box + fade with the collapse.
                 for r in &mut overlay_rects[r0..] {
-                    r.clip = clip;
+                    r.clip = inner_clip;
                     r.color[3] *= fade;
                 }
                 for g in &mut overlay_glyphs[g0..] {
-                    g.clip = clip;
+                    g.clip = inner_clip;
                     g.color[3] *= fade;
                 }
             }
