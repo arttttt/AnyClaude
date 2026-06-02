@@ -81,6 +81,12 @@ pub struct VtEmulator {
     title: String,
     cwd: Option<String>,
     response_buf: Vec<u8>,
+    /// Scratch buffer for the actions a single `process` call produces.
+    /// Lives on the struct (not the stack) so it is reused across PTY reads
+    /// instead of heap-allocating a fresh Vec every chunk. The parser streams
+    /// actions through a closure; collecting into a borrowed buffer sidesteps
+    /// the `&mut parser` / `&mut self` split-borrow without per-read alloc.
+    action_buf: Vec<Action>,
 }
 
 impl VtEmulator {
@@ -91,6 +97,7 @@ impl VtEmulator {
             title: String::new(),
             cwd: None,
             response_buf: Vec::new(),
+            action_buf: Vec::new(),
         }
     }
 
@@ -339,11 +346,16 @@ impl VtEmulator {
 
 impl TerminalEmulator for VtEmulator {
     fn process(&mut self, bytes: &[u8]) {
-        let mut actions = Vec::with_capacity(bytes.len() / 4);
+        // Take the scratch buffer out so the parser can borrow `self.parser`
+        // while `apply_action` borrows the rest of `self`. Put it back (kept
+        // capacity) at the end — no per-read allocation.
+        let mut actions = std::mem::take(&mut self.action_buf);
+        actions.clear();
         self.parser.advance(bytes, |a| actions.push(a));
-        for action in actions {
+        for action in actions.drain(..) {
             self.apply_action(action);
         }
+        self.action_buf = actions;
     }
 
     fn resize(&mut self, cols: usize, rows: usize) {
