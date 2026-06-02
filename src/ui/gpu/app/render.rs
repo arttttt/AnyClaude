@@ -295,11 +295,18 @@ impl super::GpuApp {
                     color: with_panel_alpha(panels_view::OVERLAY_BG, fade),
                     clip: page_clip,
                 });
-                // The grid sits inside the padding; its own clip is the padded box
-                // so text never spills into the padding or over the pill.
+                // The grid sits inside the padding; clip it to the padded box
+                // INTERSECTED with the page viewport, so text never spills into
+                // the padding/pill AND an off-edge (mid-swipe) neighbour never
+                // bleeds past the overlay onto the main terminal.
                 let inner_x = page_x + super::PANE_PAD_LEFT;
                 let inner_y = content_origin.y + super::PANE_PAD;
-                let inner_clip = [inner_x, inner_y, inner_x + inner_w, inner_y + inner_h];
+                let inner_clip = [
+                    inner_x.max(page_clip[0]),
+                    inner_y.max(page_clip[1]),
+                    (inner_x + inner_w).min(page_clip[2]),
+                    (inner_y + inner_h).min(page_clip[3]),
+                ];
                 let scroll_off = surface.scroll_offset();
                 let snapshot = surface.emulator.snapshot();
                 let rect = term_gpu::PanelRect::new(inner_x, inner_y, inner_w, inner_h);
