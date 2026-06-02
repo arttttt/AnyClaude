@@ -472,19 +472,43 @@ pub fn rasterize_glyph(
     if image.placement.width == 0 || image.placement.height == 0 {
         return None;
     }
-    let format = match image.content {
-        SwashContent::Color => GlyphFormat::Rgba,
-        // SubpixelMask is RGB coverage for LCD subpixel rendering. We don't
-        // do LCD subpixel AA (we use 3-step horizontal positioning instead,
-        // landing in the next commit), so collapse it onto the alpha path.
-        SwashContent::Mask | SwashContent::SubpixelMask => GlyphFormat::Alpha,
-    };
-    Some(RasterizedGlyph {
-        data: image.data,
-        width: image.placement.width,
-        height: image.placement.height,
-        left: image.placement.left,
-        top: image.placement.top,
-        format,
-    })
+    match image.content {
+        SwashContent::Color => Some(RasterizedGlyph {
+            data: image.data,
+            width: image.placement.width,
+            height: image.placement.height,
+            left: image.placement.left,
+            top: image.placement.top,
+            format: GlyphFormat::Rgba,
+        }),
+        SwashContent::Mask => Some(RasterizedGlyph {
+            // 1 byte/pixel of alpha coverage — the atlas Alpha path reads it
+            // directly.
+            data: image.data,
+            width: image.placement.width,
+            height: image.placement.height,
+            left: image.placement.left,
+            top: image.placement.top,
+            format: GlyphFormat::Alpha,
+        }),
+        SwashContent::SubpixelMask => {
+            // 3 bytes/pixel of RGB subpixel coverage. We don't do LCD subpixel
+            // AA, so fold the three channels into a single alpha byte (max
+            // coverage) and feed the Alpha path. Reading this as Alpha (1 bpp)
+            // without folding would mis-stride the buffer and render garbage.
+            let px = (image.placement.width * image.placement.height) as usize;
+            let mut alpha = Vec::with_capacity(px);
+            for chunk in image.data.chunks_exact(3) {
+                alpha.push(chunk[0].max(chunk[1]).max(chunk[2]));
+            }
+            Some(RasterizedGlyph {
+                data: alpha,
+                width: image.placement.width,
+                height: image.placement.height,
+                left: image.placement.left,
+                top: image.placement.top,
+                format: GlyphFormat::Alpha,
+            })
+        }
+    }
 }
