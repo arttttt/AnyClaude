@@ -391,6 +391,14 @@ impl Parser {
                 emit(Action::FullReset);
                 self.state = State::Ground;
             }
+            b'\\' => {
+                // ST (String Terminator), 7-bit form. Reached as the second
+                // byte of `ESC \` after a string state (OSC/DCS/SOS/PM/APC)
+                // committed and bounced us into Escape. A bare `ESC \` with
+                // no open string is a harmless no-op. Either way: silent,
+                // back to Ground (NOT an Unsupported final byte).
+                self.state = State::Ground;
+            }
             0x20..=0x2F => {
                 self.push_intermediate(byte);
                 self.state = State::EscapeIntermediate;
@@ -858,15 +866,27 @@ impl Parser {
 
     // ─── DCS / SOS / PM / APC (eaten) ───────────────────────────────────────
     fn dcs_passthrough(&mut self, byte: u8) {
-        if byte == 0x9C {
-            self.state = State::Ground;
+        match byte {
+            // 8-bit C1 ST.
+            0x9C => self.state = State::Ground,
+            // 7-bit ST is `ESC \`. The global escape check deliberately does
+            // NOT pull these string states into Escape (ESC could be the
+            // start of ST), so we must handle it here — exactly like
+            // `osc_string`. We move to Escape; the next byte (`\`) lands in
+            // `escape()` and falls through to Ground. Without this, an
+            // `ESC \`-terminated DCS would never exit and every subsequent
+            // byte would be swallowed as DCS body.
+            0x1B => self.state = State::Escape,
+            _ => {}
         }
-        // ESC is handled by the global escape check above.
     }
 
     fn sos_pm_apc(&mut self, byte: u8) {
-        if byte == 0x9C {
-            self.state = State::Ground;
+        match byte {
+            0x9C => self.state = State::Ground,
+            // 7-bit ST (`ESC \`) — see `dcs_passthrough`.
+            0x1B => self.state = State::Escape,
+            _ => {}
         }
     }
 }
