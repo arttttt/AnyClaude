@@ -1,13 +1,14 @@
 # Multi-Instance Panels (`PanelManager`) — Design Doc (DRAFT 2026-05-31)
 
-> Status: **M1 + M1.5 + M2 IMPLEMENTED (2026-06-02)** on `feat/multi-instance-panels`
-> (user-verified): the right overlay UI, the resizable/collapsible pill, the internal
-> layout as a **horizontal pager** (§11.1 resolved — see `uikit::pager`), and now
-> **M2 — live per-panel terminals**: B1 spawns a real `TerminalSurface` (emulator +
-> PTY) per teammate and renders its grid into the page; B2 routes the keyboard to the
-> focused terminal (⌥↑ / click toggles main ↔ overlay, blue focus-ring, collapse /
-> unregister returns focus to main) and re-fits a pane only when the overlay width
-> settles. M3 (`/api/tmux/*` control plane) and the left sidebar (M4) not started.
+> Status: **M1 + M1.5 + M2 + M3 IMPLEMENTED (2026-06-02)** on `feat/multi-instance-panels`
+> (user-verified): the right overlay UI + pill, the **horizontal pager** (§11.1 resolved),
+> **M2** live per-panel terminals + keyboard routing, and now **M3 — the `/api/tmux`
+> control plane is LIVE end-to-end**: real Claude Code teammates spawn as live panels.
+> The bash shim forwards every tmux verb to `POST /api/tmux`; the `TmuxAdapter` turns
+> them into pane lifecycle events. KEY UNLOCK: seed `$TMUX`/`$TMUX_PANE` for the main CC
+> so CC 2.1.159's BackendRegistry picks the tmux backend (it otherwise forces in-process
+> and never invokes the shim). Deferred: a glyph-render bug (`⏸`/U+23FA class), atlas
+> garbage under multi-pane load, per-pane accent colours. The left sidebar (M4) not started.
 > Architecture below was agreed in conversation 2026-05-31.
 > This doc works out the *architecture* of showing multiple Claude instances inside
 > anyclaude's GPU terminal — the long-term home for both the "teammates on the right"
@@ -419,7 +420,13 @@ winit user_event:
   / `normalize_input_focus`), `Effect::WriteToFocused` → focused pane PTY, ⌥↑ / click focus
   toggle with a blue focus-ring, collapse / unregister returns focus to main — and re-fits
   a pane only when the overlay width settles (no destructive reflow mid-animation).
-- **C (= M3) — `TmuxAdapter`.** `/api/tmux/*` → events + the threading boundary above.
+- **C (= M3) — `TmuxAdapter`, DONE.** Single `POST /api/tmux {"args":[…]}` → pure
+  `tmux_adapter::parse` → `TmuxAction` → `ControlPlaneHandle` → winit
+  `UserEvent::ControlPlane(oneshot %N)`. The shim (clean cutover, no real tmux) forwards
+  every verb. CRITICAL: the main CC is seeded `$TMUX`/`$TMUX_PANE` so CC's BackendRegistry
+  picks the tmux backend (else it forces in-process and never calls the shim). The adapter
+  strips global flags (`-S <socket>`…), answers `display-message #{window_id}`→`@0`, reserves
+  `%0` for the main pane, and acks geometry/session verbs.
 
 **Open:** whether Claude Code needs `$TMUX` / `$TMUX_PANE` seeded for the main CC beyond
 `--teammate-mode tmux` (the captured log shows it querying `%0`, so `%0` came from
@@ -454,7 +461,7 @@ main panel has a surface; placeholders have none.
 |---|---|
 | **M1 — UI only** | The right `PanelManager` instance + `panel_manager_view`, rendering **placeholder** panels in a resizable overlay with the centered toggle/indicator button and collapse/expand animation. Manual (debug-only) controls to create/remove/reorder placeholders, resize, and toggle. The main CC grid renders in `content_rect`. **No `/api/tmux/*`, no child processes, no per-panel emulator.** The left instance is scaffolded (same class) but empty. |
 | **M2 — Resources ✅** | Per-panel `TerminalSurface` (emulator + PTY) via the `term_grid` port; teammate grids render live; the keyboard routes to the focused terminal (⌥↑ / click toggles main ↔ overlay, collapse / unregister returns to main); panes re-fit only when the overlay width settles. (Per-pane mouse scroll / in-pane selection deferred to when teammates need them.) |
-| M3 — Control plane | `/api/tmux/*` + the shim full-emulation cutover; `split-window`/`send-keys`/`kill-pane` drive real teammate panels; per-teammate routing folded in. |
+| **M3 — Control plane ✅** | `POST /api/tmux` + the shim clean cutover (no real tmux); `split-window`/`send-keys`/`kill-pane`/`select-pane -T` drive real teammate panels. Unlock: seed `$TMUX` so CC picks the tmux backend. (Deferred: accent colours from `select-pane -P fg=…`, a glyph-render bug, atlas garbage under load.) |
 | M4 — Sessions / left sidebar | The left instance goes live: top-level sessions, switcher, displace; `SwitchSession` re-points the right manager at the active session's teammates. |
 
 ### 10.1 Milestone 1 as an honest subset
