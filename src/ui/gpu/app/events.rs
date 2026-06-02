@@ -30,15 +30,15 @@ impl super::GpuApp {
     /// Translate a `Msg` to its state transition and perform the resulting
     /// effects: build the read-only `ApplyCtx`, call `AppState::apply`, then run
     /// each `Effect`. This is the single coordinator-side entry for the event
-    /// loop — every winit / user event funnels through here. `snapshot` is `None`
+    /// loop — every winit / user event funnels through here. `view` is `None`
     /// because only selection word/line-expansion needs the grid content; the
-    /// mouse-press path builds its own ctx that carries the snapshot (the
-    /// two-entry seam — see `on_mouse_press`), so the common path avoids cloning
-    /// it per keystroke / tick.
+    /// mouse-press path builds its own ctx that carries a borrowed view (the
+    /// two-entry seam — see `on_mouse_press`), so the common path carries
+    /// nothing per keystroke / tick.
     pub(super) fn dispatch(&mut self, msg: Msg) -> bool {
         let ctx = ApplyCtx {
             now: Instant::now(),
-            snapshot: None,
+            view: None,
             multi_click_threshold_ms: MULTI_CLICK_THRESHOLD_MS,
         };
         let effects = self.state.apply(msg, &ctx);

@@ -99,9 +99,9 @@ impl super::GpuApp {
         };
         let sf = self.scale_factor.max(0.0001);
         let cell_h_logical = metrics.height_physical / sf;
-        let snap = emu.snapshot();
+        let view = emu.view();
         let visible_h_logical = window.inner_size().height as f32 / sf;
-        self.state.scroll.total_size_px = snap.rows.len() as f32 * cell_h_logical;
+        self.state.scroll.total_size_px = view.rows.len() as f32 * cell_h_logical;
         self.state.scroll.visible_px = visible_h_logical;
         let max = self.state.scroll.max_offset();
         if self.state.scroll.offset_y > max {
@@ -117,10 +117,10 @@ impl super::GpuApp {
         let metrics = self.cell_metrics();
         let panel = self.terminal_panel_rect();
         let emu = self.session.emulator.as_ref()?;
-        let snap = emu.snapshot();
-        let total_rows = snap.rows.len();
-        let visible_rows = snap.visible_rows;
-        let cols = snap.rows.first().map(|r| r.cells.len()).unwrap_or(0);
+        let view = emu.view();
+        let total_rows = view.rows.len();
+        let visible_rows = view.visible_rows;
+        let cols = view.rows.first().map(|r| r.cells.len()).unwrap_or(0);
         term_geometry::cell_at(
             x,
             y,
@@ -262,10 +262,10 @@ impl super::GpuApp {
                 p.row as u16 + 1,
             )
         });
-        let snapshot = self.session.emulator.as_ref().map(|e| e.snapshot());
+        let view = self.session.emulator.as_ref().map(|e| e.view());
         let ctx = ApplyCtx {
             now: Instant::now(),
-            snapshot: snapshot.as_ref(),
+            view,
             multi_click_threshold_ms: MULTI_CLICK_THRESHOLD_MS,
         };
         let fx = self.state.apply(

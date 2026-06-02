@@ -15,7 +15,7 @@
 use std::time::Instant;
 
 use glam::Vec2;
-use term_core::RenderSnapshot;
+use term_core::RenderView;
 use term_gpu::{
     decay_velocity, encode_key, expand_line, expand_word, CellPoint, ScrollState, ScrollVelocity,
     Selection, MOMENTUM_MIN_VELOCITY, MOMENTUM_THRESHOLD,
@@ -236,20 +236,19 @@ pub enum Msg {
 }
 
 /// Read-only context the coordinator supplies to [`AppState::apply`]: the frame
-/// clock, plus (for selection) the current emulator snapshot. Resource WRITES
+/// clock, plus (for selection) a borrowed view of the emulator. Resource WRITES
 /// never happen through this — they come back as [`Effect`]s.
 ///
-/// `snapshot` is `None` on the common path (`GpuApp::dispatch`); only the
+/// `view` is `None` on the common path (`GpuApp::dispatch`); only the
 /// mouse-press path (`on_mouse_press`) builds a ctx that carries it, because
-/// only word/line selection-expansion needs the grid content. That's a
-/// deliberate two-entry seam into `apply`: threading the snapshot through every
-/// event would clone it per keystroke / tick for nothing. Cheaper than the
-/// uniform alternative, but a seam worth keeping an eye on.
+/// only word/line selection-expansion needs the grid content. It is a borrowed
+/// [`RenderView`] (zero-copy), so even that path doesn't clone the buffer.
 pub struct ApplyCtx<'a> {
     pub now: Instant,
-    /// The emulator's current content, for selection word / line expansion.
-    /// `None` when no emulator is live or the transition doesn't need it.
-    pub snapshot: Option<&'a RenderSnapshot>,
+    /// The emulator's current content (borrowed), for selection word / line
+    /// expansion. `None` when no emulator is live or the transition doesn't
+    /// need it.
+    pub view: Option<RenderView<'a>>,
     /// Max ms between presses at the same cell to count as a multi-click
     /// (coordinator UX tuning, passed in so `AppState` stays config-free).
     pub multi_click_threshold_ms: u128,
@@ -341,11 +340,11 @@ impl AppState {
                     self.mouse_motion_cell = point.map(|p| (p.col as u16, p.row as u16));
                     return vec![Effect::WriteToPty(bytes)];
                 }
-                let (Some(p), Some(snap)) = (point, ctx.snapshot) else {
+                let (Some(p), Some(view)) = (point, ctx.view) else {
                     return Vec::new();
                 };
                 let count = self.next_click(p, ctx.now, ctx.multi_click_threshold_ms);
-                self.begin_selection(p, count, snap);
+                self.begin_selection(p, count, view);
                 vec![Effect::Redraw]
             }
             Msg::MouseRelease { mouse_report } => {
@@ -668,20 +667,20 @@ impl AppState {
 
     /// Begin a selection at `point` for the given click `count`: 1 = linear
     /// (drag continues), 2 = word, 3 = line (both snap and end the drag).
-    /// Word/line boundaries come from `snapshot`.
-    pub fn begin_selection(&mut self, point: CellPoint, count: u32, snapshot: &RenderSnapshot) {
+    /// Word/line boundaries come from `view`.
+    pub fn begin_selection(&mut self, point: CellPoint, count: u32, view: RenderView) {
         match count {
             1 => {
                 self.selection = Some(Selection::new(point));
                 self.dragging_selection = true;
             }
             2 => {
-                let (anchor, cursor) = expand_word(point, snapshot);
+                let (anchor, cursor) = expand_word(point, view);
                 self.selection = Some(Selection { anchor, cursor });
                 self.dragging_selection = false;
             }
             _ => {
-                let (anchor, cursor) = expand_line(point, snapshot);
+                let (anchor, cursor) = expand_line(point, view);
                 self.selection = Some(Selection { anchor, cursor });
                 self.dragging_selection = false;
             }

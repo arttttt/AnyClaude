@@ -41,12 +41,12 @@ impl super::GpuApp {
         };
         let sf = self.scale_factor.max(0.0001);
 
-        let snapshot = emulator.snapshot();
+        let view = emulator.view();
         let scroll_offset_y = self.state.scroll.offset_y;
         let mut rects: Vec<RectInstance> = Vec::new();
         let mut glyphs: Vec<GlyphInstance> = Vec::new();
         populate_panel(
-            &snapshot,
+            view,
             panel,
             &self.text.palette,
             &mut self.text.font_system,
@@ -63,7 +63,7 @@ impl super::GpuApp {
         if let Some(sel) = self.state.selection {
             push_selection_rects(
                 &sel,
-                &snapshot,
+                view,
                 panel,
                 sf,
                 metrics,
@@ -72,8 +72,8 @@ impl super::GpuApp {
             );
         }
         if let Some(cursor_rect) = build_cursor_rect(
-            snapshot.cursor,
-            snapshot.visible_start(),
+            view.cursor,
+            view.visible_start(),
             panel,
             sf,
             metrics,
@@ -319,16 +319,19 @@ impl super::GpuApp {
                     (inner_x + inner_w).min(page_clip[2]),
                     (inner_y + inner_h).min(page_clip[3]),
                 ];
-                let snapshot = surface.emulator.snapshot();
-                // Refresh this pane's scroll bounds from the frame it's about to
-                // render (so a wheel event needs no snapshot of its own).
-                surface.set_scroll_viewport(snapshot.rows.len() as f32 * cell_h, inner_h);
+                // Refresh this pane's scroll bounds from the row count BEFORE
+                // borrowing the emulator for the view — `set_scroll_viewport`
+                // needs `&mut surface`, so the one-shot `view()` here drops its
+                // borrow at the `;`. A wheel event still needs no snapshot.
+                let content_rows = surface.emulator.view().rows.len();
+                surface.set_scroll_viewport(content_rows as f32 * cell_h, inner_h);
                 let scroll_off = surface.scroll_offset();
                 let rect = term_gpu::PanelRect::new(inner_x, inner_y, inner_w, inner_h);
                 let r0 = overlay_rects.len();
                 let g0 = overlay_glyphs.len();
+                let view = surface.emulator.view();
                 populate_panel(
-                    &snapshot,
+                    view,
                     rect,
                     &self.text.palette,
                     &mut self.text.font_system,

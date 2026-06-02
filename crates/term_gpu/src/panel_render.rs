@@ -1,6 +1,6 @@
 //! Bridge between `term_core`'s VT grid and the GPU rendering buffers.
 //!
-//! `populate_panel` walks a `RenderSnapshot` and emits the rectangles
+//! `populate_panel` walks a borrowed `RenderView` and emits the rectangles
 //! and glyph instances that the renderer feeds to wgpu. `build_cursor_rect`
 //! produces the cursor's rect for the same coordinate system.
 //!
@@ -10,7 +10,7 @@
 //! to swap a different grid representation in the future.
 
 use cosmic_text::{CacheKey, CacheKeyFlags, FontSystem, Style, SwashCache, Weight};
-use term_core::{AnsiPalette, CellFlags, CursorState, CursorStyle, RenderSnapshot, TermColor};
+use term_core::{AnsiPalette, CellFlags, CursorState, CursorStyle, RenderView, TermColor};
 
 use crate::{rasterize_glyph, GlyphAtlas, GlyphInstance, RectInstance, TextShapeCache};
 
@@ -104,7 +104,7 @@ pub fn measure_cell_metrics(
 /// combining clusters fall through to `TextShapeCache::shape`.
 #[allow(clippy::too_many_arguments)]
 pub fn populate_panel(
-    snapshot: &RenderSnapshot,
+    view: RenderView,
     panel_rect: PanelRect,
     palette: &AnsiPalette,
     font_system: &mut FontSystem,
@@ -124,8 +124,8 @@ pub fn populate_panel(
     let panel_origin_x_physical = panel_rect.x * sf;
     let panel_origin_y_physical = panel_rect.y * sf;
     let scroll_offset_y_physical = scroll_offset_y_logical * sf;
-    let total_rows = snapshot.rows.len();
-    let visible_rows = snapshot.visible_rows;
+    let total_rows = view.rows.len();
+    let visible_rows = view.visible_rows;
     // The visible region of the buffer is anchored at the BOTTOM of
     // the panel — i.e. with `scroll_offset_y = 0` (no scrollback
     // shown) row `total - visible` should land at the panel's first
@@ -137,7 +137,7 @@ pub fn populate_panel(
 
     let panel_max_x_phys = panel_rect.w * sf;
     let panel_max_y_phys = panel_rect.h * sf;
-    for (row_idx, row) in snapshot.rows.iter().enumerate() {
+    for (row_idx, row) in view.rows.iter().enumerate() {
         // Y of this row's top edge relative to panel top, in physical px.
         // `+ scroll_offset` because scrolling UP visually moves rows DOWN.
         let row_y_phys = row_idx as f32 * metrics.height_physical - baseline_offset_phys

@@ -539,7 +539,7 @@ impl App {
             return;
         }
         let snap = panel.emulator.snapshot();
-        let text = selection_to_text(&sel, &snap);
+        let text = selection_to_text(&sel, snap.as_view());
         if text.is_empty() {
             return;
         }
@@ -750,7 +750,7 @@ impl App {
                             2 => {
                                 let (start, end) = snap
                                     .as_ref()
-                                    .map(|s| expand_word(point, s))
+                                    .map(|s| expand_word(point, s.as_view()))
                                     .unwrap_or((point, point));
                                 panel.selection = Some(Selection {
                                     anchor: start,
@@ -763,7 +763,7 @@ impl App {
                             _ => {
                                 let (start, end) = snap
                                     .as_ref()
-                                    .map(|s| expand_line(point, s))
+                                    .map(|s| expand_line(point, s.as_view()))
                                     .unwrap_or((point, point));
                                 panel.selection = Some(Selection {
                                     anchor: start,
@@ -893,7 +893,7 @@ impl App {
             let snapshot = panel.emulator.snapshot();
             let scroll_offset_y = panel.scroll.offset_y;
             populate_panel(
-                &snapshot,
+                snapshot.as_view(),
                 PanelRect::new(panel_rect.x, panel_rect.y, panel_rect.w, panel_rect.h),
                 palette,
                 font_system,
@@ -910,7 +910,7 @@ impl App {
             if let Some(sel) = panel.selection {
                 push_selection_rects(
                     &sel,
-                    &snapshot,
+                    snapshot.as_view(),
                     PanelRect::new(panel_rect.x, panel_rect.y, panel_rect.w, panel_rect.h),
                     sf,
                     metrics,

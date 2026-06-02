@@ -192,7 +192,7 @@ fn empty_snapshot() -> RenderSnapshot {
 fn single_click_starts_a_linear_drag() {
     let mut s = state();
     let p = CellPoint { row: 0, col: 2 };
-    s.begin_selection(p, 1, &empty_snapshot());
+    s.begin_selection(p, 1, empty_snapshot().as_view());
     assert!(s.dragging_selection, "single click keeps dragging");
     let sel = s.selection.expect("selection set");
     assert_eq!(sel.anchor, p);
@@ -203,7 +203,7 @@ fn single_click_starts_a_linear_drag() {
 fn double_and_triple_click_snap_and_end_the_drag() {
     for count in [2, 3] {
         let mut s = state();
-        s.begin_selection(CellPoint { row: 0, col: 2 }, count, &empty_snapshot());
+        s.begin_selection(CellPoint { row: 0, col: 2 }, count, empty_snapshot().as_view());
         assert!(!s.dragging_selection, "word/line select does not drag (count {count})");
         assert!(s.selection.is_some());
     }
@@ -215,7 +215,7 @@ fn drag_extends_only_an_active_selection() {
     // Not dragging yet → no-op.
     assert!(!s.drag_selection_to(CellPoint { row: 1, col: 1 }));
 
-    s.begin_selection(CellPoint { row: 0, col: 0 }, 1, &empty_snapshot());
+    s.begin_selection(CellPoint { row: 0, col: 0 }, 1, empty_snapshot().as_view());
     let to = CellPoint { row: 0, col: 5 };
     assert!(s.drag_selection_to(to), "active drag extends");
     assert_eq!(s.selection.unwrap().cursor, to);
@@ -225,13 +225,13 @@ fn drag_extends_only_an_active_selection() {
 fn release_clears_a_click_without_drag_but_keeps_a_real_selection() {
     // Click with no drag → empty (anchor == cursor) → cleared on release.
     let mut empty = state();
-    empty.begin_selection(CellPoint { row: 0, col: 0 }, 1, &empty_snapshot());
+    empty.begin_selection(CellPoint { row: 0, col: 0 }, 1, empty_snapshot().as_view());
     assert!(empty.end_selection_drag(), "empty selection cleared");
     assert!(empty.selection.is_none());
 
     // Click then drag → non-empty → kept on release.
     let mut real = state();
-    real.begin_selection(CellPoint { row: 0, col: 0 }, 1, &empty_snapshot());
+    real.begin_selection(CellPoint { row: 0, col: 0 }, 1, empty_snapshot().as_view());
     real.drag_selection_to(CellPoint { row: 0, col: 4 });
     assert!(!real.end_selection_drag(), "non-empty selection kept");
     assert!(real.selection.is_some());
@@ -252,7 +252,7 @@ fn next_click_records_and_cycles() {
 // ── keyboard routing through apply (E.8.3) ───────────────────────────────
 
 fn ctx() -> ApplyCtx<'static> {
-    ApplyCtx { now: Instant::now(), snapshot: None, multi_click_threshold_ms: 400 }
+    ApplyCtx { now: Instant::now(), view: None, multi_click_threshold_ms: 400 }
 }
 
 /// A key Msg with a dummy logical key (the popup / shortcut paths read only the

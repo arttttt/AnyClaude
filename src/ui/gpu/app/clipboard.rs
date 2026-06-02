@@ -26,8 +26,8 @@ impl super::GpuApp {
     }
 
     /// Copy the current selection to the system clipboard. Mirrors
-    /// term_grid: `selection_to_text` against the current emulator
-    /// snapshot → `ClipboardContent::plain_text`. Empty selections are
+    /// term_grid: `selection_to_text` against a borrowed view of the current
+    /// emulator → `ClipboardContent::plain_text`. Empty selections are
     /// skipped silently.
     pub(super) fn copy_selection(&mut self) {
         let Some(sel) = self.state.selection else { return };
@@ -35,8 +35,8 @@ impl super::GpuApp {
             return;
         }
         let Some(emu) = self.session.emulator.as_ref() else { return };
-        let snap = emu.snapshot();
-        let text = selection_to_text(&sel, &snap);
+        let view = emu.view();
+        let text = selection_to_text(&sel, view);
         if text.is_empty() {
             return;
         }
