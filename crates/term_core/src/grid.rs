@@ -1026,7 +1026,18 @@ fn rewrap(logical: &[LogicalLine], new_cols: usize) -> Vec<Row> {
         }
         let mut start = 0;
         while start < cells.len() {
-            let end = (start + new_cols).min(cells.len());
+            let mut end = (start + new_cols).min(cells.len());
+            // Don't split a wide-char pair across the boundary: if the chunk
+            // would end on a WIDE_CHAR (leaving its WIDE_CHAR_SPACER for the
+            // next row), pull the boundary back so the pair stays together.
+            // Skip when the wide char is the chunk's only cell (new_cols == 1)
+            // — pulling back would yield an empty row and loop forever.
+            if end < cells.len()
+                && end - 1 > start
+                && cells[end - 1].flags.contains(CellFlags::WIDE_CHAR)
+            {
+                end -= 1;
+            }
             let mut row = Row::new(new_cols);
             for (i, cell) in cells[start..end].iter().enumerate() {
                 row.cells[i] = cell.clone();

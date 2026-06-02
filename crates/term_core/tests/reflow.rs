@@ -210,3 +210,44 @@ fn shrink_clears_old_wrapline_flags() {
         "stale WRAPLINE leaked into row 2: cell={cell:?}"
     );
 }
+
+#[test]
+fn shrink_keeps_wide_char_pairs_intact() {
+    // "aあいう": a(1) + three wide chars (2 each) = 7 cells. Shrinking to
+    // 4 cols would, with a naive chunk-by-new_cols split, land a WIDE_CHAR
+    // at the last column and push its spacer to the next row. The reflow
+    // must instead pull the boundary back so each pair stays together.
+    let mut em = VtEmulator::new(10, 4, 0);
+    em.process("aあいう".as_bytes());
+    em.resize(4, 4);
+
+    // Invariant across every row: a WIDE_CHAR is always immediately
+    // followed (same row) by its WIDE_CHAR_SPACER — never the row's last
+    // cell, never orphaned.
+    let snap = em.snapshot();
+    for (r, row) in snap.rows.iter().enumerate() {
+        let cells = &row.cells;
+        for (c, cell) in cells.iter().enumerate() {
+            if cell.flags.contains(CellFlags::WIDE_CHAR) {
+                assert!(
+                    c + 1 < cells.len(),
+                    "row {r}: WIDE_CHAR at last column {c} — pair was split"
+                );
+                assert!(
+                    cells[c + 1].flags.contains(CellFlags::WIDE_CHAR_SPACER),
+                    "row {r} col {c}: WIDE_CHAR not followed by its spacer"
+                );
+            }
+        }
+    }
+    // Content survived the reflow in order (ignoring spacer cells and the
+    // blank padding a wrapped wide char can leave at a row's tail).
+    let all: String = snap
+        .rows
+        .iter()
+        .flat_map(|row| row.cells.iter())
+        .filter(|c| !c.flags.contains(CellFlags::WIDE_CHAR_SPACER) && c.c != ' ')
+        .map(|c| c.c)
+        .collect();
+    assert_eq!(all, "aあいう", "content lost in reflow: {all:?}");
+}
