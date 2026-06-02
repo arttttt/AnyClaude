@@ -360,12 +360,15 @@ impl super::GpuApp {
     /// dragged position so the page tracks the finger — clamped to ONE page of
     /// travel (the one-page-per-gesture guarantee) and to the valid page range.
     fn drive_swipe(&mut self, dx: f32, dy: f32, now: Instant) {
-        let dt = now.saturating_duration_since(self.page_swipe.last_t).as_secs_f32();
-        self.page_swipe.last_t = now;
-        // Axis-lock: a vertical-dominant event isn't a page gesture.
+        // Axis-lock: a vertical-dominant event isn't a page gesture. Return
+        // BEFORE touching last_t — otherwise a vertical jitter event would
+        // advance the timestamp, inflating the next event's dt and skewing
+        // the EMA velocity downward (a fling could then fail to register).
         if dx.abs() < dy.abs() {
             return;
         }
+        let dt = now.saturating_duration_since(self.page_swipe.last_t).as_secs_f32();
+        self.page_swipe.last_t = now;
         let page_w = self.page_viewport_width();
         self.page_swipe.accum_px += dx;
         // page_scroll rises toward the next page; a leftward swipe (dx < 0) goes
